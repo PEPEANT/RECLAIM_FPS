@@ -20,6 +20,8 @@ const MOBILE_LOOK_SENSITIVITY_X = 0.0032;
 const MOBILE_LOOK_SENSITIVITY_Y = 0.0028;
 const ONLINE_ROOM_CODE = "GLOBAL";
 const ONLINE_MAX_PLAYERS = 50;
+const REMOTE_SYNC_INTERVAL = 1 / 12;
+const REMOTE_NAME_TAG_DISTANCE = 72;
 
 function isLikelyTouchDevice() {
   if (typeof window === "undefined" || typeof navigator === "undefined") {
@@ -93,6 +95,7 @@ export class Game {
         this.syncMobileUtilityButtons();
         this.syncCursorVisibility();
       },
+      onBlockChanged: (change) => this.handleLocalBlockChanged(change),
       onStatus: (text, isAlert = false, duration = 0.5) =>
         this.hud.setStatus(text, isAlert, duration)
     });
@@ -208,6 +211,11 @@ export class Game {
       players: [],
       selectedTeam: null
     };
+    this.remotePlayers = new Map();
+    this.remoteSyncClock = 0;
+    this._cameraForward = new THREE.Vector3();
+    this._toRemote = new THREE.Vector3();
+    this._remoteHead = new THREE.Vector3();
 
     this.objective = {
       alphaBase: new THREE.Vector3(),
@@ -831,6 +839,404 @@ export class Game {
     group.rotation.set(-0.28, -0.18, 0.34);
     group.visible = false;
     return group;
+  }
+
+  getMySocketId() {
+    return this.chat?.socket?.id ?? "";
+  }
+
+  getTeamColor(team) {
+    if (team === "alpha") {
+      return 0x63b9ff;
+    }
+    if (team === "bravo") {
+      return 0xff7d67;
+    }
+    return 0x88a3b8;
+  }
+
+  createRemoteNameTag(name, team) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx = canvas.getContext("2d");
+    const safeName = String(name ?? "PLAYER").slice(0, 16);
+
+    if (ctx) {
+      const teamColor = this.getTeamColor(team);
+      const r = (teamColor >> 16) & 0xff;
+      const g = (teamColor >> 8) & 0xff;
+      const b = teamColor & 0xff;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "rgba(8, 14, 23, 0.72)";
+      ctx.fillRect(12, 24, canvas.width - 24, 80);
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.95)`;
+      ctx.lineWidth = 4;
+      ctx.strokeRect(12, 24, canvas.width - 24, 80);
+      ctx.font = "700 46px Segoe UI, Arial, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(225, 242, 255, 0.98)";
+      ctx.fillText(safeName, canvas.width * 0.5, canvas.height * 0.5 + 2);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(2.9, 0.72, 1);
+    sprite.renderOrder = 6;
+    return sprite;
+  }
+
+  createRemotePlayer(player = {}) {
+    const team = player.team ?? null;
+    const color = this.getTeamColor(team);
+    const group = new THREE.Group();
+    group.visible = true;
+
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color,
+      roughness: 0.48,
+      metalness: 0.26,
+      emissive: 0x0f2030,
+      emissiveIntensity: 0.35
+    });
+    const headMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffc29f,
+      roughness: 0.6,
+      metalness: 0.05
+    });
+    const detailMaterial = new THREE.MeshStandardMaterial({
+      color: 0x1b2a38,
+      roughness: 0.4,
+      metalness: 0.56
+    });
+
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.96, 0.34), bodyMaterial);
+    torso.position.y = 1.15;
+    torso.castShadow = true;
+    torso.receiveShadow = true;
+
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.34), headMaterial);
+    head.position.y = 1.85;
+    head.castShadow = true;
+    head.receiveShadow = true;
+
+    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.14, 0.72), detailMaterial);
+    gun.position.set(0, 1.42, -0.48);
+    gun.castShadow = true;
+
+    const nameTag = this.createRemoteNameTag(player.name, team);
+    nameTag.position.set(0, 2.45, 0);
+
+    group.add(torso, head, gun, nameTag);
+    this.scene.add(group);
+
+    return {
+      id: String(player.id ?? ""),
+      name: String(player.name ?? "PLAYER"),
+      team,
+      group,
+      nameTag,
+      bodyMaterial,
+      headMaterial,
+      detailMaterial,
+      targetPosition: new THREE.Vector3(),
+      targetYaw: 0,
+      yaw: 0
+    };
+  }
+
+  updateRemoteVisual(remote, { name, team }) {
+    const nextName = String(name ?? remote.name ?? "PLAYER");
+    const nextTeam = team ?? null;
+    const teamChanged = remote.team !== nextTeam;
+    const nameChanged = remote.name !== nextName;
+    if (!teamChanged && !nameChanged) {
+      return;
+    }
+
+    remote.name = nextName;
+    remote.team = nextTeam;
+    remote.bodyMaterial.color.setHex(this.getTeamColor(nextTeam));
+
+    if (remote.nameTag) {
+      remote.group.remove(remote.nameTag);
+      remote.nameTag.material.map?.dispose();
+      remote.nameTag.material.dispose();
+    }
+    remote.nameTag = this.createRemoteNameTag(remote.name, remote.team);
+    remote.nameTag.position.set(0, 2.45, 0);
+    remote.group.add(remote.nameTag);
+  }
+
+  ensureRemotePlayer(player) {
+    const id = String(player?.id ?? "");
+    if (!id) {
+      return null;
+    }
+
+    let remote = this.remotePlayers.get(id);
+    if (!remote) {
+      remote = this.createRemotePlayer(player);
+      this.remotePlayers.set(id, remote);
+    } else {
+      this.updateRemoteVisual(remote, player);
+    }
+    return remote;
+  }
+
+  removeRemotePlayer(id) {
+    const key = String(id ?? "");
+    if (!key) {
+      return;
+    }
+
+    const remote = this.remotePlayers.get(key);
+    if (!remote) {
+      return;
+    }
+
+    this.scene.remove(remote.group);
+    remote.group.traverse((child) => {
+      if (child.isMesh) {
+        child.geometry?.dispose?.();
+      }
+    });
+    remote.nameTag?.material?.map?.dispose?.();
+    remote.nameTag?.material?.dispose?.();
+    remote.bodyMaterial.dispose();
+    remote.headMaterial.dispose();
+    remote.detailMaterial.dispose();
+    this.remotePlayers.delete(key);
+  }
+
+  clearRemotePlayers() {
+    for (const id of this.remotePlayers.keys()) {
+      this.removeRemotePlayer(id);
+    }
+  }
+
+  applyRemoteState(remote, state, snap = false) {
+    if (!remote || !state) {
+      return;
+    }
+
+    const x = Number(state.x);
+    const y = Number(state.y);
+    const z = Number(state.z);
+    const yaw = Number(state.yaw);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      return;
+    }
+
+    remote.targetPosition.set(x, y - PLAYER_HEIGHT, z);
+    remote.targetYaw = Number.isFinite(yaw) ? yaw : 0;
+
+    if (snap) {
+      remote.group.position.copy(remote.targetPosition);
+      remote.yaw = remote.targetYaw;
+      remote.group.rotation.y = remote.yaw;
+    }
+  }
+
+  syncRemotePlayersFromLobby() {
+    if (this.activeMatchMode !== "online") {
+      this.clearRemotePlayers();
+      return;
+    }
+
+    const myId = this.getMySocketId();
+    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
+    const liveIds = new Set();
+
+    for (const player of players) {
+      const id = String(player?.id ?? "");
+      if (!id || id === myId) {
+        continue;
+      }
+
+      liveIds.add(id);
+      const remote = this.ensureRemotePlayer(player);
+      if (!remote) {
+        continue;
+      }
+      if (player.state) {
+        this.applyRemoteState(remote, player.state, true);
+      }
+    }
+
+    for (const id of this.remotePlayers.keys()) {
+      if (!liveIds.has(id)) {
+        this.removeRemotePlayer(id);
+      }
+    }
+  }
+
+  handleRemotePlayerSync(payload = {}) {
+    const id = String(payload.id ?? "");
+    if (!id || id === this.getMySocketId()) {
+      return;
+    }
+
+    const remote = this.ensureRemotePlayer({
+      id,
+      name: payload.name ?? "PLAYER",
+      team: payload.team ?? null
+    });
+    if (!remote) {
+      return;
+    }
+
+    this.applyRemoteState(remote, payload.state, false);
+  }
+
+  updateRemotePlayers(delta) {
+    if (this.activeMatchMode !== "online" || this.remotePlayers.size === 0) {
+      return;
+    }
+
+    this.camera.getWorldDirection(this._cameraForward);
+    const smooth = THREE.MathUtils.clamp(delta * 11, 0.08, 0.92);
+
+    for (const remote of this.remotePlayers.values()) {
+      remote.group.position.lerp(remote.targetPosition, smooth);
+      const yawDiff = Math.atan2(
+        Math.sin(remote.targetYaw - remote.yaw),
+        Math.cos(remote.targetYaw - remote.yaw)
+      );
+      remote.yaw += yawDiff * smooth;
+      remote.group.rotation.y = remote.yaw;
+
+      this._remoteHead.copy(remote.group.position);
+      this._remoteHead.y += PLAYER_HEIGHT + 0.72;
+      this._toRemote.copy(this._remoteHead).sub(this.camera.position);
+      const distance = this._toRemote.length();
+
+      let inFront = false;
+      if (distance > 0.001) {
+        this._toRemote.multiplyScalar(1 / distance);
+        inFront = this._toRemote.dot(this._cameraForward) > 0.2;
+      }
+      if (remote.nameTag) {
+        remote.nameTag.visible = inFront && distance <= REMOTE_NAME_TAG_DISTANCE;
+      }
+    }
+  }
+
+  emitLocalPlayerSync(delta, force = false) {
+    if (this.activeMatchMode !== "online" || !this.isRunning || this.isGameOver) {
+      return;
+    }
+
+    const socket = this.chat?.socket;
+    if (!socket?.connected || !this.lobbyState.roomCode) {
+      return;
+    }
+
+    this.remoteSyncClock += delta;
+    if (!force && this.remoteSyncClock < REMOTE_SYNC_INTERVAL) {
+      return;
+    }
+    this.remoteSyncClock = 0;
+
+    socket.emit("player:sync", {
+      x: Number(this.playerPosition.x.toFixed(3)),
+      y: Number(this.playerPosition.y.toFixed(3)),
+      z: Number(this.playerPosition.z.toFixed(3)),
+      yaw: Number(this.yaw.toFixed(4)),
+      pitch: Number(this.pitch.toFixed(4))
+    });
+  }
+
+  handleLocalBlockChanged(change) {
+    if (this.activeMatchMode !== "online") {
+      return;
+    }
+
+    const socket = this.chat?.socket;
+    if (!socket?.connected || !this.lobbyState.roomCode) {
+      return;
+    }
+
+    const action = change?.action === "place" ? "place" : change?.action === "remove" ? "remove" : null;
+    if (!action) {
+      return;
+    }
+
+    const rawX = Number(change.x);
+    const rawY = Number(change.y);
+    const rawZ = Number(change.z);
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY) || !Number.isFinite(rawZ)) {
+      return;
+    }
+
+    const payload = {
+      action,
+      x: Math.trunc(rawX),
+      y: Math.trunc(rawY),
+      z: Math.trunc(rawZ)
+    };
+
+    if (action === "place") {
+      const typeId = Number(change.typeId);
+      if (!Number.isFinite(typeId)) {
+        return;
+      }
+      payload.typeId = Math.trunc(typeId);
+    }
+
+    socket.emit("block:update", payload);
+  }
+
+  applyRemoteBlockUpdate(payload = {}) {
+    if (this.activeMatchMode !== "online") {
+      return;
+    }
+
+    const sourceId = String(payload.id ?? "");
+    if (sourceId && sourceId === this.getMySocketId()) {
+      return;
+    }
+
+    const action = payload.action === "place" ? "place" : payload.action === "remove" ? "remove" : null;
+    if (!action) {
+      return;
+    }
+
+    const rawX = Number(payload.x);
+    const rawY = Number(payload.y);
+    const rawZ = Number(payload.z);
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY) || !Number.isFinite(rawZ)) {
+      return;
+    }
+
+    const x = Math.trunc(rawX);
+    const y = Math.trunc(rawY);
+    const z = Math.trunc(rawZ);
+
+    if (action === "place") {
+      const typeId = Number(payload.typeId);
+      if (!Number.isFinite(typeId)) {
+        return;
+      }
+      if (this.isPlayerIntersectingBlock(x, y, z)) {
+        return;
+      }
+      this.voxelWorld.setBlock(x, y, z, Math.trunc(typeId));
+      return;
+    }
+
+    this.voxelWorld.removeBlock(x, y, z);
   }
 
   updateMobileControlsVisibility() {
@@ -1571,6 +1977,8 @@ export class Game {
     this.addChatMessage("Controls: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
       this.hud.setStatus("Online match: AI disabled", false, 0.9);
+      this.syncRemotePlayersFromLobby();
+      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     }
     this.refreshOnlineStatus();
   }
@@ -1613,6 +2021,7 @@ export class Game {
     }
 
     this.keys.clear();
+    this.remoteSyncClock = 0;
     this.mobileState.lookPointerId = null;
     this.mobileState.stickPointerId = null;
     this.mobileState.aimPointerId = null;
@@ -1656,6 +2065,7 @@ export class Game {
     this.lastDryFireAt = -10;
     this.chatIntroShown = false;
     this.resetObjectives();
+    this.clearRemotePlayers();
     this.clearChatMessages();
     this.hud.setKillStreak(0);
     this.camera.position.copy(this.playerPosition);
@@ -1931,6 +2341,10 @@ export class Game {
       this.weapon.update(delta);
     }
 
+    if (this.activeMatchMode === "online") {
+      this.updateRemotePlayers(delta);
+    }
+
     if (!this.isRunning || this.isGameOver || (!this.mouseLookEnabled && !isChatting)) {
       this.hud.update(delta, {
         ...this.state,
@@ -1947,6 +2361,7 @@ export class Game {
     this.applyMovement(delta);
     this.updateCamera(delta);
     this.updateObjectives(delta);
+    this.emitLocalPlayerSync(delta);
 
     const weapState = this.weapon.getState();
     if (gunMode && !this._wasReloading && weapState.reloading) {
@@ -2218,6 +2633,7 @@ export class Game {
       this.refreshOnlineStatus();
       this.setLobbyState(null);
       this.renderRoomList([]);
+      this.clearRemotePlayers();
     });
 
     socket.on("room:list", (rooms) => {
@@ -2227,6 +2643,14 @@ export class Game {
     socket.on("room:update", (room) => {
       this.setLobbyState(room);
       this.requestRoomList();
+    });
+
+    socket.on("player:sync", (payload) => {
+      this.handleRemotePlayerSync(payload);
+    });
+
+    socket.on("block:update", (payload) => {
+      this.applyRemoteBlockUpdate(payload);
     });
 
     socket.on("room:started", ({ code }) => {
@@ -2328,6 +2752,7 @@ export class Game {
       this.lobbyState.hostId = null;
       this.lobbyState.players = [];
       this.lobbyState.selectedTeam = null;
+      this.clearRemotePlayers();
       this.mpLobbyEl?.classList.add("hidden");
       if (this.mpRoomTitleEl) {
         this.mpRoomTitleEl.textContent = "LOBBY";
@@ -2421,6 +2846,7 @@ export class Game {
     this.mpTeamAlphaBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "alpha");
     this.mpTeamBravoBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "bravo");
     this.mpLobbyEl?.classList.remove("hidden");
+    this.syncRemotePlayersFromLobby();
     this.refreshOnlineStatus();
   }
 

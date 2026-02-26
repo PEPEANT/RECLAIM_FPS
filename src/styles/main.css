@@ -102,6 +102,19 @@ canvas {
   backdrop-filter: blur(6px);
 }
 
+.hud-right {
+  min-width: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
 .hud-left::before,
 .hud-right::before {
   content: "";
@@ -111,6 +124,10 @@ canvas {
   margin-bottom: 2px;
   background: linear-gradient(90deg, transparent, rgba(157, 238, 194, 0.7), transparent);
   opacity: 0.5;
+}
+
+.hud-right::before {
+  display: none;
 }
 
 .hud-health-bar-wrap {
@@ -159,6 +176,15 @@ canvas {
   letter-spacing: 0.06em;
   color: #ffc381;
   min-height: 1em;
+}
+
+#hud-status,
+#hud-enemies,
+#hud-captures,
+#hud-control,
+#hud-objective,
+#hud-threat {
+  display: none;
 }
 
 #hud-streak {

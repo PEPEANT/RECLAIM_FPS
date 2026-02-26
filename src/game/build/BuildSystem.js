@@ -9,12 +9,20 @@ const TOOL_LABELS = {
 };
 
 export class BuildSystem {
-  constructor({ world, camera, raycaster, onModeChanged = null, onStatus = null }) {
+  constructor({
+    world,
+    camera,
+    raycaster,
+    onModeChanged = null,
+    onStatus = null,
+    onBlockChanged = null
+  }) {
     this.world = world;
     this.camera = camera;
     this.raycaster = raycaster;
     this.onModeChanged = onModeChanged;
     this.onStatus = onStatus;
+    this.onBlockChanged = onBlockChanged;
 
     this.toolMode = "gun";
     this.selectedSlot = 1;
@@ -175,17 +183,28 @@ export class BuildSystem {
     }
 
     if (this.isPlaceMode()) {
-      const placed = this.world.placeAdjacent(hit, this.getSelectedType().id, canPlace);
+      const x = hit.x + Math.round(hit.normal.x);
+      const y = hit.y + Math.round(hit.normal.y);
+      const z = hit.z + Math.round(hit.normal.z);
+      const typeId = this.getSelectedType().id;
+      const placed = this.world.placeAdjacent(hit, typeId, canPlace);
       if (!placed) {
         this.onStatus?.("블록을 설치할 수 없습니다", true, 0.3);
+      } else {
+        this.onBlockChanged?.({ action: "place", x, y, z, typeId });
       }
       return true;
     }
 
     if (this.isDigMode()) {
+      const x = hit.x;
+      const y = hit.y;
+      const z = hit.z;
       const removed = this.world.removeFromHit(hit);
       if (!removed) {
         this.onStatus?.("블록을 제거할 수 없습니다", true, 0.3);
+      } else {
+        this.onBlockChanged?.({ action: "remove", x, y, z });
       }
       return true;
     }

@@ -79,6 +79,56 @@ function sanitizeName(raw) {
   return value || "PLAYER";
 }
 
+function clampNumber(value, min, max, fallback) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, num));
+}
+
+function sanitizePlayerState(raw = {}) {
+  return {
+    x: clampNumber(raw.x, -256, 256, 0),
+    y: clampNumber(raw.y, 0, 128, 1.75),
+    z: clampNumber(raw.z, -256, 256, 0),
+    yaw: clampNumber(raw.yaw, -Math.PI, Math.PI, 0),
+    pitch: clampNumber(raw.pitch, -1.55, 1.55, 0),
+    updatedAt: Date.now()
+  };
+}
+
+function sanitizeBlockPayload(raw = {}) {
+  const action = raw.action === "place" ? "place" : raw.action === "remove" ? "remove" : null;
+  if (!action) {
+    return null;
+  }
+
+  const x = clampNumber(raw.x, -256, 256, Number.NaN);
+  const y = clampNumber(raw.y, -64, 192, Number.NaN);
+  const z = clampNumber(raw.z, -256, 256, Number.NaN);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+
+  const payload = {
+    action,
+    x: Math.trunc(x),
+    y: Math.trunc(y),
+    z: Math.trunc(z)
+  };
+
+  if (action === "place") {
+    const typeId = clampNumber(raw.typeId, 1, 64, Number.NaN);
+    if (!Number.isFinite(typeId)) {
+      return null;
+    }
+    payload.typeId = Math.trunc(typeId);
+  }
+
+  return payload;
+}
+
 function serializeRoom(room) {
   pruneRoomPlayers(room);
   return {
@@ -87,7 +137,8 @@ function serializeRoom(room) {
     players: Array.from(room.players.values()).map((player) => ({
       id: player.id,
       name: player.name,
-      team: player.team ?? null
+      team: player.team ?? null,
+      state: player.state ?? null
     }))
   };
 }
@@ -194,7 +245,8 @@ function joinDefaultRoom(socket, nameOverride = null) {
   room.players.set(socket.id, {
     id: socket.id,
     name,
-    team: null
+    team: null,
+    state: sanitizePlayerState()
   });
 
   updateHost(room);
@@ -271,6 +323,47 @@ io.on("connection", (socket) => {
 
     socket.data.playerName = safeName;
     io.emit("chat:message", { name: safeName, text: safeText });
+  });
+
+  socket.on("player:sync", (payload = {}) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      return;
+    }
+
+    const player = room.players.get(socket.id);
+    if (!player) {
+      return;
+    }
+
+    const nextState = sanitizePlayerState(payload);
+    player.state = nextState;
+
+    socket.to(room.code).emit("player:sync", {
+      id: player.id,
+      name: player.name,
+      team: player.team ?? null,
+      state: nextState
+    });
+  });
+
+  socket.on("block:update", (payload = {}) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room || !room.players.has(socket.id)) {
+      return;
+    }
+
+    const sanitized = sanitizeBlockPayload(payload);
+    if (!sanitized) {
+      return;
+    }
+
+    socket.to(room.code).emit("block:update", {
+      id: socket.id,
+      ...sanitized
+    });
   });
 
   socket.on("room:list", () => {
