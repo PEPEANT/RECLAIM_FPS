@@ -187,6 +187,16 @@ canvas {
   display: none;
 }
 
+.hud-right > div:nth-child(2),
+.hud-right > div:nth-child(3),
+.hud-right > div:nth-child(4),
+.hud-right > div:nth-child(5),
+.hud-right > div:nth-child(6),
+.hud-right > div:nth-child(7),
+.hud-right > div:nth-child(8) {
+  display: none;
+}
+
 #hud-streak {
   font-size: 0.78rem;
   font-weight: 800;

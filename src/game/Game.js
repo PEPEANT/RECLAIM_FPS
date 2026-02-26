@@ -213,7 +213,6 @@ export class Game {
     };
     this.remotePlayers = new Map();
     this.remoteSyncClock = 0;
-    this._cameraForward = new THREE.Vector3();
     this._toRemote = new THREE.Vector3();
     this._remoteHead = new THREE.Vector3();
 
@@ -889,7 +888,8 @@ export class Game {
     const material = new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
-      depthWrite: false
+      depthWrite: false,
+      depthTest: false
     });
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(2.9, 0.72, 1);
@@ -1105,7 +1105,6 @@ export class Game {
       return;
     }
 
-    this.camera.getWorldDirection(this._cameraForward);
     const smooth = THREE.MathUtils.clamp(delta * 11, 0.08, 0.92);
 
     for (const remote of this.remotePlayers.values()) {
@@ -1122,15 +1121,61 @@ export class Game {
       this._toRemote.copy(this._remoteHead).sub(this.camera.position);
       const distance = this._toRemote.length();
 
-      let inFront = false;
-      if (distance > 0.001) {
-        this._toRemote.multiplyScalar(1 / distance);
-        inFront = this._toRemote.dot(this._cameraForward) > 0.2;
-      }
       if (remote.nameTag) {
-        remote.nameTag.visible = inFront && distance <= REMOTE_NAME_TAG_DISTANCE;
+        remote.nameTag.visible = distance <= REMOTE_NAME_TAG_DISTANCE;
       }
     }
+  }
+
+  setOnlineSpawnFromLobby() {
+    if (this.activeMatchMode !== "online") {
+      return;
+    }
+
+    const myId = this.getMySocketId();
+    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
+    const me = players.find((player) => String(player?.id ?? "") === myId) ?? null;
+    const team = me?.team ?? null;
+
+    let seed = 0;
+    for (const ch of String(myId || "offline")) {
+      seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+    }
+    const angle = ((seed % 360) * Math.PI) / 180;
+    const ring = 2.8 + ((seed >> 8) % 5) * 0.55;
+
+    let anchorX = 0;
+    let anchorZ = 0;
+    let faceYaw = 0;
+
+    if (team === "alpha") {
+      anchorX = this.objective.alphaBase.x;
+      anchorZ = this.objective.alphaBase.z;
+      faceYaw = -Math.PI * 0.5;
+    } else if (team === "bravo") {
+      anchorX = this.objective.bravoBase.x;
+      anchorZ = this.objective.bravoBase.z;
+      faceYaw = Math.PI * 0.5;
+    } else {
+      const leftSide = (seed & 1) === 0;
+      anchorX = leftSide ? this.objective.alphaBase.x + 4 : this.objective.bravoBase.x - 4;
+      anchorZ = 0;
+      faceYaw = leftSide ? -Math.PI * 0.4 : Math.PI * 0.4;
+    }
+
+    const spawnX = anchorX + Math.cos(angle) * ring;
+    const spawnZ = anchorZ + Math.sin(angle) * ring;
+    const spawnY = (this.voxelWorld.getSurfaceYAt(spawnX, spawnZ) ?? 0) + PLAYER_HEIGHT;
+
+    this.playerPosition.set(spawnX, spawnY, spawnZ);
+    this.verticalVelocity = 0;
+    this.onGround = true;
+    this.yaw = faceYaw;
+    this.pitch = 0;
+    this.camera.position.copy(this.playerPosition);
+    this.camera.rotation.order = "YXZ";
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
   }
 
   emitLocalPlayerSync(delta, force = false) {
@@ -1977,6 +2022,7 @@ export class Game {
     this.addChatMessage("Controls: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
       this.hud.setStatus("Online match: AI disabled", false, 0.9);
+      this.setOnlineSpawnFromLobby();
       this.syncRemotePlayersFromLobby();
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     }
@@ -2343,6 +2389,7 @@ export class Game {
 
     if (this.activeMatchMode === "online") {
       this.updateRemotePlayers(delta);
+      this.emitLocalPlayerSync(delta);
     }
 
     if (!this.isRunning || this.isGameOver || (!this.mouseLookEnabled && !isChatting)) {
@@ -2361,7 +2408,6 @@ export class Game {
     this.applyMovement(delta);
     this.updateCamera(delta);
     this.updateObjectives(delta);
-    this.emitLocalPlayerSync(delta);
 
     const weapState = this.weapon.getState();
     if (gunMode && !this._wasReloading && weapState.reloading) {
@@ -2847,6 +2893,9 @@ export class Game {
     this.mpTeamBravoBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "bravo");
     this.mpLobbyEl?.classList.remove("hidden");
     this.syncRemotePlayersFromLobby();
+    if (this.activeMatchMode === "online" && this.isRunning) {
+      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+    }
     this.refreshOnlineStatus();
   }
 
