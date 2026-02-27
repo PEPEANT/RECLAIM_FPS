@@ -13,7 +13,7 @@
 
     <div id="hud">
       <div class="hud-left">
-        <div>체력 <span id="hud-health">100</span></div>
+        <div id="hud-health-text">체력 <span id="hud-health">100</span></div>
         <div class="hud-health-bar-wrap"><div id="hud-health-bar"></div></div>
         <div>점수 <span id="hud-score">0</span></div>
         <div>처치 <span id="hud-kills">0</span></div>
@@ -31,23 +31,23 @@
     </div>
 
     <div id="ctf-scoreboard" aria-hidden="true">
-      <span class="ctf-team ctf-team-alpha">ALPHA <strong id="ctf-score-alpha">0</strong></span>
+      <span class="ctf-team ctf-team-alpha">블루팀 <strong id="ctf-score-alpha">0</strong></span>
       <span class="ctf-divider">:</span>
-      <span class="ctf-team ctf-team-bravo"><strong id="ctf-score-bravo">0</strong> BRAVO</span>
+      <span class="ctf-team ctf-team-bravo"><strong id="ctf-score-bravo">0</strong> 레드팀</span>
     </div>
 
     <div id="tab-scoreboard" aria-hidden="true">
       <div class="tab-board-shell">
         <section class="tab-team-column alpha">
           <header class="tab-team-head">
-            <span class="tab-team-name">ALPHA</span>
+            <span class="tab-team-name">블루팀</span>
             <span id="tab-alpha-count" class="tab-team-count">0</span>
           </header>
           <div id="tab-alpha-list" class="tab-team-list"></div>
         </section>
         <section class="tab-team-column bravo">
           <header class="tab-team-head">
-            <span class="tab-team-name">BRAVO</span>
+            <span class="tab-team-name">레드팀</span>
             <span id="tab-bravo-count" class="tab-team-count">0</span>
           </header>
           <div id="tab-bravo-list" class="tab-team-list"></div>
@@ -55,11 +55,7 @@
       </div>
     </div>
 
-    <div id="chat-panel" aria-label="전체 채팅">
-      <div class="chat-header">
-        <span>전체 채팅</span>
-        <span id="chat-myname" class="chat-myname"></span>
-      </div>
+    <div id="chat-panel" aria-label="채팅">
       <div id="chat-messages" aria-live="polite"></div>
       <div class="chat-input-wrap">
         <input
@@ -73,6 +69,7 @@
         <button id="chat-send" type="button">전송</button>
       </div>
     </div>
+    <button id="chat-toggle-btn" type="button" aria-expanded="false">채팅 열기</button>
 
     <div id="crosshair" aria-hidden="true"></div>
     <div id="hitmarker" aria-hidden="true"></div>
@@ -218,10 +215,10 @@
             </div>
             <div class="mp-team-row">
               <button id="mp-team-alpha" class="mp-team-btn alpha" type="button">
-                알파 <span id="mp-team-alpha-count" class="team-count">0</span>
+                블루팀 <span id="mp-team-alpha-count" class="team-count">0</span>
               </button>
               <button id="mp-team-bravo" class="mp-team-btn bravo" type="button">
-                브라보 <span id="mp-team-bravo-count" class="team-count">0</span>
+                레드팀 <span id="mp-team-bravo-count" class="team-count">0</span>
               </button>
             </div>
             <button id="mp-start" class="btn-deploy" type="button" disabled>온라인 시작</button>

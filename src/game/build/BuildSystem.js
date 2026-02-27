@@ -41,6 +41,7 @@ export class BuildSystem {
     this.slotCountEls = new Map();
     this.dragState = null;
     this.initSlotStock();
+    this.applySwatchPalette();
     this.bindHotbarInteractions();
     this.renderUi();
   }
@@ -84,6 +85,24 @@ export class BuildSystem {
       if (countEl) {
         this.slotCountEls.set(slot, countEl);
       }
+    }
+  }
+
+  applySwatchPalette() {
+    for (const slotEl of this.hotbarSlots) {
+      const slot = Number(slotEl.dataset.slot ?? "0");
+      if (!Number.isFinite(slot) || slot <= 0) {
+        continue;
+      }
+      const type = getBlockTypeBySlot(slot);
+      const swatchEl = slotEl.querySelector(".swatch");
+      if (!swatchEl) {
+        continue;
+      }
+
+      const baseColor = type?.color ?? "#9aa3ad";
+      swatchEl.style.background = baseColor;
+      swatchEl.style.boxShadow = "inset 0 0 0 1px rgba(255, 255, 255, 0.14)";
     }
   }
 

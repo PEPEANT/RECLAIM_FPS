@@ -221,6 +221,7 @@ async function checkSocketServer() {
     let latestRoomPlayers = [];
     let ctfPickupSeen = false;
     let ctfCaptureSeen = false;
+    let hazardDamageSeen = false;
     let snapshotReceived = false;
     c1.on("room:started", () => {
       startedCount += 1;
@@ -243,6 +244,15 @@ async function checkSocketServer() {
         ctfPickupSeen = true;
       } else if (eventType === "capture") {
         ctfCaptureSeen = true;
+      }
+    });
+    c1.on("pvp:damage", (payload) => {
+      if (
+        payload?.hazardReason === "fall" &&
+        payload?.victimId === c1.id &&
+        Number(payload?.damage) === 12
+      ) {
+        hazardDamageSeen = true;
       }
     });
 
@@ -326,6 +336,10 @@ async function checkSocketServer() {
     const started = await emitWithAck(c2, "room:start");
     assert(started?.ok === true, `room:start failed: ${JSON.stringify(started)}`);
     await waitFor(() => startedCount >= 2, 4000);
+
+    const hazardAck = await emitWithAck(c1, "player:hazard", { reason: "fall", damage: 12 });
+    assert(hazardAck?.ok === true, `player:hazard failed: ${JSON.stringify(hazardAck)}`);
+    await waitFor(() => hazardDamageSeen, 4000);
 
     c2.emit("chat:send", { name: "CheckGuest", text: "smoke-test-chat" });
     await waitFor(() => receivedChatText === "smoke-test-chat", 4000);

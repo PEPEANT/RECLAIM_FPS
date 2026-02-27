@@ -55,6 +55,9 @@ async function probeExistingServer(port) {
 const DEFAULT_ROOM_CODE = "GLOBAL";
 const MAX_ROOM_PLAYERS = 50;
 const PVP_DAMAGE = 34;
+const HAZARD_DAMAGE_MIN = 1;
+const HAZARD_DAMAGE_MAX = 2000;
+const VOID_HAZARD_MIN_DAMAGE = 100;
 const RESPAWN_SHIELD_MS = 1800;
 const BLOCK_KEY_SEPARATOR = "|";
 const BLOCK_TYPE_MIN = 1;
@@ -817,6 +820,24 @@ function sanitizeShootPayload(raw = {}) {
   return { targetId };
 }
 
+function sanitizeHazardPayload(raw = {}) {
+  const reasonRaw = String(raw.reason ?? "")
+    .trim()
+    .toLowerCase();
+  const reason = reasonRaw === "void" ? "void" : reasonRaw === "fall" ? "fall" : "hazard";
+  const parsedDamage = Math.trunc(Number(raw.damage));
+  if (!Number.isFinite(parsedDamage)) {
+    return null;
+  }
+
+  let damage = Math.max(HAZARD_DAMAGE_MIN, Math.min(HAZARD_DAMAGE_MAX, parsedDamage));
+  if (reason === "void") {
+    damage = Math.max(VOID_HAZARD_MIN_DAMAGE, damage);
+  }
+
+  return { reason, damage };
+}
+
 function serializeRoom(room) {
   pruneRoomPlayers(room);
   const state = getRoomState(room);
@@ -1166,6 +1187,22 @@ io.on("connection", (socket) => {
     }
 
     if (flag.carrierId) {
+      const carrierId = String(flag.carrierId);
+      const carrier = state.players.get(carrierId);
+      const carrierHp = Number.isFinite(Number(carrier?.hp)) ? Number(carrier.hp) : 100;
+      if (!carrier || carrierHp <= 0) {
+        flag.carrierId = null;
+        flag.at = clonePoint(flag.home ?? DEFAULT_CENTER_FLAG_HOME);
+        touchRoomState(room);
+        emitCtfUpdate(room, {
+          type: "reset",
+          reason: "invalid_carrier",
+          flagTeam: "center"
+        });
+      }
+    }
+
+    if (flag.carrierId) {
       if (String(flag.carrierId) === String(player.id)) {
         ack(ackFn, { ok: true, alreadyCarrying: true });
       } else {
@@ -1398,6 +1435,100 @@ io.on("connection", (socket) => {
     if (shouldEmitRoomUpdate) {
       emitRoomUpdate(room);
     }
+  });
+
+  socket.on("player:hazard", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
+      return;
+    }
+
+    const state = getRoomState(room);
+    if (isRoundEnded(state)) {
+      ack(ackFn, { ok: false, error: "라운드가 종료되었습니다" });
+      return;
+    }
+
+    const player = state.players.get(socket.id);
+    if (!player) {
+      ack(ackFn, { ok: false, error: "플레이어를 찾을 수 없습니다" });
+      return;
+    }
+
+    const playerHp = Number.isFinite(player.hp) ? player.hp : 100;
+    if (playerHp <= 0) {
+      ack(ackFn, { ok: false, error: "이미 사망 상태입니다" });
+      return;
+    }
+
+    const sanitized = sanitizeHazardPayload(payload);
+    if (!sanitized) {
+      ack(ackFn, { ok: false, error: "잘못된 낙하 피해 데이터입니다" });
+      return;
+    }
+
+    const nextHp = Math.max(0, playerHp - sanitized.damage);
+    const killed = nextHp <= 0;
+    let respawnAt = 0;
+    let ctfEvent = null;
+
+    player.hp = nextHp;
+    if (killed) {
+      player.deaths = (Number(player.deaths) || 0) + 1;
+      respawnAt = schedulePlayerRespawn(room, player);
+
+      const reset = resetFlagForPlayer(room, player.id);
+      if (reset) {
+        ctfEvent = {
+          type: "reset",
+          reason: "carrier_eliminated",
+          byPlayerId: player.id,
+          flagTeam: "center"
+        };
+      }
+    } else {
+      player.respawnAt = 0;
+      clearPlayerRespawnTimer(player);
+    }
+
+    touchRoomState(room);
+    if (ctfEvent) {
+      emitCtfUpdate(room, ctfEvent);
+    }
+
+    io.to(room.code).emit("pvp:damage", {
+      attackerId: null,
+      victimId: player.id,
+      damage: sanitized.damage,
+      hazardReason: sanitized.reason,
+      victimHealth: killed ? 0 : player.hp,
+      killed,
+      respawnAt,
+      victimDeaths: player.deaths ?? 0,
+      teamScore: {
+        alpha: Number(state.score.alpha ?? 0),
+        bravo: Number(state.score.bravo ?? 0)
+      },
+      teamCaptures: {
+        alpha: Number(state.captures.alpha ?? 0),
+        bravo: Number(state.captures.bravo ?? 0)
+      },
+      roomStateRevision: state.revision
+    });
+
+    if (killed) {
+      emitRoomUpdate(room);
+    }
+
+    ack(ackFn, {
+      ok: true,
+      victimId: player.id,
+      killed,
+      hp: killed ? 0 : player.hp,
+      respawnAt
+    });
   });
 
   socket.on("room:list", () => {

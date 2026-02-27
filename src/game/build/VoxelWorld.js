@@ -79,10 +79,11 @@ export class VoxelWorld {
       return null;
     }
 
+    const baseColor = type.color ?? "#9aa3ad";
     const material = new THREE.MeshStandardMaterial({
-      map: this.loadBlockTexture(type.texture),
-      roughness: 0.86,
-      metalness: 0.04,
+      color: baseColor,
+      roughness: typeId === 7 ? 0.18 : 0.82,
+      metalness: typeId === 8 ? 0.24 : typeId === 7 ? 0.08 : 0.03,
       flatShading: true
     });
 

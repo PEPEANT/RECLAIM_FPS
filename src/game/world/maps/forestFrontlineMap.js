@@ -46,9 +46,9 @@ function buildFlagFortress(
     centerX,
     centerZ,
     gateDirection,
-    wallType = BLOCK.stone,
-    floorType = BLOCK.sand,
-    accentType = BLOCK.metal
+    wallType = BLOCK.clay,
+    floorType = BLOCK.dirt,
+    accentType = BLOCK.brick
   }
 ) {
   const half = 8;
@@ -58,7 +58,7 @@ function buildFlagFortress(
   const maxZ = centerZ + half;
 
   builder.fillRect(minX, maxX, -1, 0, minZ, maxZ, floorType);
-  builder.fillRect(centerX - 3, centerX + 3, 0, 0, centerZ - 3, centerZ + 3, BLOCK.stone);
+  builder.fillRect(centerX - 3, centerX + 3, 0, 0, centerZ - 3, centerZ + 3, BLOCK.dirt);
 
   for (let y = 1; y <= 5; y += 1) {
     for (let x = minX; x <= maxX; x += 1) {
@@ -105,10 +105,10 @@ function buildFlagFortress(
 }
 
 function buildControlHub(builder) {
-  builder.fillRect(-8, 8, -1, 0, -8, 8, BLOCK.stone);
-  builder.fillRect(-4, 4, 0, 0, -4, 4, BLOCK.sand);
+  builder.fillRect(-8, 8, -1, 0, -8, 8, BLOCK.dirt);
+  builder.fillRect(-4, 4, 0, 0, -4, 4, BLOCK.clay);
 
-  builder.fillRect(-1, 1, 1, 3, -1, 1, BLOCK.metal);
+  builder.fillRect(-1, 1, 1, 3, -1, 1, BLOCK.brick);
   clearRectVolume(builder, 0, 0, 1, 2, 0, 0);
 
   const pillarCoords = [
@@ -259,17 +259,17 @@ export function generateForestFrontlineMap(builder, options = {}) {
     centerX: -baseOffset,
     centerZ: 0,
     gateDirection: "east",
-    wallType: BLOCK.stone,
-    floorType: BLOCK.sand,
-    accentType: BLOCK.metal
+    wallType: BLOCK.clay,
+    floorType: BLOCK.dirt,
+    accentType: BLOCK.brick
   });
   buildFlagFortress(builder, {
     centerX: baseOffset,
     centerZ: 0,
     gateDirection: "west",
-    wallType: BLOCK.stone,
-    floorType: BLOCK.sand,
-    accentType: BLOCK.brick
+    wallType: BLOCK.brick,
+    floorType: BLOCK.dirt,
+    accentType: BLOCK.clay
   });
 
   plantForest(builder, halfExtent, surfaceMap, seed);

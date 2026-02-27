@@ -9,6 +9,19 @@ import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../shared/gameM
 import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
 
 const CENTER_AD_IMAGE_URL = new URL("../../PNG/AD.41415786.1.png", import.meta.url).href;
+const CENTER_AD_VIDEO_URLS = [
+  new URL("../../MP4/YTDown1.mp4", import.meta.url).href,
+  new URL("../../MP4/YTDown2.mp4", import.meta.url).href,
+  new URL("../../MP4/YTDown3.mp4", import.meta.url).href,
+  new URL("../../MP4/YTDown4.mp4", import.meta.url).href,
+  new URL("../../MP4/YTDown5.mp4", import.meta.url).href
+];
+const CENTER_AD_REST_MS = 60_000;
+const CENTER_AD_RETRY_MS = 4_000;
+const CENTER_AD_AUDIO_MAX_GAIN = 0.42;
+const CENTER_AD_AUDIO_MIN_GAIN = 0.05;
+const CENTER_AD_AUDIO_NEAR_DISTANCE = 4;
+const CENTER_AD_AUDIO_FAR_DISTANCE = 94;
 const PLAYER_HEIGHT = 1.75;
 const DEFAULT_FOV = 75;
 const AIM_FOV = 48;
@@ -55,6 +68,12 @@ const REMOTE_CARRIER_FLAG_HEIGHT_OFFSET = 1.02;
 const PVP_REMOTE_HITBOX_HALF_WIDTH = 0.46;
 const PVP_REMOTE_HITBOX_FOOT_OFFSET = -0.06;
 const PVP_REMOTE_HITBOX_TOP_OFFSET = 0.34;
+const FALL_DAMAGE_SAFE_DROP = 4.2;
+const FALL_DAMAGE_PER_BLOCK = 14;
+const FALL_DAMAGE_MAX = 96;
+const VOID_DEATH_Y = -36;
+const VOID_FATAL_DAMAGE = 999;
+const HAZARD_EMIT_COOLDOWN_MS = 320;
 
 function normalizeTeamId(team) {
   return team === "alpha" || team === "bravo" ? team : null;
@@ -72,12 +91,12 @@ function getEnemyTeamId(team) {
 
 function formatTeamLabel(team) {
   if (team === "alpha") {
-    return "ALPHA";
+    return "블루팀";
   }
   if (team === "bravo") {
-    return "BRAVO";
+    return "레드팀";
   }
-  return "NEUTRAL";
+  return "중립";
 }
 
 function toBlockKey(x, y, z) {
@@ -319,6 +338,7 @@ export class Game {
       selectedTeam: null
     };
     this.remotePlayers = new Map();
+    this.remoteBoxGeometryCache = new Map();
     this.remoteSyncClock = 0;
     this._toRemote = new THREE.Vector3();
     this._remoteHead = new THREE.Vector3();
@@ -373,6 +393,15 @@ export class Game {
     this.flagInteractCooldownUntil = 0;
     this.scoreHudState = { show: null, alpha: null, bravo: null };
     this.pvpImmuneHintUntil = 0;
+    this.centerAdPanels = [];
+    this.centerAdVideoEl = null;
+    this.centerAdVideoTexture = null;
+    this.centerAdVideoIndex = 0;
+    this.centerAdRestTimer = null;
+    this.centerAdActive = false;
+    this.centerAdSessionNonce = 0;
+    this.centerAdVolume = 0;
+    this.centerAdTargetVolume = 0;
 
     this._initialized = false;
     this.mapId = "forest_frontline";
@@ -390,6 +419,8 @@ export class Game {
     this.respawnLastSecond = -1;
     this.localDeathAnimStartAt = 0;
     this.localDeathAnimBlend = 0;
+    this.fallStartY = this.playerPosition.y;
+    this.lastHazardEmitAt = 0;
   }
 
   init() {
@@ -534,6 +565,7 @@ export class Game {
   }
 
   setupObjectives() {
+    this.centerAdPanels.length = 0;
     for (const marker of this.objectiveMarkers) {
       this.removeSceneObject(marker, { dispose: true });
     }
@@ -641,6 +673,12 @@ export class Game {
         el.textContent = text;
       }
     };
+    const setHtml = (id, html) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.innerHTML = html;
+      }
+    };
 
     setText("mode-online", "온라인");
     setText("mode-single", "훈련");
@@ -654,6 +692,11 @@ export class Game {
     setText("mobile-jump", "점프");
     setText("mobile-reload", "장전");
     setText("flag-interact-btn", "깃발 탈취");
+    setText("chat-toggle-btn", "채팅 열기");
+    setHtml("mp-team-alpha", '블루팀 <span id="mp-team-alpha-count" class="team-count">0</span>');
+    setHtml("mp-team-bravo", '레드팀 <span id="mp-team-bravo-count" class="team-count">0</span>');
+    this.mpTeamAlphaCountEl = document.getElementById("mp-team-alpha-count");
+    this.mpTeamBravoCountEl = document.getElementById("mp-team-bravo-count");
   }
 
   setOnlineRoundState({
@@ -747,7 +790,7 @@ export class Game {
 
     const myTeam = normalizeTeamId(this.getMyTeam());
     if (!myTeam) {
-      return "목표: ALPHA 또는 BRAVO 팀을 먼저 선택하세요";
+      return "목표: 블루팀 또는 레드팀을 먼저 선택하세요";
     }
 
     const myId = this.getMySocketId();
@@ -1115,7 +1158,7 @@ export class Game {
 
   createCenterAdBillboard(position) {
     const group = new THREE.Group();
-    const adTexture = this.graphics.centerAdMap;
+    const adTexture = this.getCenterAdDisplayTexture();
     if (!adTexture) {
       return group;
     }
@@ -1125,7 +1168,7 @@ export class Game {
     const panelWidth = panelHeight * adAspect;
     const blockFaceOffset = 0.53;
 
-    const createPanel = (zOffset, yaw) => {
+    const createPanel = (xOffset, yaw) => {
       const panel = new THREE.Mesh(
         new THREE.PlaneGeometry(panelWidth, panelHeight),
         new THREE.MeshStandardMaterial({
@@ -1135,16 +1178,230 @@ export class Game {
           metalness: 0.02
         })
       );
-      panel.position.set(position.x, position.y + 1.02, position.z + zOffset);
+      panel.position.set(position.x + xOffset, position.y + 1.02, position.z);
       panel.rotation.y = yaw;
       panel.castShadow = false;
       panel.receiveShadow = true;
+      this.centerAdPanels.push(panel);
       group.add(panel);
     };
 
-    createPanel(blockFaceOffset, 0);
-    createPanel(-blockFaceOffset, Math.PI);
+    createPanel(blockFaceOffset, Math.PI * 0.5);
+    createPanel(-blockFaceOffset, -Math.PI * 0.5);
     return group;
+  }
+
+  getCenterAdDisplayTexture() {
+    const videoReady = Boolean(
+      this.centerAdActive &&
+        this.centerAdVideoTexture &&
+        this.centerAdVideoEl &&
+        !this.centerAdVideoEl.paused &&
+        this.centerAdVideoEl.readyState >= 2
+    );
+    return videoReady ? this.centerAdVideoTexture : this.graphics.centerAdMap;
+  }
+
+  applyCenterAdTextureToPanels(texture = null) {
+    const map = texture ?? this.getCenterAdDisplayTexture() ?? null;
+    for (const panel of this.centerAdPanels) {
+      const material = panel?.material;
+      if (!material) {
+        continue;
+      }
+      material.map = map;
+      material.needsUpdate = true;
+    }
+  }
+
+  ensureCenterAdVideoElement() {
+    if (this.centerAdVideoEl || typeof document === "undefined") {
+      return this.centerAdVideoEl;
+    }
+
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.loop = false;
+    video.muted = false;
+    video.playsInline = true;
+    video.crossOrigin = "anonymous";
+    video.disablePictureInPicture = true;
+    video.controls = false;
+    video.volume = 0;
+    video.style.display = "none";
+    video.setAttribute("playsinline", "true");
+    video.setAttribute("webkit-playsinline", "true");
+    video.addEventListener("ended", () => this.handleCenterAdPlaybackEnded({ failed: false }));
+    video.addEventListener("error", () => this.handleCenterAdPlaybackEnded({ failed: true }));
+    document.body.appendChild(video);
+    this.centerAdVideoEl = video;
+    return video;
+  }
+
+  ensureCenterAdVideoTexture() {
+    if (this.centerAdVideoTexture || !this.centerAdVideoEl) {
+      return this.centerAdVideoTexture;
+    }
+
+    const texture = new THREE.VideoTexture(this.centerAdVideoEl);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    this.centerAdVideoTexture = texture;
+    return texture;
+  }
+
+  clearCenterAdRestTimer() {
+    if (this.centerAdRestTimer === null || typeof window === "undefined") {
+      return;
+    }
+    window.clearTimeout(this.centerAdRestTimer);
+    this.centerAdRestTimer = null;
+  }
+
+  releaseCenterAdSource() {
+    const video = this.centerAdVideoEl;
+    if (!video) {
+      return;
+    }
+
+    try {
+      video.pause();
+    } catch {}
+
+    try {
+      video.removeAttribute("src");
+      video.load();
+    } catch {}
+
+    video.preload = "metadata";
+    video.volume = 0;
+    this.centerAdVolume = 0;
+    this.centerAdTargetVolume = 0;
+    this.applyCenterAdTextureToPanels(null);
+  }
+
+  scheduleNextCenterAdVideo(restMs, sessionNonce) {
+    if (typeof window === "undefined") {
+      return;
+    }
+    this.clearCenterAdRestTimer();
+    this.centerAdRestTimer = window.setTimeout(() => {
+      this.centerAdRestTimer = null;
+      this.playNextCenterAdVideo(sessionNonce);
+    }, Math.max(0, Math.trunc(restMs)));
+  }
+
+  handleCenterAdPlaybackEnded({ failed = false } = {}) {
+    if (!this.centerAdActive) {
+      return;
+    }
+
+    const sessionNonce = this.centerAdSessionNonce;
+    const restMs = failed ? CENTER_AD_RETRY_MS : CENTER_AD_REST_MS;
+    this.releaseCenterAdSource();
+    this.scheduleNextCenterAdVideo(restMs, sessionNonce);
+  }
+
+  playNextCenterAdVideo(sessionNonce) {
+    if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
+      return;
+    }
+    if (CENTER_AD_VIDEO_URLS.length === 0) {
+      return;
+    }
+
+    const video = this.ensureCenterAdVideoElement();
+    if (!video) {
+      return;
+    }
+
+    const texture = this.ensureCenterAdVideoTexture();
+    if (texture) {
+      this.applyCenterAdTextureToPanels(texture);
+    }
+
+    const nextUrl = CENTER_AD_VIDEO_URLS[this.centerAdVideoIndex % CENTER_AD_VIDEO_URLS.length];
+    this.centerAdVideoIndex = (this.centerAdVideoIndex + 1) % CENTER_AD_VIDEO_URLS.length;
+    video.preload = "auto";
+
+    try {
+      video.pause();
+      video.src = nextUrl;
+      video.currentTime = 0;
+      video.load();
+    } catch {
+      this.handleCenterAdPlaybackEnded({ failed: true });
+      return;
+    }
+
+    const playPromise = video.play?.();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {
+        if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
+          return;
+        }
+        this.handleCenterAdPlaybackEnded({ failed: true });
+      });
+    }
+  }
+
+  setCenterAdActive(active) {
+    const nextActive = Boolean(active);
+    if (nextActive === this.centerAdActive) {
+      return;
+    }
+
+    this.centerAdActive = nextActive;
+    this.centerAdSessionNonce += 1;
+    const sessionNonce = this.centerAdSessionNonce;
+    this.clearCenterAdRestTimer();
+
+    if (!nextActive) {
+      this.releaseCenterAdSource();
+      return;
+    }
+
+    this.playNextCenterAdVideo(sessionNonce);
+  }
+
+  updateCenterAdAudio(delta) {
+    const video = this.centerAdVideoEl;
+    if (!video) {
+      return;
+    }
+
+    if ((!this.centerAdActive || video.paused || video.readyState < 2) && this.centerAdVolume <= 0.001) {
+      this.centerAdVolume = 0;
+      this.centerAdTargetVolume = 0;
+      if (video.volume !== 0) {
+        video.volume = 0;
+      }
+      return;
+    }
+
+    let target = 0;
+    if (this.centerAdActive && !video.paused && video.readyState >= 2) {
+      const dx = this.playerPosition.x - this.objective.centerFlagHome.x;
+      const dy = this.playerPosition.y - this.objective.centerFlagHome.y;
+      const dz = this.playerPosition.z - this.objective.centerFlagHome.z;
+      const distance = Math.hypot(dx, dy, dz);
+      const normalized = THREE.MathUtils.clamp(
+        (distance - CENTER_AD_AUDIO_NEAR_DISTANCE) /
+          (CENTER_AD_AUDIO_FAR_DISTANCE - CENTER_AD_AUDIO_NEAR_DISTANCE),
+        0,
+        1
+      );
+      const falloff = 1 - normalized * normalized;
+      target =
+        CENTER_AD_AUDIO_MIN_GAIN + (CENTER_AD_AUDIO_MAX_GAIN - CENTER_AD_AUDIO_MIN_GAIN) * falloff;
+    }
+
+    this.centerAdTargetVolume = target;
+    const blend = THREE.MathUtils.clamp(delta * 4.5, 0, 1);
+    this.centerAdVolume = THREE.MathUtils.lerp(this.centerAdVolume, this.centerAdTargetVolume, blend);
+    video.volume = THREE.MathUtils.clamp(this.centerAdVolume, 0, 1);
   }
 
   createControlBeacon(position) {
@@ -1689,7 +1946,7 @@ export class Game {
       return;
     }
 
-    const show = this.mobileEnabled && this.canLocalPickupCenterFlag();
+    const show = this.canLocalPickupCenterFlag();
     if (show === this.flagInteractVisible) {
       return;
     }
@@ -1724,6 +1981,8 @@ export class Game {
       return;
     }
 
+    // Ensure server-side player position is up-to-date right before interact validation.
+    this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     this.flagInteractCooldownUntil = Date.now() + CTF_INTERACT_COOLDOWN_MS;
     socket.emit("ctf:interact", (response = {}) => {
       if (!response.ok) {
@@ -1863,6 +2122,7 @@ export class Game {
       }
       this.verticalVelocity = 0;
       this.onGround = true;
+      this.fallStartY = this.playerPosition.y;
       this.camera.position.copy(this.playerPosition);
       this.camera.rotation.order = "YXZ";
       this.camera.rotation.y = this.yaw;
@@ -1903,6 +2163,16 @@ export class Game {
       return 0xff7d67;
     }
     return 0x88a3b8;
+  }
+
+  getTeamUniformColor(team) {
+    if (team === "alpha") {
+      return 0x3f6fae;
+    }
+    if (team === "bravo") {
+      return 0xad4f44;
+    }
+    return 0x556148;
   }
 
   createRemoteNameTag(name, team) {
@@ -1950,48 +2220,123 @@ export class Game {
     return sprite;
   }
 
+  getSharedRemoteBoxGeometry(width, height, depth) {
+    const key = `${width}|${height}|${depth}`;
+    const cached = this.remoteBoxGeometryCache.get(key);
+    if (cached) {
+      return cached;
+    }
+    const geometry = new THREE.BoxGeometry(width, height, depth);
+    geometry.userData.sharedRemote = true;
+    this.remoteBoxGeometryCache.set(key, geometry);
+    return geometry;
+  }
+
   createRemotePlayer(player = {}) {
     const team = player.team ?? null;
-    const color = this.getTeamColor(team);
+    const uniformColor = this.getTeamUniformColor(team);
+    const patchColor = this.getTeamColor(team);
     const group = new THREE.Group();
     group.visible = true;
 
     const bodyMaterial = new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.48,
-      metalness: 0.26,
-      emissive: 0x0f2030,
-      emissiveIntensity: 0.35
+      color: uniformColor,
+      roughness: 0.58,
+      metalness: 0.12
     });
     const headMaterial = new THREE.MeshStandardMaterial({
       color: 0xffc29f,
       roughness: 0.6,
       metalness: 0.05
     });
+    const darkMaterial = new THREE.MeshStandardMaterial({
+      color: 0x2b3013,
+      roughness: 0.52,
+      metalness: 0.12
+    });
     const detailMaterial = new THREE.MeshStandardMaterial({
       color: 0x1b2a38,
       roughness: 0.4,
       metalness: 0.56
     });
+    const patchMaterial = new THREE.MeshStandardMaterial({
+      color: patchColor,
+      emissive: patchColor,
+      emissiveIntensity: 0.34,
+      roughness: 0.34,
+      metalness: 0.28
+    });
 
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.96, 0.34), bodyMaterial);
-    torso.position.y = 1.15;
-    torso.castShadow = true;
-    torso.receiveShadow = true;
+    const makePart = (w, h, d, material, x, y, z) => {
+      const mesh = new THREE.Mesh(this.getSharedRemoteBoxGeometry(w, h, d), material);
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      return mesh;
+    };
 
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.34), headMaterial);
-    head.position.y = 1.85;
-    head.castShadow = true;
-    head.receiveShadow = true;
+    const legL = makePart(0.22, 0.78, 0.22, bodyMaterial, -0.17, 0.46, 0);
+    const legR = makePart(0.22, 0.78, 0.22, bodyMaterial, 0.17, 0.46, 0);
+    const shoeL = makePart(0.28, 0.14, 0.34, detailMaterial, -0.17, 0.1, 0.03);
+    const shoeR = makePart(0.28, 0.14, 0.34, detailMaterial, 0.17, 0.1, 0.03);
 
-    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.14, 0.72), detailMaterial);
-    gun.position.set(0, 1.42, -0.48);
-    gun.castShadow = true;
+    const torso = makePart(0.64, 0.9, 0.38, bodyMaterial, 0, 1.26, 0);
+    const chestRig = makePart(0.56, 0.24, 0.4, darkMaterial, 0, 1.44, 0.02);
+    const backpack = makePart(0.48, 0.66, 0.24, darkMaterial, 0, 1.28, -0.31);
+    const shoulderPatchL = makePart(0.2, 0.14, 0.03, patchMaterial, -0.35, 1.58, 0.22);
+    const shoulderPatchR = makePart(0.2, 0.14, 0.03, patchMaterial, 0.35, 1.58, 0.22);
+    const chestPatch = makePart(0.34, 0.1, 0.03, patchMaterial, 0, 1.38, 0.22);
+
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 1.95, 0);
+    const head = makePart(0.36, 0.36, 0.36, headMaterial, 0, 0, 0);
+    const helmet = makePart(0.42, 0.22, 0.42, darkMaterial, 0, 0.2, 0);
+    const helmetBrim = makePart(0.46, 0.06, 0.48, darkMaterial, 0, 0.1, 0.03);
+    const eyeL = makePart(0.055, 0.055, 0.055, detailMaterial, -0.09, 0.04, 0.19);
+    eyeL.castShadow = false;
+    const eyeR = makePart(0.055, 0.055, 0.055, detailMaterial, 0.09, 0.04, 0.19);
+    eyeR.castShadow = false;
+    headPivot.add(head, helmet, helmetBrim, eyeL, eyeR);
+
+    const armR = makePart(0.18, 0.68, 0.18, bodyMaterial, -0.43, 1.48, -0.04);
+    armR.rotation.x = -0.96;
+    const armL = makePart(0.18, 0.68, 0.18, bodyMaterial, 0.43, 1.46, -0.04);
+    armL.rotation.x = -1.02;
+    armL.rotation.z = 0.22;
+
+    const handR = makePart(0.14, 0.14, 0.14, headMaterial, -0.34, 1.25, -0.35);
+    const handL = makePart(0.14, 0.14, 0.14, headMaterial, 0.3, 1.34, -0.39);
+
+    const gun = new THREE.Group();
+    gun.position.set(-0.08, 1.34, -0.42);
+    const gunBody = makePart(0.1, 0.14, 0.74, detailMaterial, 0, 0, 0);
+    const gunBarrel = makePart(0.055, 0.055, 0.42, detailMaterial, 0, 0.02, -0.56);
+    const gunMag = makePart(0.1, 0.26, 0.18, detailMaterial, 0, -0.18, -0.08);
+    const gunStock = makePart(0.1, 0.18, 0.28, darkMaterial, 0, -0.04, 0.42);
+    gun.add(gunBody, gunBarrel, gunMag, gunStock);
 
     const nameTag = this.createRemoteNameTag(player.name, team);
-    nameTag.position.set(0, 2.45, 0);
+    nameTag.position.set(0, 2.72, 0);
 
-    group.add(torso, head, gun, nameTag);
+    group.add(
+      legL,
+      legR,
+      shoeL,
+      shoeR,
+      torso,
+      chestRig,
+      backpack,
+      shoulderPatchL,
+      shoulderPatchR,
+      chestPatch,
+      headPivot,
+      armL,
+      armR,
+      handL,
+      handR,
+      gun,
+      nameTag
+    );
     this.scene.add(group);
 
     return {
@@ -2002,10 +2347,31 @@ export class Game {
       nameTag,
       bodyMaterial,
       headMaterial,
+      darkMaterial,
       detailMaterial,
+      patchMaterial,
+      shoulderPatchL,
+      shoulderPatchR,
+      chestPatch,
+      backpack,
+      backpackBaseY: backpack.position.y,
+      headPivot,
+      headPivotBaseY: headPivot.position.y,
+      armL,
+      armR,
+      armLBaseX: armL.rotation.x,
+      armRBaseX: armR.rotation.x,
+      handL,
+      handR,
+      legL,
+      legR,
+      shoeL,
+      shoeR,
       targetPosition: new THREE.Vector3(),
       targetYaw: 0,
       yaw: 0,
+      prevPosition: new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN),
+      walkPhase: 0,
       isDowned: false,
       downedStartAt: 0,
       downedBlend: 0
@@ -2023,7 +2389,10 @@ export class Game {
 
     remote.name = nextName;
     remote.team = nextTeam;
-    remote.bodyMaterial.color.setHex(this.getTeamColor(nextTeam));
+    const teamColor = this.getTeamColor(nextTeam);
+    remote.bodyMaterial.color.setHex(this.getTeamUniformColor(nextTeam));
+    remote.patchMaterial?.color?.setHex(teamColor);
+    remote.patchMaterial?.emissive?.setHex(teamColor);
 
     if (remote.nameTag) {
       remote.group.remove(remote.nameTag);
@@ -2031,7 +2400,7 @@ export class Game {
       remote.nameTag.material.dispose();
     }
     remote.nameTag = this.createRemoteNameTag(remote.name, remote.team);
-    remote.nameTag.position.set(0, 2.45, 0);
+    remote.nameTag.position.set(0, 2.72, 0);
     remote.group.add(remote.nameTag);
   }
 
@@ -2065,14 +2434,18 @@ export class Game {
     this.scene.remove(remote.group);
     remote.group.traverse((child) => {
       if (child.isMesh) {
-        child.geometry?.dispose?.();
+        if (!child.geometry?.userData?.sharedRemote) {
+          child.geometry?.dispose?.();
+        }
       }
     });
     remote.nameTag?.material?.map?.dispose?.();
     remote.nameTag?.material?.dispose?.();
     remote.bodyMaterial.dispose();
     remote.headMaterial.dispose();
+    remote.darkMaterial?.dispose?.();
     remote.detailMaterial.dispose();
+    remote.patchMaterial?.dispose?.();
     this.remotePlayers.delete(key);
   }
 
@@ -2133,6 +2506,32 @@ export class Game {
     remote.respawnAt = 0;
     if (remote.group) {
       remote.group.rotation.z = 0;
+    }
+    if (remote.legL && remote.legR) {
+      remote.legL.rotation.x = 0;
+      remote.legR.rotation.x = 0;
+    }
+    if (remote.shoeL && remote.shoeR) {
+      remote.shoeL.rotation.x = 0;
+      remote.shoeR.rotation.x = 0;
+    }
+    if (remote.armL && remote.armR) {
+      remote.armL.rotation.x = Number.isFinite(remote.armLBaseX) ? remote.armLBaseX : -1.02;
+      remote.armR.rotation.x = Number.isFinite(remote.armRBaseX) ? remote.armRBaseX : -0.96;
+    }
+    if (remote.handL && remote.handR) {
+      remote.handL.rotation.x = 0;
+      remote.handR.rotation.x = 0;
+    }
+    if (remote.headPivot) {
+      remote.headPivot.position.y = Number.isFinite(remote.headPivotBaseY)
+        ? remote.headPivotBaseY
+        : remote.headPivot.position.y;
+    }
+    if (remote.backpack) {
+      remote.backpack.position.y = Number.isFinite(remote.backpackBaseY)
+        ? remote.backpackBaseY
+        : remote.backpack.position.y;
     }
   }
 
@@ -2205,6 +2604,11 @@ export class Game {
     const smooth = THREE.MathUtils.clamp(delta * 11, 0.08, 0.92);
 
     for (const remote of this.remotePlayers.values()) {
+      if (!Number.isFinite(remote.prevPosition.x)) {
+        remote.prevPosition.copy(remote.group.position);
+      }
+      const prevX = remote.group.position.x;
+      const prevZ = remote.group.position.z;
       remote.group.position.lerp(remote.targetPosition, smooth);
       const yawDiff = Math.atan2(
         Math.sin(remote.targetYaw - remote.yaw),
@@ -2226,6 +2630,43 @@ export class Game {
         remote.group.position.y -= REMOTE_DEATH_OFFSET_Y * remote.downedBlend;
       }
       remote.group.rotation.z = REMOTE_DEATH_ROLL * remote.downedBlend;
+
+      const moveSpeed = Math.hypot(remote.group.position.x - prevX, remote.group.position.z - prevZ) / Math.max(delta, 1e-5);
+      const moveRatio = THREE.MathUtils.clamp(moveSpeed / PLAYER_SPRINT, 0, 1);
+      if (remote.isDowned || remote.downedBlend > 0.2) {
+        remote.walkPhase = 0;
+      } else {
+        remote.walkPhase += delta * (6 + moveRatio * 8);
+      }
+      const swing = Math.sin(remote.walkPhase) * 0.55 * moveRatio;
+      if (remote.legL && remote.legR) {
+        remote.legL.rotation.x = swing;
+        remote.legR.rotation.x = -swing;
+      }
+      if (remote.shoeL && remote.shoeR) {
+        remote.shoeL.rotation.x = swing * 0.45;
+        remote.shoeR.rotation.x = -swing * 0.45;
+      }
+      if (remote.armL && remote.armR) {
+        const armSwing = swing * 0.2;
+        remote.armL.rotation.x = (remote.armLBaseX ?? -1.02) + armSwing;
+        remote.armR.rotation.x = (remote.armRBaseX ?? -0.96) - armSwing;
+      }
+      if (remote.handL && remote.handR) {
+        remote.handL.rotation.x = swing * 0.1;
+        remote.handR.rotation.x = -swing * 0.1;
+      }
+      if (remote.headPivot) {
+        const breath = Math.sin(remote.walkPhase * 0.5 + remote.yaw) * 0.018;
+        const baseY = remote.headPivotBaseY ?? remote.headPivot.position.y;
+        remote.headPivot.position.y = baseY + breath * (0.55 + moveRatio * 0.45);
+      }
+      if (remote.backpack) {
+        const breath = Math.sin(remote.walkPhase * 0.5 + remote.yaw + 0.3) * 0.012;
+        const baseY = remote.backpackBaseY ?? remote.backpack.position.y;
+        remote.backpack.position.y = baseY + breath * (0.5 + moveRatio * 0.4);
+      }
+      remote.prevPosition.set(remote.group.position.x, remote.group.position.y, remote.group.position.z);
 
       this._remoteHead.copy(remote.group.position);
       this._remoteHead.y += PLAYER_HEIGHT + 0.72;
@@ -2288,6 +2729,7 @@ export class Game {
     this.playerPosition.set(spawnX, spawnY, spawnZ);
     this.verticalVelocity = 0;
     this.onGround = true;
+    this.fallStartY = this.playerPosition.y;
     this.yaw = faceYaw;
     this.pitch = 0;
     this.camera.position.copy(this.playerPosition);
@@ -2418,6 +2860,7 @@ export class Game {
     const killed = Boolean(payload.killed);
     const victimHealth = Number(payload.victimHealth);
     const respawnAt = Number(payload.respawnAt);
+    const hazardReason = String(payload.hazardReason ?? "").trim();
     const myId = this.getMySocketId();
     const teamScore = payload?.teamScore ?? null;
     const teamCaptures = payload?.teamCaptures ?? null;
@@ -2537,13 +2980,81 @@ export class Game {
         const clampedServerHealth = Math.max(0, Math.min(100, nextHealth));
         // Never allow local health to increase on damage packets.
         this.state.health = Math.min(this.state.health, clampedServerHealth);
-        this.hud.setStatus(`피해 -${damage}`, true, 0.35);
+        if (hazardReason === "fall") {
+          this.hud.setStatus(`낙하 피해 -${damage}`, true, 0.45);
+        } else if (hazardReason === "void") {
+          this.hud.setStatus("낙사 피해", true, 0.7);
+        } else {
+          this.hud.setStatus(`피해 -${damage}`, true, 0.35);
+        }
       }
     }
 
     if (lobbyChanged && this.tabBoardVisible) {
       this.renderTabScoreboard();
     }
+  }
+
+  computeFallDamage(dropHeight) {
+    const drop = Number(dropHeight);
+    if (!Number.isFinite(drop) || drop <= FALL_DAMAGE_SAFE_DROP) {
+      return 0;
+    }
+    const overflow = drop - FALL_DAMAGE_SAFE_DROP;
+    return Math.max(
+      1,
+      Math.min(FALL_DAMAGE_MAX, Math.round(overflow * FALL_DAMAGE_PER_BLOCK))
+    );
+  }
+
+  applyLocalHazardDamage(damage, reason = "hazard") {
+    const amount = Math.max(0, Math.trunc(Number(damage) || 0));
+    if (
+      amount <= 0 ||
+      !this.isRunning ||
+      this.isGameOver ||
+      this.isRespawning ||
+      this.activeMatchMode === "online"
+    ) {
+      return false;
+    }
+
+    this.state.health = Math.max(0, this.state.health - amount);
+    this.hud.flashDamage();
+    if (reason === "void") {
+      this.hud.setStatus("맵 아래로 추락했습니다", true, 0.85);
+      this.addChatMessage("낙사!", "warning");
+    } else if (reason === "fall") {
+      this.hud.setStatus(`낙하 피해 -${amount}`, true, 0.45);
+    } else {
+      this.hud.setStatus(`피해 -${amount}`, true, 0.35);
+    }
+    return true;
+  }
+
+  reportHazardDamage(damage, reason = "hazard") {
+    const amount = Math.max(0, Math.trunc(Number(damage) || 0));
+    if (amount <= 0 || !this.isRunning || this.isGameOver || this.isRespawning) {
+      return;
+    }
+
+    if (this.activeMatchMode !== "online") {
+      this.applyLocalHazardDamage(amount, reason);
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.lastHazardEmitAt < HAZARD_EMIT_COOLDOWN_MS) {
+      return;
+    }
+    this.lastHazardEmitAt = now;
+
+    const socket = this.chat?.socket;
+    if (!socket?.connected || !this.lobbyState.roomCode) {
+      return;
+    }
+
+    socket.emit("player:hazard", { damage: amount, reason });
   }
 
   handleLocalBlockChanged(change) {
@@ -2765,11 +3276,13 @@ export class Game {
     }
 
     this.syncMobileUtilityButtons();
+    const mobileChatOpen = Boolean(this.chat?.isMobileInputOpen?.());
     const visible =
       this.mobileEnabled &&
       this.isRunning &&
       !this.isGameOver &&
-      !this.chat?.isInputFocused;
+      !this.chat?.isInputFocused &&
+      !mobileChatOpen;
     this.mobileControlsEl.classList.toggle("is-active", visible);
 
     if (!visible) {
@@ -3523,6 +4036,7 @@ export class Game {
     this.hud.showPauseOverlay(false);
     this.hud.hideGameOver();
     this.isRunning = true;
+    this.setCenterAdActive(true);
     this.isGameOver = false;
     this.mouseLookEnabled = this.allowUnlockedLook;
     this.syncCursorVisibility();
@@ -3585,6 +4099,7 @@ export class Game {
   }
 
   resetState() {
+    this.setCenterAdActive(false);
     if (this.pointerLockFallbackTimer !== null) {
       window.clearTimeout(this.pointerLockFallbackTimer);
       this.pointerLockFallbackTimer = null;
@@ -3609,6 +4124,7 @@ export class Game {
     this.respawnLastSecond = -1;
     this.localDeathAnimStartAt = 0;
     this.localDeathAnimBlend = 0;
+    this.lastHazardEmitAt = 0;
     this.setRespawnBanner("", false);
     this.setTabScoreboardVisible(false);
     this.flagInteractVisible = false;
@@ -3623,6 +4139,7 @@ export class Game {
     this.playerPosition.set(0, PLAYER_HEIGHT, 0);
     this.verticalVelocity = 0;
     this.onGround = true;
+    this.fallStartY = this.playerPosition.y;
     this.yaw = 0;
     this.pitch = 0;
     this.weaponRecoil = 0;
@@ -3691,7 +4208,7 @@ export class Game {
         const now = this.clock.getElapsedTime();
         if (now - this.lastDryFireAt > 0.22) {
           this.lastDryFireAt = now;
-          this.hud.setStatus("?꾩빟 ?놁쓬", true, 0.55);
+          this.hud.setStatus("탄약 없음", true, 0.55);
           this.sound.play("dry", { rateJitter: 0.08 });
         }
       }
@@ -3773,6 +4290,10 @@ export class Game {
   applyMovement(delta) {
     if (this.activeMatchMode === "online" && this.onlineRoundEnded) {
       return;
+    }
+    const wasOnGround = this.onGround;
+    if (wasOnGround) {
+      this.fallStartY = this.playerPosition.y;
     }
 
     const mobileForward = this.mobileEnabled ? this.mobileState.moveForward : 0;
@@ -3863,6 +4384,12 @@ export class Game {
       }
     }
 
+    if (this.playerPosition.y < VOID_DEATH_Y) {
+      this.onGround = false;
+      this.reportHazardDamage(VOID_FATAL_DAMAGE, "void");
+      return;
+    }
+
     const surfaceY = this.voxelWorld.getSurfaceYAt(this.playerPosition.x, this.playerPosition.z);
     if (!Number.isFinite(surfaceY)) {
       this.onGround = false;
@@ -3884,6 +4411,7 @@ export class Game {
           this.playerPosition.y = floorY;
           this.verticalVelocity = 0;
           this.onGround = true;
+          this.fallStartY = this.playerPosition.y;
         } else {
           this.onGround = false;
         }
@@ -3895,9 +4423,18 @@ export class Game {
 
     const fallDistance = this.playerPosition.y - floorY;
     if (fallDistance <= PLAYER_GROUND_SNAP_DOWN && this.verticalVelocity <= 0) {
+      const landingY = floorY;
+      const dropHeight = this.fallStartY - landingY;
       this.playerPosition.y = floorY;
       this.verticalVelocity = 0;
       this.onGround = true;
+      this.fallStartY = this.playerPosition.y;
+      if (!wasOnGround) {
+        const damage = this.computeFallDamage(dropHeight);
+        if (damage > 0) {
+          this.reportHazardDamage(damage, "fall");
+        }
+      }
       return;
     }
 
@@ -4024,6 +4561,7 @@ export class Game {
     this.updateFlagInteractUi();
 
     this.updateSparks(delta);
+    this.updateCenterAdAudio(delta);
     const isChatting = !!this.chat?.isInputFocused;
     const gunMode = this.buildSystem.isGunMode();
     const aiEnabled = this.activeMatchMode !== "online";
@@ -4077,7 +4615,7 @@ export class Game {
       this.sound.play("reload", { gain: 0.9, rateJitter: 0.03 });
     }
     if (gunMode && this._wasReloading && !weapState.reloading) {
-      this.addChatMessage("?ъ옣???꾨즺", "info");
+      this.addChatMessage("장전 완료", "info");
     }
     this._wasReloading = gunMode ? weapState.reloading : false;
 
