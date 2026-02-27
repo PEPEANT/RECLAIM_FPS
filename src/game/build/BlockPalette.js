@@ -2,49 +2,49 @@ export const BLOCK_TYPES = [
   {
     id: 1,
     key: "grass",
-    name: "Grass",
+    name: "잔디",
     texture: "/assets/graphics/world/blocks/kenney/grass.png"
   },
   {
     id: 2,
     key: "dirt",
-    name: "Dirt",
+    name: "흙",
     texture: "/assets/graphics/world/blocks/kenney/dirt.png"
   },
   {
     id: 3,
     key: "stone",
-    name: "Stone",
+    name: "돌",
     texture: "/assets/graphics/world/blocks/kenney/stone.png"
   },
   {
     id: 4,
     key: "sand",
-    name: "Sand",
+    name: "모래",
     texture: "/assets/graphics/world/blocks/kenney/sand.png"
   },
   {
     id: 5,
     key: "clay",
-    name: "Clay",
+    name: "점토",
     texture: "/assets/graphics/world/blocks/kenney/clay.png"
   },
   {
     id: 6,
     key: "brick",
-    name: "Brick",
+    name: "벽돌",
     texture: "/assets/graphics/world/blocks/kenney/brick.png"
   },
   {
     id: 7,
     key: "ice",
-    name: "Ice",
+    name: "얼음",
     texture: "/assets/graphics/world/blocks/kenney/ice.png"
   },
   {
     id: 8,
     key: "metal",
-    name: "Metal",
+    name: "금속",
     texture: "/assets/graphics/world/blocks/kenney/metal.png"
   }
 ];
@@ -54,4 +54,3 @@ export const BLOCK_TYPE_BY_ID = new Map(BLOCK_TYPES.map((type) => [type.id, type
 export function getBlockTypeBySlot(slot) {
   return BLOCK_TYPES[Math.max(0, Math.min(BLOCK_TYPES.length - 1, slot - 1))];
 }
-

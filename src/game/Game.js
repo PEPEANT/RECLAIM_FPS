@@ -22,6 +22,8 @@ const ONLINE_ROOM_CODE = "GLOBAL";
 const ONLINE_MAX_PLAYERS = 50;
 const REMOTE_SYNC_INTERVAL = 1 / 12;
 const REMOTE_NAME_TAG_DISTANCE = 72;
+const MAX_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME = 96;
+const MAX_PENDING_REMOTE_BLOCK_RETRIES = 120;
 const PVP_HIT_SCORE = 10;
 const PVP_KILL_SCORE = 100;
 const BLOCK_KEY_SEPARATOR = "|";
@@ -79,8 +81,8 @@ export class Game {
     this.chat = options.chat ?? null;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x09111a);
-    this.scene.fog = new THREE.Fog(0x09111a, 48, 320);
+    this.scene.background = new THREE.Color(0x87c9ff);
+    this.scene.fog = new THREE.Fog(0x9ed2ff, 90, 420);
 
     this.camera = new THREE.PerspectiveCamera(
       DEFAULT_FOV,
@@ -128,7 +130,12 @@ export class Game {
       },
       onBlockChanged: (change) => this.handleLocalBlockChanged(change),
       onStatus: (text, isAlert = false, duration = 0.5) =>
-        this.hud.setStatus(text, isAlert, duration)
+        this.hud.setStatus(text, isAlert, duration),
+      canInteract: () =>
+        this.isRunning &&
+        !this.isGameOver &&
+        !this.chat?.isInputFocused &&
+        !this.hud.startOverlayEl?.classList.contains("show")
     });
 
     this.playerPosition = new THREE.Vector3(0, PLAYER_HEIGHT, 0);
@@ -165,7 +172,7 @@ export class Game {
       captures: 0,
       controlPercent: 0,
       controlOwner: "neutral",
-      objectiveText: "Mission: capture enemy flag",
+      objectiveText: "목표: 적 깃발을 탈취하세요",
       killStreak: 0,
       lastKillTime: 0
     };
@@ -292,6 +299,8 @@ export class Game {
     };
 
     this._initialized = false;
+    this.mapId = "forest_frontline";
+    this._bucketOptimizeCooldown = 0;
   }
 
   init() {
@@ -356,62 +365,59 @@ export class Game {
   setupWorld() {
     this.setupSky();
 
-    const hemiLight = new THREE.HemisphereLight(0x93bcd1, 0x1f2f1f, 0.9);
+    const hemiLight = new THREE.HemisphereLight(0xbfe7ff, 0x33522a, 1.04);
     this.scene.add(hemiLight);
 
-    const sun = new THREE.DirectionalLight(0xf5f2d0, 1.18);
-    sun.position.set(48, 62, 28);
+    const sun = new THREE.DirectionalLight(0xfff5d3, 1.28);
+    sun.position.set(58, 68, 32);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -220;
-    sun.shadow.camera.right = 220;
-    sun.shadow.camera.top = 220;
-    sun.shadow.camera.bottom = -220;
+    sun.shadow.camera.left = -240;
+    sun.shadow.camera.right = 240;
+    sun.shadow.camera.top = 240;
+    sun.shadow.camera.bottom = -240;
     sun.shadow.bias = -0.00026;
-    sun.shadow.normalBias = 0.022;
+    sun.shadow.normalBias = 0.018;
     this.scene.add(sun);
 
-    const fill = new THREE.DirectionalLight(0x8ec7ff, 0.26);
-    fill.position.set(-38, 30, -24);
+    const fill = new THREE.DirectionalLight(0x8bc8ff, 0.42);
+    fill.position.set(-42, 34, -22);
     this.scene.add(fill);
 
-    this.voxelWorld.generateTerrain();
+    this.voxelWorld.generateTerrain({ mapId: this.mapId });
     this.setupObjectives();
   }
 
   setupSky() {
     const skyMaterial = new THREE.MeshBasicMaterial({
       map: this.graphics.skyMap,
+      color: 0xb7deff,
       side: THREE.BackSide
     });
     const sky = new THREE.Mesh(new THREE.SphereGeometry(620, 32, 18), skyMaterial);
     this.scene.add(sky);
 
-    const starCount = 650;
-    const positions = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i += 1) {
-      const radius = 170 + Math.random() * 150;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.random() * Math.PI * 0.46;
-      const x = radius * Math.sin(phi) * Math.cos(theta);
-      const y = radius * Math.cos(phi) + 38;
-      const z = radius * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3] = x;
-      positions[i * 3 + 1] = y;
-      positions[i * 3 + 2] = z;
-    }
-
-    const starsGeometry = new THREE.BufferGeometry();
-    starsGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const starsMaterial = new THREE.PointsMaterial({
-      color: 0xc8dfff,
-      size: 0.9,
+    const cloudMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
       transparent: true,
-      opacity: 0.65,
-      sizeAttenuation: true
+      opacity: 0.12,
+      depthWrite: false
     });
-    const stars = new THREE.Points(starsGeometry, starsMaterial);
-    this.scene.add(stars);
+    for (let i = 0; i < 22; i += 1) {
+      const radius = 120 + Math.random() * 210;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI * 0.16;
+      const x = radius * Math.sin(phi) * Math.cos(theta);
+      const y = radius * Math.cos(phi) + 92;
+      const z = radius * Math.sin(phi) * Math.sin(theta);
+      const cloud = new THREE.Mesh(
+        new THREE.SphereGeometry(10 + Math.random() * 14, 10, 7),
+        cloudMaterial
+      );
+      cloud.position.set(x, y, z);
+      cloud.scale.set(1.6 + Math.random() * 2.2, 0.52 + Math.random() * 0.28, 1.2 + Math.random());
+      this.scene.add(cloud);
+    }
   }
 
   setupObjectives() {
@@ -681,6 +687,7 @@ export class Game {
     }
 
     this.latestRoomSnapshot = payload;
+    this.applyInventorySnapshot(payload.stock, { quiet: true });
     if (this.activeMatchMode !== "online" && this.isRunning) {
       return;
     }
@@ -716,7 +723,7 @@ export class Game {
       return normalized;
     };
 
-    this.voxelWorld.generateTerrain();
+    this.voxelWorld.generateTerrain({ mapId: this.mapId });
     for (const entry of blocks) {
       const update = normalize(entry);
       if (!update) {
@@ -741,6 +748,14 @@ export class Game {
       }
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     }
+  }
+
+  applyInventorySnapshot(stockPayload = null, { quiet = true } = {}) {
+    const changed = this.buildSystem?.applyStockSnapshot?.(stockPayload) === true;
+    if (changed && !quiet) {
+      this.hud.setStatus("블록 수량 동기화", false, 0.45);
+    }
+    return changed;
   }
 
   createBaseMarker(position, color) {
@@ -1042,7 +1057,7 @@ export class Game {
       this.objective.controlOwner = "neutral";
       this.objective.controlBonusTimer = 0;
       this.hud.setStatus("\uC911\uC559 \uAC70\uC810 \uC0C1\uC2E4", true, 1);
-      this.addChatMessage("??????????寃몃탿??????????????????????嫄??????雍?????????????遺얘턁?????????????", "warning");
+      this.addChatMessage("중앙 거점을 상실했습니다. 재탈환이 필요합니다.", "warning");
     }
 
     this.objective.controlProgress = controlProgress;
@@ -1657,7 +1672,7 @@ export class Game {
         this.state.kills += 1;
         this.state.score += PVP_KILL_SCORE;
         this.hud.pulseHitmarker();
-        this.hud.setStatus(`+${PVP_KILL_SCORE} 泥섏튂`, false, 0.55);
+        this.hud.setStatus(`+${PVP_KILL_SCORE} 처치`, false, 0.55);
 
         const now = this.clock.getElapsedTime();
         if (now - this.state.lastKillTime < 4.0) {
@@ -1728,9 +1743,34 @@ export class Game {
         return;
       }
       payload.typeId = Math.trunc(typeId);
+    } else {
+      const removedTypeId = Number(change.typeId);
+      if (Number.isFinite(removedTypeId)) {
+        payload.typeId = Math.trunc(removedTypeId);
+      }
     }
 
-    socket.emit("block:update", payload);
+    socket.emit("block:update", payload, (response = {}) => {
+      this.applyInventorySnapshot(response?.stock, { quiet: true });
+      if (response?.ok === true) {
+        return;
+      }
+
+      if (action === "place") {
+        this.voxelWorld.removeBlock(payload.x, payload.y, payload.z);
+      } else {
+        const rollbackTypeId = Number(payload.typeId);
+        if (
+          Number.isFinite(rollbackTypeId) &&
+          !this.isPlayerIntersectingBlock(payload.x, payload.y, payload.z)
+        ) {
+          this.voxelWorld.setBlock(payload.x, payload.y, payload.z, Math.trunc(rollbackTypeId));
+        }
+      }
+
+      const text = String(response?.error ?? "블록 동기화에 실패했습니다");
+      this.hud.setStatus(text, true, 0.9);
+    });
   }
 
   normalizeRemoteBlockUpdate(payload = {}) {
@@ -1772,7 +1812,7 @@ export class Game {
     const key = toBlockKey(update.x, update.y, update.z);
     this.pendingRemoteBlocks.set(key, {
       ...update,
-      retries: 120
+      retries: MAX_PENDING_REMOTE_BLOCK_RETRIES
     });
   }
 
@@ -1781,10 +1821,27 @@ export class Game {
       return;
     }
 
+    // Always prioritize removals to prevent lingering ghost blocks.
     for (const [key, update] of this.pendingRemoteBlocks.entries()) {
       if (update.action === "remove") {
         this.voxelWorld.removeBlock(update.x, update.y, update.z);
         this.pendingRemoteBlocks.delete(key);
+      }
+    }
+
+    const placementBatch = [];
+    for (const [key, update] of this.pendingRemoteBlocks.entries()) {
+      if (update.action !== "place") {
+        continue;
+      }
+      placementBatch.push([key, update]);
+      if (placementBatch.length >= MAX_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME) {
+        break;
+      }
+    }
+
+    for (const [key, update] of placementBatch) {
+      if (!this.pendingRemoteBlocks.has(key)) {
         continue;
       }
 
@@ -1795,9 +1852,12 @@ export class Game {
       }
 
       update.retries -= 1;
+      this.pendingRemoteBlocks.delete(key);
       if (update.retries <= 0) {
-        this.pendingRemoteBlocks.delete(key);
+        continue;
       }
+      // Move blocked placement to the tail for fair round-robin processing.
+      this.pendingRemoteBlocks.set(key, update);
     }
   }
 
@@ -2074,11 +2134,11 @@ export class Game {
     });
     bindUtilityTap(this.mobileReloadBtn, () => {
       if (!this.buildSystem.isGunMode()) {
-        this.hud.setStatus("Switch to gun mode to reload", true, 0.75);
+        this.hud.setStatus("재장전하려면 총 모드로 전환하세요", true, 0.75);
         return;
       }
       if (this.weapon.startReload()) {
-        this.hud.setStatus("???????..", true, 0.55);
+        this.hud.setStatus("재장전 중...", true, 0.55);
       }
     });
 
@@ -2231,9 +2291,9 @@ export class Game {
 
       if (event.code === "KeyR") {
         if (!this.buildSystem.isGunMode()) {
-          this.hud.setStatus("Press 3 to switch to gun mode", true, 0.9);
+          this.hud.setStatus("3번 키로 총 모드로 전환하세요", true, 0.9);
         } else if (this.weapon.startReload()) {
-          this.hud.setStatus("???????..", true, 0.6);
+          this.hud.setStatus("재장전 중...", true, 0.6);
         }
       }
 
@@ -2646,6 +2706,9 @@ export class Game {
     this.leftMouseDown = false;
     this.aimBlend = 0;
     this.buildSystem.setToolMode("gun", { silentStatus: true });
+    if (this.activeMatchMode === "single") {
+      this.buildSystem.resetStockToDefault();
+    }
     this.updateVisualMode(this.buildSystem.getToolMode());
     this.camera.fov = DEFAULT_FOV;
     this.camera.updateProjectionMatrix();
@@ -2759,16 +2822,16 @@ export class Game {
         this.state.killStreak = 1;
       }
       this.state.lastKillTime = now;
-      this.hud.setStatus("+100 kill", false, 0.45);
+      this.hud.setStatus("+100 처치", false, 0.45);
       this.hud.setKillStreak(this.state.killStreak);
 
       if (this.state.killStreak >= 3) {
         this.addChatMessage(
-          `${this.state.killStreak}??????????? ??????癲????????????????釉먮폁?????????猷몄굣???????| ????????????산뭐???????+${this.state.kills * 10}`,
+          `${this.state.killStreak}연속 처치! 처치 보너스 +${this.state.kills * 10}`,
           "streak"
         );
       } else {
-        this.addChatMessage(`????????癲????????????????釉먮폁?????????猷몄굣???????+100 (???????????꾩룆梨띰쭕?뚢뵾??????????????嶺뚮죭?댁젘??${this.state.kills}??`, "kill");
+        this.addChatMessage(`적 처치 +100 (총 처치 ${this.state.kills})`, "kill");
       }
     }
   }
@@ -2960,6 +3023,12 @@ export class Game {
   }
 
   tick(delta) {
+    this._bucketOptimizeCooldown -= delta;
+    if (this._bucketOptimizeCooldown <= 0) {
+      this._bucketOptimizeCooldown = 1.2;
+      this.voxelWorld.optimizeBucketRendering();
+    }
+
     this.updateSparks(delta);
     const isChatting = !!this.chat?.isInputFocused;
     const gunMode = this.buildSystem.isGunMode();
@@ -2997,7 +3066,7 @@ export class Game {
       this.sound.play("reload", { gain: 0.9, rateJitter: 0.03 });
     }
     if (gunMode && this._wasReloading && !weapState.reloading) {
-      this.addChatMessage("Reload complete", "info");
+      this.addChatMessage("재장전 완료", "info");
     }
     this._wasReloading = gunMode ? weapState.reloading : false;
 
@@ -3015,13 +3084,13 @@ export class Game {
       if (damage > 0) {
         this.state.health = Math.max(0, this.state.health - damage);
         this.hud.flashDamage();
-        this.hud.setStatus(`?????????嫄??????????븐뼐??????????ш끽維????????????-${damage}`, true, 0.35);
-        this.addChatMessage(`?????????嫄??????????븐뼐??????????ш끽維????????????-${damage} HP`, "damage");
+        this.hud.setStatus(`피격 -${damage}`, true, 0.35);
+        this.addChatMessage(`피격 -${damage} HP`, "damage");
         if (this.state.health <= 25 && this.state.health > 0) {
-          this.addChatMessage("Low health", "warning");
+          this.addChatMessage("체력이 낮습니다", "warning");
         }
       } else if (combatResult.firedShots > 0) {
-        this.hud.setStatus("??????????????????", true, 0.16);
+        this.hud.setStatus("아슬아슬! 적 탄환이 스쳐갔습니다", true, 0.16);
       }
     }
 
@@ -3037,7 +3106,7 @@ export class Game {
           this.bravoFlag.position.copy(this.objective.bravoFlagHome);
         }
       }
-      this.addChatMessage("??????????????????????????癲??? ??????????????????산뭐???", "warning");
+      this.addChatMessage("작전 실패. 다시 배치해 전선을 회복하세요.", "warning");
       this.hud.showGameOver(this.state.score);
       this.syncCursorVisibility();
       if (document.pointerLockElement === this.renderer.domElement) {
@@ -3055,6 +3124,7 @@ export class Game {
   loop() {
     const delta = Math.min(this.clock.getDelta(), 0.05);
     this.tick(delta);
+    this.voxelWorld.flushDirtyBounds();
     this.renderer.render(this.scene, this.camera);
     requestAnimationFrame(() => this.loop());
   }
@@ -3083,7 +3153,7 @@ export class Game {
           return;
         }
         this.hud.showPauseOverlay(true);
-        this.hud.setStatus("??????????????????癲??????????? ???????????????椰????????????????????대첐????", true, 1);
+        this.hud.setStatus("마우스를 다시 클릭해 시점 고정을 활성화하세요", true, 1);
         this.syncCursorVisibility();
       });
     }
@@ -3278,6 +3348,10 @@ export class Game {
       this.applyRoomSnapshot(payload);
     });
 
+    socket.on("inventory:update", (payload = {}) => {
+      this.applyInventorySnapshot(payload.stock, { quiet: true });
+    });
+
     socket.on("player:sync", (payload) => {
       this.handleRemotePlayerSync(payload);
     });
@@ -3444,6 +3518,7 @@ export class Game {
     const myId = this.chat?.socket?.id ?? "";
     const me = this.lobbyState.players.find((player) => player.id === myId) ?? null;
     this.lobbyState.selectedTeam = me?.team ?? null;
+    this.applyInventorySnapshot(me?.stock ?? null, { quiet: true });
 
     if (this.mpRoomTitleEl) {
       this.mpRoomTitleEl.textContent = `${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;

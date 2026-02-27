@@ -48,6 +48,10 @@ const DEFAULT_ROOM_CODE = "GLOBAL";
 const MAX_ROOM_PLAYERS = 50;
 const PVP_DAMAGE = 34;
 const BLOCK_KEY_SEPARATOR = "|";
+const BLOCK_TYPE_MIN = 1;
+const BLOCK_TYPE_MAX = 8;
+const DEFAULT_BLOCK_STOCK = 32;
+const MAX_BLOCK_STOCK = 999;
 const FLAG_TEAMS = ["alpha", "bravo"];
 const FLAG_PICKUP_RADIUS = 2.25;
 const FLAG_CAPTURE_RADIUS = 3.1;
@@ -82,6 +86,74 @@ function createDefaultFlags() {
   };
 }
 
+function normalizeStockTypeId(typeId) {
+  const parsed = Math.trunc(Number(typeId));
+  if (!Number.isFinite(parsed) || parsed < BLOCK_TYPE_MIN || parsed > BLOCK_TYPE_MAX) {
+    return null;
+  }
+  return parsed;
+}
+
+function createDefaultBlockStock() {
+  const stock = {};
+  for (let id = BLOCK_TYPE_MIN; id <= BLOCK_TYPE_MAX; id += 1) {
+    stock[id] = DEFAULT_BLOCK_STOCK;
+  }
+  return stock;
+}
+
+function sanitizeBlockStock(raw = null) {
+  const next = createDefaultBlockStock();
+  if (!raw || typeof raw !== "object") {
+    return next;
+  }
+
+  for (let id = BLOCK_TYPE_MIN; id <= BLOCK_TYPE_MAX; id += 1) {
+    const value = Number(raw[id] ?? raw[String(id)]);
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    next[id] = Math.max(0, Math.min(MAX_BLOCK_STOCK, Math.trunc(value)));
+  }
+
+  return next;
+}
+
+function serializeBlockStock(raw = null) {
+  return sanitizeBlockStock(raw);
+}
+
+function ensurePlayerStock(player) {
+  if (!player || typeof player !== "object") {
+    return createDefaultBlockStock();
+  }
+  player.stock = sanitizeBlockStock(player.stock);
+  return player.stock;
+}
+
+function getStockCount(stock, typeId) {
+  const normalizedTypeId = normalizeStockTypeId(typeId);
+  if (!normalizedTypeId) {
+    return 0;
+  }
+  const value = Number(stock?.[normalizedTypeId] ?? stock?.[String(normalizedTypeId)] ?? 0);
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(MAX_BLOCK_STOCK, Math.trunc(value)));
+}
+
+function changeStockCount(stock, typeId, delta) {
+  const normalizedTypeId = normalizeStockTypeId(typeId);
+  if (!normalizedTypeId || !stock || typeof stock !== "object") {
+    return -1;
+  }
+  const current = getStockCount(stock, normalizedTypeId);
+  const next = Math.max(0, Math.min(MAX_BLOCK_STOCK, current + Math.trunc(Number(delta) || 0)));
+  stock[normalizedTypeId] = next;
+  return next;
+}
+
 function createRoomState(players = new Map()) {
   return {
     players,
@@ -106,6 +178,10 @@ function getRoomState(room) {
 
   if (!(room.state.players instanceof Map) || room.state.players !== room.players) {
     room.state.players = room.players;
+  }
+
+  for (const player of room.state.players.values()) {
+    ensurePlayerStock(player);
   }
 
   if (!(room.state.blocks instanceof Map)) {
@@ -228,6 +304,28 @@ function applyBlockUpdateToRoomState(room, update) {
   }
 
   return touchRoomState(room);
+}
+
+function resolveRemovedBlockType(state, update) {
+  const key = blockStateKey(update.x, update.y, update.z);
+  const previous = state.blocks.get(key);
+  if (previous?.action === "remove") {
+    return { ok: false, reason: "already_removed", typeId: null };
+  }
+
+  if (previous?.action === "place") {
+    return {
+      ok: true,
+      reason: "remove_placed",
+      typeId: normalizeStockTypeId(previous.typeId) ?? BLOCK_TYPE_MIN
+    };
+  }
+
+  return {
+    ok: true,
+    reason: "remove_base",
+    typeId: normalizeStockTypeId(update.typeId) ?? BLOCK_TYPE_MIN
+  };
 }
 
 function handleCtfPlayerSync(room, player) {
@@ -394,6 +492,8 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
   }
 
   const state = serializeRoomState(room);
+  const roomState = getRoomState(room);
+  const player = roomState.players.get(socket.id);
   socket.emit("room:snapshot", {
     reason,
     revision: state.revision,
@@ -401,7 +501,8 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
     blocks: serializeBlocksSnapshot(room),
     flags: state.flags,
     score: state.score,
-    captures: state.captures
+    captures: state.captures,
+    stock: serializeBlockStock(player?.stock)
   });
 }
 
@@ -484,11 +585,16 @@ function sanitizeBlockPayload(raw = {}) {
   };
 
   if (action === "place") {
-    const typeId = clampNumber(raw.typeId, 1, 64, Number.NaN);
-    if (!Number.isFinite(typeId)) {
+    const typeId = normalizeStockTypeId(raw.typeId);
+    if (!typeId) {
       return null;
     }
-    payload.typeId = Math.trunc(typeId);
+    payload.typeId = typeId;
+  } else if (raw.typeId !== undefined) {
+    const typeId = normalizeStockTypeId(raw.typeId);
+    if (typeId) {
+      payload.typeId = typeId;
+    }
   }
 
   return payload;
@@ -513,7 +619,8 @@ function serializeRoom(room) {
       name: player.name,
       team: player.team ?? null,
       state: player.state ?? null,
-      hp: Number(player.hp ?? 100)
+      hp: Number(player.hp ?? 100),
+      stock: serializeBlockStock(player.stock)
     })),
     state: serializeRoomState(room)
   };
@@ -656,6 +763,7 @@ function joinDefaultRoom(socket, nameOverride = null) {
     name,
     team: pickBalancedTeam(state.players),
     state: sanitizePlayerState(),
+    stock: createDefaultBlockStock(),
     hp: 100,
     kills: 0,
     deaths: 0
@@ -770,21 +878,75 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("block:update", (payload = {}) => {
+  socket.on("block:update", (payload = {}, ackFn) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
     const state = getRoomState(room);
-    if (!state.players.has(socket.id)) {
+    const player = state.players.get(socket.id);
+    if (!player) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
+    const playerStock = ensurePlayerStock(player);
     const sanitized = sanitizeBlockPayload(payload);
     if (!sanitized) {
+      ack(ackFn, { ok: false, error: "잘못된 블록 업데이트", stock: serializeBlockStock(playerStock) });
       return;
+    }
+
+    const key = blockStateKey(sanitized.x, sanitized.y, sanitized.z);
+    const previous = state.blocks.get(key);
+    let collectedTypeId = null;
+
+    if (sanitized.action === "place") {
+      const samePlace =
+        previous?.action === "place" &&
+        Number(previous.x) === sanitized.x &&
+        Number(previous.y) === sanitized.y &&
+        Number(previous.z) === sanitized.z &&
+        Number(previous.typeId) === sanitized.typeId;
+
+      if (samePlace) {
+        ack(ackFn, {
+          ok: true,
+          ignored: true,
+          roomStateRevision: state.revision,
+          stock: serializeBlockStock(playerStock)
+        });
+        return;
+      }
+
+      const currentStock = getStockCount(playerStock, sanitized.typeId);
+      if (currentStock <= 0) {
+        ack(ackFn, {
+          ok: false,
+          error: "보유한 블록이 부족합니다",
+          roomStateRevision: state.revision,
+          stock: serializeBlockStock(playerStock)
+        });
+        return;
+      }
+      changeStockCount(playerStock, sanitized.typeId, -1);
+    } else {
+      const removeResult = resolveRemovedBlockType(state, sanitized);
+      if (!removeResult.ok) {
+        ack(ackFn, {
+          ok: false,
+          error: "이미 제거된 블록입니다",
+          roomStateRevision: state.revision,
+          stock: serializeBlockStock(playerStock)
+        });
+        return;
+      }
+      collectedTypeId = removeResult.typeId;
+      changeStockCount(playerStock, collectedTypeId, 1);
+      sanitized.typeId = collectedTypeId;
     }
 
     const roomState = applyBlockUpdateToRoomState(room, sanitized);
@@ -793,6 +955,18 @@ io.on("connection", (socket) => {
       id: socket.id,
       ...sanitized,
       roomStateRevision: roomState.revision
+    });
+
+    const serializedStock = serializeBlockStock(playerStock);
+    socket.emit("inventory:update", {
+      stock: serializedStock,
+      roomStateRevision: roomState.revision
+    });
+    ack(ackFn, {
+      ok: true,
+      roomStateRevision: roomState.revision,
+      stock: serializedStock,
+      collectedTypeId
     });
   });
 
@@ -896,7 +1070,8 @@ io.on("connection", (socket) => {
       ok: true,
       snapshot: {
         ...serializeRoomState(room),
-        blocks: serializeBlocksSnapshot(room)
+        blocks: serializeBlocksSnapshot(room),
+        stock: serializeBlockStock(getRoomState(room).players.get(socket.id)?.stock)
       }
     });
   });

@@ -78,6 +78,15 @@ function emitWithAck(socket, event, payload = undefined) {
   });
 }
 
+function readStockValue(stockPayload, typeId) {
+  const parsedTypeId = Math.trunc(Number(typeId) || 0);
+  if (!parsedTypeId) {
+    return 0;
+  }
+  const value = Number(stockPayload?.[parsedTypeId] ?? stockPayload?.[String(parsedTypeId)] ?? 0);
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
 async function checkSyntax() {
   const files = [
     "src/main.js",
@@ -132,6 +141,20 @@ function checkVoxelWorld() {
   assert(adjacentPlaced === true, "Failed to place adjacent block");
   assert(removed === true, "Failed to remove placed block");
   assert(world.hasBlock(1, 0, 0) === false, "Block still exists after remove");
+
+  world.generateTerrain({ mapId: "forest_frontline", seed: 20260227 });
+  const arenaMeta = world.getArenaMeta();
+  assert(world.blockMap.size > 100000, `Unexpected terrain block count: ${world.blockMap.size}`);
+  assert(
+    arenaMeta?.halfExtent >= 50 && arenaMeta?.halfExtent <= 72,
+    `Unexpected arena half extent: ${JSON.stringify(arenaMeta)}`
+  );
+  assert(
+    Number.isFinite(arenaMeta?.alphaBase?.x) &&
+      Number.isFinite(arenaMeta?.bravoBase?.x) &&
+      Number.isFinite(arenaMeta?.mid?.x),
+    `Invalid arena metadata: ${JSON.stringify(arenaMeta)}`
+  );
 }
 
 async function checkSocketServer() {
@@ -244,7 +267,41 @@ async function checkSocketServer() {
       Array.isArray(snapshotAck?.snapshot?.blocks),
       `snapshot blocks missing: ${JSON.stringify(snapshotAck)}`
     );
+    assert(
+      snapshotAck?.snapshot?.stock && typeof snapshotAck.snapshot.stock === "object",
+      `snapshot stock missing: ${JSON.stringify(snapshotAck)}`
+    );
     await waitFor(() => snapshotReceived, 3000);
+
+    const baselineTypeId = 6;
+    const baselineStock = readStockValue(snapshotAck?.snapshot?.stock, baselineTypeId);
+    assert(baselineStock > 0, `invalid baseline stock: ${baselineStock}`);
+
+    const stockPlaceAck = await emitWithAck(c1, "block:update", {
+      action: "place",
+      x: 120,
+      y: 5,
+      z: 40,
+      typeId: baselineTypeId
+    });
+    assert(stockPlaceAck?.ok === true, `block:update place ack failed: ${JSON.stringify(stockPlaceAck)}`);
+    assert(
+      readStockValue(stockPlaceAck?.stock, baselineTypeId) === baselineStock - 1,
+      `stock did not decrease after place: ${JSON.stringify(stockPlaceAck)}`
+    );
+
+    const stockRemoveAck = await emitWithAck(c1, "block:update", {
+      action: "remove",
+      x: 120,
+      y: 5,
+      z: 40,
+      typeId: baselineTypeId
+    });
+    assert(stockRemoveAck?.ok === true, `block:update remove ack failed: ${JSON.stringify(stockRemoveAck)}`);
+    assert(
+      readStockValue(stockRemoveAck?.stock, baselineTypeId) === baselineStock,
+      `stock did not recover after remove: ${JSON.stringify(stockRemoveAck)}`
+    );
 
     c1.emit("player:sync", { x: 42, y: 1.75, z: 0, yaw: 0, pitch: 0 });
     await waitFor(() => ctfPickupSeen, 4000);

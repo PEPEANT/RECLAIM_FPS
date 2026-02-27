@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { BLOCK_TYPE_BY_ID } from "./BlockPalette.js";
+import { buildSelectedMap, getDefaultMapId } from "../world/MapRegistry.js";
 
 const KEY_SEPARATOR = "|";
 
@@ -18,8 +19,9 @@ export class VoxelWorld {
     this.buckets = new Map();
     this.surfaceCache = new Map();
     this.raycastTargets = [];
-    this.maxInstancesPerType = 52000;
+    this.maxInstancesPerType = 130000;
     this.arenaMeta = null;
+    this.activeMapId = getDefaultMapId();
     this._losDirection = new THREE.Vector3();
     this._losPoint = new THREE.Vector3();
     this.dirtyBoundsBuckets = new Set();
@@ -82,21 +84,19 @@ export class VoxelWorld {
       flatShading: true
     });
 
-    const mesh = new THREE.InstancedMesh(
-      this.blockGeometry,
-      material,
-      this.maxInstancesPerType
-    );
+    const capacity = this.getBucketCapacity(typeId);
+    const mesh = new THREE.InstancedMesh(this.blockGeometry, material, capacity);
     mesh.count = 0;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.frustumCulled = false;
+    mesh.frustumCulled = true;
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.userData.typeId = typeId;
     mesh.userData.isVoxelBucket = true;
 
     const bucket = {
       typeId,
+      capacity,
       mesh,
       keys: [],
       indexByKey: new Map()
@@ -133,6 +133,34 @@ export class VoxelWorld {
     this.dirtyBoundsBuckets.clear();
   }
 
+  optimizeBucketRendering() {
+    for (const bucket of this.buckets.values()) {
+      if (!bucket?.mesh) {
+        continue;
+      }
+
+      const heavyBucket = bucket.mesh.count >= 48000;
+      bucket.mesh.castShadow = !heavyBucket;
+      bucket.mesh.receiveShadow = true;
+    }
+  }
+
+  getBucketCapacity(typeId) {
+    if (typeId === 3) {
+      return this.maxInstancesPerType;
+    }
+    if (typeId === 2) {
+      return 60000;
+    }
+    if (typeId === 1) {
+      return 40000;
+    }
+    if (typeId === 4 || typeId === 5) {
+      return 25000;
+    }
+    return 15000;
+  }
+
   setBlock(x, y, z, typeId) {
     const key = this.key(x, y, z);
     const previous = this.blockMap.get(key);
@@ -145,7 +173,7 @@ export class VoxelWorld {
     }
 
     const bucket = this.ensureBucket(typeId);
-    if (!bucket || bucket.mesh.count >= this.maxInstancesPerType) {
+    if (!bucket || bucket.mesh.count >= bucket.capacity) {
       return false;
     }
 
@@ -454,42 +482,23 @@ export class VoxelWorld {
     this.fillRect(centerX - 1, centerX + 1, 0, 2, centerZ + 4, centerZ + 6, wallType);
   }
 
-  generateTerrain() {
+  generateTerrain(options = {}) {
     this.clear();
-    const halfExtent = 56;
-    for (let x = -halfExtent; x <= halfExtent; x += 1) {
-      for (let z = -halfExtent; z <= halfExtent; z += 1) {
-        const edgeDist = halfExtent - Math.max(Math.abs(x), Math.abs(z));
-        const topType = edgeDist < 6 ? 3 : Math.abs(x + z) % 11 < 3 ? 2 : 1;
-        this.setBlock(x, -4, z, 3);
-        this.setBlock(x, -3, z, 2);
-        this.setBlock(x, -2, z, 2);
-        this.setBlock(x, -1, z, topType);
-      }
-    }
 
-    this.buildPerimeterWall(halfExtent, 0, 4, 8);
-    this.fillRect(-halfExtent + 1, halfExtent - 1, -1, -1, -7, 7, 4);
-    this.fillRect(-14, 14, -1, -1, -14, 14, 3);
-
-    this.carveRect(-34, -10, -1, -22, -12);
-    this.fillRect(-34, -10, -2, -2, -22, -12, 3);
-    this.carveRect(10, 34, -1, 12, 22);
-    this.fillRect(10, 34, -2, -2, 12, 22, 3);
-
-    this.buildBase(-42, 0, "east", 7, 5, 8);
-    this.buildBase(42, 0, "west", 6, 8, 5);
-
-    this.decorateArena();
+    const mapResult = buildSelectedMap(this, options);
+    this.activeMapId = String(options.mapId ?? getDefaultMapId());
     this.flushDirtyBounds();
-    this.arenaMeta = {
-      alphaBase: { x: -42, y: 0, z: 0 },
-      bravoBase: { x: 42, y: 0, z: 0 },
-      alphaFlag: { x: -42, y: 0, z: 0 },
-      bravoFlag: { x: 42, y: 0, z: 0 },
-      mid: { x: 0, y: 0, z: 0 },
-      halfExtent
-    };
+    this.optimizeBucketRendering();
+
+    this.arenaMeta =
+      mapResult?.arenaMeta ?? {
+        alphaBase: { x: -35, y: 0, z: 0 },
+        bravoBase: { x: 35, y: 0, z: 0 },
+        alphaFlag: { x: -44, y: 0, z: 0 },
+        bravoFlag: { x: 44, y: 0, z: 0 },
+        mid: { x: 0, y: 0, z: 0 },
+        halfExtent: 60
+      };
   }
 
   decorateArena() {
