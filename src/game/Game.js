@@ -37,8 +37,9 @@ const JUMP_FORCE = 9.2;
 const WORLD_LIMIT = 72;
 const PLAYER_RADIUS = 0.34;
 const POINTER_LOCK_FALLBACK_MS = 900;
-const MOBILE_LOOK_SENSITIVITY_X = 0.0032;
-const MOBILE_LOOK_SENSITIVITY_Y = 0.0028;
+const MOBILE_LOOK_SENSITIVITY_X = 0.0047;
+const MOBILE_LOOK_SENSITIVITY_Y = 0.0041;
+const MOBILE_AIM_LOOK_SCALE = 0.78;
 const ONLINE_ROOM_CODE = "GLOBAL";
 const ONLINE_MAX_PLAYERS = 50;
 const REMOTE_SYNC_INTERVAL = 1 / 12;
@@ -90,7 +91,11 @@ function readStoredCenterAdVolumeScale() {
     return DEFAULT_CENTER_AD_VOLUME_SCALE;
   }
   try {
-    const raw = Number(window.localStorage.getItem(CENTER_AD_VOLUME_STORAGE_KEY));
+    const stored = window.localStorage.getItem(CENTER_AD_VOLUME_STORAGE_KEY);
+    if (stored === null || stored.trim() === "") {
+      return DEFAULT_CENTER_AD_VOLUME_SCALE;
+    }
+    const raw = Number(stored);
     if (!Number.isFinite(raw)) {
       return DEFAULT_CENTER_AD_VOLUME_SCALE;
     }
@@ -105,7 +110,11 @@ function readStoredEffectsVolumeScale() {
     return DEFAULT_EFFECTS_VOLUME_SCALE;
   }
   try {
-    const raw = Number(window.localStorage.getItem(EFFECTS_VOLUME_STORAGE_KEY));
+    const stored = window.localStorage.getItem(EFFECTS_VOLUME_STORAGE_KEY);
+    if (stored === null || stored.trim() === "") {
+      return DEFAULT_EFFECTS_VOLUME_SCALE;
+    }
+    const raw = Number(stored);
     if (!Number.isFinite(raw)) {
       return DEFAULT_EFFECTS_VOLUME_SCALE;
     }
@@ -3904,34 +3913,18 @@ export class Game {
       this.buildSystem.setToolMode("gun");
       this.syncMobileUtilityButtons();
     });
-    this.mobileAimBtn.addEventListener("pointerdown", (event) => {
-      if (!acceptPointer(event)) {
-        return;
-      }
-      event.preventDefault();
-      this.sound.unlock();
+    bindUtilityTap(this.mobileAimBtn, () => {
       if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.chat?.isInputFocused) {
         return;
       }
       if (!this.buildSystem.isGunMode()) {
         this.buildSystem.setToolMode("gun");
       }
-      this.mobileState.aimPointerId = event.pointerId;
-      this.isAiming = true;
-      this.syncMobileUtilityButtons();
-      this.mobileAimBtn.setPointerCapture?.(event.pointerId);
-    });
-    const endAim = (event) => {
-      if (!acceptPointer(event) || event.pointerId !== this.mobileState.aimPointerId) {
-        return;
-      }
       this.mobileState.aimPointerId = null;
-      this.isAiming = false;
+      this.rightMouseAiming = false;
+      this.isAiming = !this.isAiming;
       this.syncMobileUtilityButtons();
-      this.mobileAimBtn.releasePointerCapture?.(event.pointerId);
-    };
-    this.mobileAimBtn.addEventListener("pointerup", endAim);
-    this.mobileAimBtn.addEventListener("pointercancel", endAim);
+    });
 
     bindUtilityTap(this.mobileJumpBtn, () => {
       if (this.onGround && this.isRunning && !this.isGameOver) {
@@ -4006,7 +3999,7 @@ export class Game {
       this.mobileState.lookLastY = event.clientY;
 
       const currentAim = this.isAiming || this.rightMouseAiming;
-      const lookScale = currentAim ? 0.58 : 1;
+      const lookScale = currentAim ? MOBILE_AIM_LOOK_SCALE : 1;
       this.yaw -= deltaX * MOBILE_LOOK_SENSITIVITY_X * lookScale;
       this.pitch -= deltaY * MOBILE_LOOK_SENSITIVITY_Y * lookScale;
       this.pitch = THREE.MathUtils.clamp(this.pitch, -1.45, 1.45);

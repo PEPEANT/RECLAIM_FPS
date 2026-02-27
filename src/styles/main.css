@@ -781,7 +781,7 @@ canvas {
 #build-hud {
   position: fixed;
   left: 50%;
-  bottom: 16px;
+  bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   z-index: 24;
   display: flex;
@@ -996,7 +996,7 @@ canvas {
 #mobile-fire {
   position: absolute;
   right: max(16px, env(safe-area-inset-right, 0px));
-  bottom: max(22px, env(safe-area-inset-bottom, 0px));
+  bottom: max(18px, env(safe-area-inset-bottom, 0px));
   width: 100px;
   height: 100px;
   border-radius: 50%;
@@ -1022,11 +1022,12 @@ canvas {
 
 #mobile-utility {
   position: absolute;
-  right: max(16px, env(safe-area-inset-right, 0px));
-  bottom: calc(max(136px, env(safe-area-inset-bottom, 0px)) + 12px);
-  width: 188px;
+  left: 50%;
+  bottom: calc(122px + env(safe-area-inset-bottom, 0px));
+  width: min(272px, calc(100vw - 124px));
+  transform: translateX(-50%);
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   pointer-events: auto;
 }
@@ -1061,6 +1062,33 @@ canvas {
 
 .mobile-utility-btn:active {
   transform: scale(0.97);
+}
+
+#mobile-jump {
+  position: absolute;
+  right: calc(max(16px, env(safe-area-inset-right, 0px)) + 108px);
+  bottom: calc(max(18px, env(safe-area-inset-bottom, 0px)) + 18px);
+  z-index: 27;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  pointer-events: auto;
+}
+
+#mobile-reload {
+  position: absolute;
+  top: calc(max(10px, env(safe-area-inset-top, 0px)) + 36px);
+  right: max(10px, env(safe-area-inset-right, 0px));
+  z-index: 27;
+  min-width: 58px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 0.64rem;
+  pointer-events: auto;
 }
 
 .overlay {
@@ -2015,7 +2043,7 @@ kbd {
   }
 
   #build-hud {
-    bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(6px + env(safe-area-inset-bottom, 0px));
   }
 
   #mobile-joystick {
@@ -2047,21 +2075,37 @@ kbd {
   }
 
   #mobile-utility {
-    right: max(8px, env(safe-area-inset-right, 0px));
-    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
-    width: 170px;
-    gap: 7px;
+    left: 50%;
+    bottom: calc(98px + env(safe-area-inset-bottom, 0px));
+    width: min(238px, calc(100vw - 118px));
+    gap: 6px;
   }
 
   .mobile-utility-btn {
-    height: 32px;
-    font-size: 0.67rem;
+    height: 31px;
+    font-size: 0.66rem;
+  }
+
+  #mobile-jump {
+    right: calc(max(10px, env(safe-area-inset-right, 0px)) + 90px);
+    bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 14px);
+    width: 58px;
+    height: 58px;
+    font-size: 0.66rem;
+  }
+
+  #mobile-reload {
+    top: calc(max(8px, env(safe-area-inset-top, 0px)) + 32px);
+    right: max(8px, env(safe-area-inset-right, 0px));
+    min-width: 50px;
+    height: 28px;
+    font-size: 0.6rem;
   }
 
   #block-hotbar {
     gap: 4px;
     padding: 6px;
-    transform: translateY(0);
+    transform: translateY(4px);
   }
 
   .hotbar-slot {
@@ -2172,20 +2216,35 @@ kbd {
   }
 
   #mobile-utility {
-    width: 154px;
-    right: max(8px, env(safe-area-inset-right, 0px));
-    bottom: calc(90px + env(safe-area-inset-bottom, 0px));
+    width: min(208px, calc(100vw - 110px));
+    left: 50%;
+    bottom: calc(82px + env(safe-area-inset-bottom, 0px));
     gap: 5px;
   }
 
   .mobile-utility-btn {
-    height: 30px;
-    font-size: 0.63rem;
+    height: 28px;
+    font-size: 0.61rem;
+  }
+
+  #mobile-jump {
+    right: calc(max(10px, env(safe-area-inset-right, 0px)) + 78px);
+    bottom: calc(max(10px, env(safe-area-inset-bottom, 0px)) + 10px);
+    width: 52px;
+    height: 52px;
+    font-size: 0.58rem;
+  }
+
+  #mobile-reload {
+    top: calc(max(6px, env(safe-area-inset-top, 0px)) + 30px);
+    min-width: 46px;
+    height: 26px;
+    font-size: 0.56rem;
   }
 
   #build-hud {
-    bottom: calc(54px + env(safe-area-inset-bottom, 0px));
-    transform: translateX(-50%) scale(0.88);
+    bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%) scale(0.86);
   }
 
   #chat-panel {
