@@ -8,11 +8,12 @@ import { SoundSystem } from "./audio/SoundSystem.js";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../shared/gameModes.js";
 import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
 
+const CENTER_AD_IMAGE_URL = new URL("../../PNG/AD.41415786.1.png", import.meta.url).href;
 const PLAYER_HEIGHT = 1.75;
 const DEFAULT_FOV = 75;
 const AIM_FOV = 48;
-const PLAYER_SPEED = 8.4;
-const PLAYER_SPRINT = 12.6;
+const PLAYER_SPEED = 7.9;
+const PLAYER_SPRINT = 11.9;
 const PLAYER_GRAVITY = -22;
 const JUMP_FORCE = 9.2;
 const WORLD_LIMIT = 72;
@@ -34,8 +35,12 @@ const BUCKET_OPTIMIZE_INTERVAL = 1.2;
 const PERF_REPORT_INTERVAL_MS = 4000;
 const PERF_SLOW_FRAME_MS = 24;
 const CTF_INTERACT_COOLDOWN_MS = 260;
+const MOBILE_SPRINT_THRESHOLD = 0.94;
+const FLAG_CARRIER_SPEED_MULTIPLIER = 0.9;
 const PVP_HIT_SCORE = 10;
 const PVP_KILL_SCORE = 100;
+const PVP_IMMUNE_HINT_COOLDOWN_MS = 420;
+const MAX_ACTIVE_HIT_SPARKS = 56;
 const BLOCK_KEY_SEPARATOR = "|";
 const LOCAL_DEATH_FALL_MS = 460;
 const LOCAL_DEATH_OFFSET_Y = 0.92;
@@ -44,6 +49,12 @@ const LOCAL_DEATH_ROLL = -0.68;
 const REMOTE_DEATH_FALL_MS = 320;
 const REMOTE_DEATH_OFFSET_Y = 0.56;
 const REMOTE_DEATH_ROLL = -1.18;
+const REMOTE_CARRIER_FLAG_BACK_OFFSET = 0.42;
+const REMOTE_CARRIER_FLAG_SIDE_OFFSET = 0.13;
+const REMOTE_CARRIER_FLAG_HEIGHT_OFFSET = 1.02;
+const PVP_REMOTE_HITBOX_HALF_WIDTH = 0.46;
+const PVP_REMOTE_HITBOX_FOOT_OFFSET = -0.06;
+const PVP_REMOTE_HITBOX_TOP_OFFSET = 0.34;
 
 function normalizeTeamId(team) {
   return team === "alpha" || team === "bravo" ? team : null;
@@ -260,7 +271,8 @@ export class Game {
       lookPointerId: null,
       lookLastX: 0,
       lookLastY: 0,
-      aimPointerId: null
+      aimPointerId: null,
+      firePointerId: null
     };
     this._mobileBound = false;
 
@@ -360,6 +372,7 @@ export class Game {
     this.flagInteractVisible = false;
     this.flagInteractCooldownUntil = 0;
     this.scoreHudState = { show: null, alpha: null, bravo: null };
+    this.pvpImmuneHintUntil = 0;
 
     this._initialized = false;
     this.mapId = "forest_frontline";
@@ -435,7 +448,8 @@ export class Game {
       enemyMap: configureColorTexture("/assets/graphics/world/textures/metal.svg", 1, 1),
       skyMap: configureColorTexture("/assets/graphics/world/sky/sky.svg", 1, 1),
       muzzleFlashMap: configureSpriteTexture("/assets/graphics/world/sprites/muzzleflash.svg"),
-      sparkMap: configureSpriteTexture("/assets/graphics/world/sprites/spark.svg")
+      sparkMap: configureSpriteTexture("/assets/graphics/world/sprites/spark.svg"),
+      centerAdMap: configureSpriteTexture(CENTER_AD_IMAGE_URL)
     };
   }
 
@@ -497,9 +511,31 @@ export class Game {
     }
   }
 
+  removeSceneObject(object, { dispose = false } = {}) {
+    if (!object) {
+      return;
+    }
+
+    this.scene.remove(object);
+    if (!dispose) {
+      return;
+    }
+
+    object.traverse((child) => {
+      if (!child?.isMesh && !child?.isSprite) {
+        return;
+      }
+      child.geometry?.dispose?.();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) {
+        material?.dispose?.();
+      }
+    });
+  }
+
   setupObjectives() {
     for (const marker of this.objectiveMarkers) {
-      this.scene.remove(marker);
+      this.removeSceneObject(marker, { dispose: true });
     }
     this.objectiveMarkers.length = 0;
     this.controlBeacon = null;
@@ -507,13 +543,13 @@ export class Game {
     this.controlCore = null;
 
     if (this.alphaFlag) {
-      this.scene.remove(this.alphaFlag);
+      this.removeSceneObject(this.alphaFlag, { dispose: true });
     }
     if (this.bravoFlag) {
-      this.scene.remove(this.bravoFlag);
+      this.removeSceneObject(this.bravoFlag, { dispose: true });
     }
     if (this.onlineCenterFlag) {
-      this.scene.remove(this.onlineCenterFlag);
+      this.removeSceneObject(this.onlineCenterFlag, { dispose: true });
     }
     this.alphaFlag = null;
     this.bravoFlag = null;
@@ -560,6 +596,10 @@ export class Game {
     this.onlineCenterFlag = centerFlagMesh;
     this.onlineCenterFlagCloth = centerFlagMesh.userData?.cloth ?? null;
     this.scene.add(centerFlagMesh);
+
+    const centerAdBillboard = this.createCenterAdBillboard(this.objective.centerFlagHome);
+    this.objectiveMarkers.push(centerAdBillboard);
+    this.scene.add(centerAdBillboard);
 
     if (this.activeMatchMode !== "online") {
       const controlBeacon = this.createControlBeacon(this.objective.controlPoint);
@@ -889,6 +929,7 @@ export class Game {
     if (!flag.carrierId) {
       this.onlineCenterFlag.visible = true;
       this.onlineCenterFlag.position.copy(flag.at);
+      this.onlineCenterFlag.rotation.set(0, 0, 0);
       return;
     }
 
@@ -903,12 +944,19 @@ export class Game {
       return;
     }
 
+    const carrierYaw = Number.isFinite(carrier.yaw) ? carrier.yaw : carrier.group.rotation.y;
+    const backX = Math.sin(carrierYaw) * REMOTE_CARRIER_FLAG_BACK_OFFSET;
+    const backZ = Math.cos(carrierYaw) * REMOTE_CARRIER_FLAG_BACK_OFFSET;
+    const sideX = Math.cos(carrierYaw) * REMOTE_CARRIER_FLAG_SIDE_OFFSET;
+    const sideZ = -Math.sin(carrierYaw) * REMOTE_CARRIER_FLAG_SIDE_OFFSET;
+
     this.onlineCenterFlag.visible = true;
     this.onlineCenterFlag.position.set(
-      carrier.group.position.x,
-      carrier.group.position.y + PLAYER_HEIGHT + 0.58,
-      carrier.group.position.z
+      carrier.group.position.x + backX + sideX,
+      carrier.group.position.y + REMOTE_CARRIER_FLAG_HEIGHT_OFFSET,
+      carrier.group.position.z + backZ + sideZ
     );
+    this.onlineCenterFlag.rotation.set(-0.16, carrierYaw - Math.PI * 0.5, 0.14);
   }
 
   applyRoomSnapshot(payload = {}) {
@@ -1065,6 +1113,40 @@ export class Game {
     return group;
   }
 
+  createCenterAdBillboard(position) {
+    const group = new THREE.Group();
+    const adTexture = this.graphics.centerAdMap;
+    if (!adTexture) {
+      return group;
+    }
+
+    const adAspect = 480 / 330;
+    const panelHeight = 1.45;
+    const panelWidth = panelHeight * adAspect;
+    const blockFaceOffset = 0.53;
+
+    const createPanel = (zOffset, yaw) => {
+      const panel = new THREE.Mesh(
+        new THREE.PlaneGeometry(panelWidth, panelHeight),
+        new THREE.MeshStandardMaterial({
+          map: adTexture,
+          color: 0xffffff,
+          roughness: 0.9,
+          metalness: 0.02
+        })
+      );
+      panel.position.set(position.x, position.y + 1.02, position.z + zOffset);
+      panel.rotation.y = yaw;
+      panel.castShadow = false;
+      panel.receiveShadow = true;
+      group.add(panel);
+    };
+
+    createPanel(blockFaceOffset, 0);
+    createPanel(-blockFaceOffset, Math.PI);
+    return group;
+  }
+
   createControlBeacon(position) {
     const group = new THREE.Group();
     group.position.set(position.x, position.y, position.z);
@@ -1205,7 +1287,6 @@ export class Game {
         this.onlineCenterFlagCloth.rotation.y = Math.sin(this.onlineCenterFlagPulse) * 0.17;
       }
       this.state.objectiveText = this.getOnlineObjectiveText();
-      this.syncOnlineFlagMeshes();
       this.updateFlagInteractUi();
       return;
     }
@@ -1592,6 +1673,17 @@ export class Game {
     return this.distanceXZ(this.playerPosition, flag.at) <= CTF_PICKUP_RADIUS;
   }
 
+  isLocalFlagCarrier() {
+    if (this.activeMatchMode === "online") {
+      const myId = this.getMySocketId();
+      if (!myId) {
+        return false;
+      }
+      return String(this.onlineCtf?.flag?.carrierId ?? "") === myId;
+    }
+    return Boolean(this.objective.playerHasEnemyFlag);
+  }
+
   updateFlagInteractUi() {
     if (!this.flagInteractBtnEl) {
       return;
@@ -1666,6 +1758,23 @@ export class Game {
     this.handlePrimaryActionUp();
   }
 
+  setRespawnBanner(message = "", visible = false) {
+    if (!this.respawnBannerEl) {
+      return;
+    }
+
+    if (!visible) {
+      this.respawnBannerEl.classList.remove("show");
+      this.respawnBannerEl.setAttribute("aria-hidden", "true");
+      this.respawnBannerEl.textContent = "";
+      return;
+    }
+
+    this.respawnBannerEl.textContent = message;
+    this.respawnBannerEl.classList.add("show");
+    this.respawnBannerEl.setAttribute("aria-hidden", "false");
+  }
+
   beginRespawnCountdown(respawnAtRaw = null) {
     const parsedRespawnAt = Number(respawnAtRaw);
     this.isRespawning = true;
@@ -1674,14 +1783,22 @@ export class Game {
         ? parsedRespawnAt
         : Date.now() + PVP_RESPAWN_MS;
     this.respawnLastSecond = -1;
+    this.localDeathAnimStartAt = Date.now();
+    this.localDeathAnimBlend = 0;
     this.leftMouseDown = false;
     this.rightMouseAiming = false;
     this.isAiming = false;
     this.handlePrimaryActionUp();
+
+    const initialSeconds = Math.max(1, Math.ceil((this.respawnEndAt - Date.now()) / 1000));
+    const message = `사망 - ${initialSeconds}초 후 부활합니다`;
+    this.setRespawnBanner(message, true);
+    this.hud.setStatus(message, true, 1.0);
   }
 
   updateRespawnCountdown() {
     if (!this.isRespawning) {
+      this.setRespawnBanner("", false);
       return;
     }
 
@@ -1689,6 +1806,7 @@ export class Game {
     if (remainingMs <= 0) {
       if (this.respawnLastSecond !== 0) {
         this.respawnLastSecond = 0;
+        this.setRespawnBanner("곧 부활합니다...", true);
         this.hud.setStatus("부활 중...", true, 0.5);
       }
       return;
@@ -1699,7 +1817,9 @@ export class Game {
       return;
     }
     this.respawnLastSecond = seconds;
-    this.hud.setStatus(`사망 - ${seconds}초 후 부활`, true, 1.0);
+    const message = `사망 - ${seconds}초 후 부활합니다`;
+    this.setRespawnBanner(message, true);
+    this.hud.setStatus(message, true, 1.0);
   }
 
   handlePlayerRespawn(payload = {}) {
@@ -1714,6 +1834,7 @@ export class Game {
 
     const hpRaw = Number(payload.hp);
     const hp = Number.isFinite(hpRaw) ? Math.max(0, Math.min(100, Math.trunc(hpRaw))) : 100;
+    const spawnShieldUntil = Number(payload.spawnShieldUntil);
     const state = payload?.state ?? null;
     const myId = this.getMySocketId();
 
@@ -1724,6 +1845,9 @@ export class Game {
       this.isRespawning = false;
       this.respawnEndAt = 0;
       this.respawnLastSecond = -1;
+      this.localDeathAnimStartAt = 0;
+      this.localDeathAnimBlend = 0;
+      this.setRespawnBanner("", false);
 
       const x = Number(state?.x);
       const y = Number(state?.y);
@@ -1743,7 +1867,12 @@ export class Game {
       this.camera.rotation.order = "YXZ";
       this.camera.rotation.y = this.yaw;
       this.camera.rotation.x = this.pitch;
-      this.hud.setStatus("부활 완료", false, 0.8);
+      if (Number.isFinite(spawnShieldUntil) && spawnShieldUntil > Date.now()) {
+        const shieldSeconds = Math.max(1, Math.ceil((spawnShieldUntil - Date.now()) / 1000));
+        this.hud.setStatus(`부활 완료 - ${shieldSeconds}초 보호`, false, 1.1);
+      } else {
+        this.hud.setStatus("부활 완료", false, 0.8);
+      }
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
       return;
     }
@@ -1757,6 +1886,7 @@ export class Game {
     const remote = this.ensureRemotePlayer(lobbyPlayer);
     if (remote && state) {
       this.applyRemoteState(remote, state, true);
+      this.clearRemoteDowned(remote);
     }
   }
 
@@ -1999,7 +2129,11 @@ export class Game {
     }
     remote.isDowned = false;
     remote.downedStartAt = 0;
+    remote.downedBlend = 0;
     remote.respawnAt = 0;
+    if (remote.group) {
+      remote.group.rotation.z = 0;
+    }
   }
 
   syncRemotePlayersFromLobby() {
@@ -2060,7 +2194,11 @@ export class Game {
   }
 
   updateRemotePlayers(delta) {
-    if (this.activeMatchMode !== "online" || this.remotePlayers.size === 0) {
+    if (this.activeMatchMode !== "online") {
+      return;
+    }
+    if (this.remotePlayers.size === 0) {
+      this.syncOnlineFlagMeshes();
       return;
     }
 
@@ -2205,8 +2343,16 @@ export class Game {
       }
 
       const base = remote.group.position;
-      this._pvpBoxMin.set(base.x - 0.38, base.y + 0.02, base.z - 0.38);
-      this._pvpBoxMax.set(base.x + 0.38, base.y + PLAYER_HEIGHT + 0.28, base.z + 0.38);
+      this._pvpBoxMin.set(
+        base.x - PVP_REMOTE_HITBOX_HALF_WIDTH,
+        base.y + PVP_REMOTE_HITBOX_FOOT_OFFSET,
+        base.z - PVP_REMOTE_HITBOX_HALF_WIDTH
+      );
+      this._pvpBoxMax.set(
+        base.x + PVP_REMOTE_HITBOX_HALF_WIDTH,
+        base.y + PLAYER_HEIGHT + PVP_REMOTE_HITBOX_TOP_OFFSET,
+        base.z + PVP_REMOTE_HITBOX_HALF_WIDTH
+      );
       this._pvpBox.set(this._pvpBoxMin, this._pvpBoxMax);
 
       const hitPoint = this.raycaster.ray.intersectBox(this._pvpBox, this._pvpHitPoint);
@@ -2241,6 +2387,24 @@ export class Game {
     }
 
     socket.emit("pvp:shoot", { targetId });
+  }
+
+  handlePvpImmune(payload = {}) {
+    if (this.activeMatchMode !== "online" || !this.isRunning || this.isGameOver) {
+      return;
+    }
+
+    const targetId = String(payload?.targetId ?? "");
+    if (!targetId) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now < this.pvpImmuneHintUntil) {
+      return;
+    }
+    this.pvpImmuneHintUntil = now + PVP_IMMUNE_HINT_COOLDOWN_MS;
+    this.hud.setStatus("대상이 리스폰 보호 중입니다.", true, 0.55);
   }
 
   handlePvpDamage(payload = {}) {
@@ -2614,7 +2778,8 @@ export class Game {
       this.mobileState.stickPointerId = null;
       this.mobileState.lookPointerId = null;
       this.mobileState.aimPointerId = null;
-      this.leftMouseDown = false;
+      this.mobileState.firePointerId = null;
+      this.handlePrimaryActionUp();
       if (this.mobileEnabled) {
         this.isAiming = false;
       }
@@ -2755,16 +2920,21 @@ export class Game {
       if (!acceptPointer(event)) {
         return;
       }
+      if (this.mobileState.firePointerId !== null) {
+        return;
+      }
       event.preventDefault();
       this.sound.unlock();
+      this.mobileState.firePointerId = event.pointerId;
       this.handlePrimaryActionDown();
       this.mobileFireButtonEl.setPointerCapture(event.pointerId);
     });
 
     const endFire = (event) => {
-      if (!acceptPointer(event)) {
+      if (!acceptPointer(event) || event.pointerId !== this.mobileState.firePointerId) {
         return;
       }
+      this.mobileState.firePointerId = null;
       this.handlePrimaryActionUp();
       if (this.mobileFireButtonEl.hasPointerCapture?.(event.pointerId)) {
         this.mobileFireButtonEl.releasePointerCapture(event.pointerId);
@@ -2922,6 +3092,7 @@ export class Game {
       this.setTabScoreboardVisible(false);
       this.mobileState.lookPointerId = null;
       this.mobileState.aimPointerId = null;
+      this.mobileState.firePointerId = null;
       this.resetMobileStick();
     });
 
@@ -2980,6 +3151,7 @@ export class Game {
         this.handlePrimaryActionUp();
         this.mobileState.lookPointerId = null;
         this.mobileState.aimPointerId = null;
+        this.mobileState.firePointerId = null;
         this.resetMobileStick();
         this.mouseLookEnabled = false;
 
@@ -3316,6 +3488,7 @@ export class Game {
       this.handlePrimaryActionUp();
       this.mobileState.lookPointerId = null;
       this.mobileState.aimPointerId = null;
+      this.mobileState.firePointerId = null;
       this.resetMobileStick();
       this.mouseLookEnabled = false;
       this.hud.showPauseOverlay(false);
@@ -3428,15 +3601,20 @@ export class Game {
     this.mobileState.lookPointerId = null;
     this.mobileState.stickPointerId = null;
     this.mobileState.aimPointerId = null;
+    this.mobileState.firePointerId = null;
     this.resetMobileStick();
     this.handlePrimaryActionUp();
     this.isRespawning = false;
     this.respawnEndAt = 0;
     this.respawnLastSecond = -1;
+    this.localDeathAnimStartAt = 0;
+    this.localDeathAnimBlend = 0;
+    this.setRespawnBanner("", false);
     this.setTabScoreboardVisible(false);
     this.flagInteractVisible = false;
     this.flagInteractBtnEl?.classList.remove("show");
     this.flagInteractBtnEl?.setAttribute("aria-hidden", "true");
+    this.pvpImmuneHintUntil = 0;
     this.scoreHudState.show = null;
     this.scoreHudState.alpha = null;
     this.scoreHudState.bravo = null;
@@ -3544,7 +3722,12 @@ export class Game {
         return;
       }
 
-      this.spawnHitSpark(remoteHit.point);
+      this.spawnHitSpark(remoteHit.point, {
+        color: 0xffd58a,
+        scale: 0.95,
+        lift: 0.3,
+        ttl: 0.22
+      });
       this.emitPvpShot(remoteHit.id);
       return;
     }
@@ -3606,8 +3789,11 @@ export class Game {
     const sprinting =
       this.keys.has("ShiftLeft") ||
       this.keys.has("ShiftRight") ||
-      (this.mobileEnabled && mobileMoveMagnitude > 0.88);
-    const speed = sprinting ? PLAYER_SPRINT : PLAYER_SPEED;
+      (this.mobileEnabled && mobileMoveMagnitude >= MOBILE_SPRINT_THRESHOLD);
+    let speed = sprinting ? PLAYER_SPRINT : PLAYER_SPEED;
+    if (this.isLocalFlagCarrier()) {
+      speed *= FLAG_CARRIER_SPEED_MULTIPLIER;
+    }
 
     if (forward !== 0 || strafe !== 0) {
       const sinYaw = Math.sin(this.yaw);
@@ -3736,7 +3922,7 @@ export class Game {
     const sprinting =
       this.keys.has("ShiftLeft") ||
       this.keys.has("ShiftRight") ||
-      (this.mobileEnabled && mobileMoveMagnitude > 0.88);
+      (this.mobileEnabled && mobileMoveMagnitude >= MOBILE_SPRINT_THRESHOLD);
     const aiming =
       gunMode &&
       (this.isAiming || this.rightMouseAiming) &&
@@ -3789,9 +3975,10 @@ export class Game {
       }
     }
 
-    this.weaponView.visible = gunMode;
+    const hideViewModel = this.isRespawning || this.localDeathAnimBlend > 0.04;
+    this.weaponView.visible = gunMode && !hideViewModel;
     if (this.shovelView) {
-      this.shovelView.visible = digMode;
+      this.shovelView.visible = digMode && !hideViewModel;
     }
     const nextFov = gunMode
       ? THREE.MathUtils.lerp(DEFAULT_FOV, AIM_FOV, this.aimBlend)
@@ -3801,10 +3988,27 @@ export class Game {
       this.camera.updateProjectionMatrix();
       this.lastAppliedFov = nextFov;
     }
+    if (this.isRespawning) {
+      if (this.localDeathAnimStartAt <= 0) {
+        this.localDeathAnimStartAt = Date.now();
+      }
+      const elapsedMs = Math.max(0, Date.now() - this.localDeathAnimStartAt);
+      const targetBlend = THREE.MathUtils.clamp(elapsedMs / LOCAL_DEATH_FALL_MS, 0, 1);
+      this.localDeathAnimBlend = Math.max(this.localDeathAnimBlend, targetBlend);
+    } else if (this.localDeathAnimBlend > 0) {
+      this.localDeathAnimBlend = Math.max(0, this.localDeathAnimBlend - delta * 5.5);
+    }
+
     this.camera.position.copy(this.playerPosition);
     this.camera.rotation.order = "YXZ";
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
+    this.camera.rotation.z = 0;
+    if (this.localDeathAnimBlend > 0) {
+      this.camera.position.y -= LOCAL_DEATH_OFFSET_Y * this.localDeathAnimBlend;
+      this.camera.rotation.x += LOCAL_DEATH_PITCH * this.localDeathAnimBlend;
+      this.camera.rotation.z = LOCAL_DEATH_ROLL * this.localDeathAnimBlend;
+    }
   }
 
   tick(delta) {
@@ -3834,7 +4038,11 @@ export class Game {
       this.emitLocalPlayerSync(delta);
     }
 
-    if (!this.isRunning || this.isGameOver || (!this.mouseLookEnabled && !isChatting)) {
+    this.updateOnlineRoundCountdown();
+    this.updateRespawnCountdown();
+
+    const requiresLockedLook = !this.mouseLookEnabled && !isChatting && !this.isRespawning;
+    if (!this.isRunning || this.isGameOver || requiresLockedLook) {
       this.hud.update(delta, {
         ...this.state,
         ...this.weapon.getState(),
@@ -3842,9 +4050,6 @@ export class Game {
       });
       return;
     }
-
-    this.updateOnlineRoundCountdown();
-    this.updateRespawnCountdown();
     if (this.isRespawning) {
       this.leftMouseDown = false;
       this.rightMouseAiming = false;
@@ -4101,25 +4306,41 @@ export class Game {
     );
   }
 
-  spawnHitSpark(position) {
+  spawnHitSpark(position, { color = 0xd6eeff, scale = 0.75, lift = 0.35, ttl = 0.18 } = {}) {
+    if (!position) {
+      return;
+    }
+
+    if (this.hitSparks.length >= MAX_ACTIVE_HIT_SPARKS) {
+      const overflowCount = this.hitSparks.length - MAX_ACTIVE_HIT_SPARKS + 1;
+      for (let i = 0; i < overflowCount; i += 1) {
+        const oldest = this.hitSparks.shift();
+        if (!oldest) {
+          break;
+        }
+        this.scene.remove(oldest.sprite);
+        oldest.sprite.material.dispose();
+      }
+    }
+
     const sprite = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: this.graphics.sparkMap,
-        color: 0xd6eeff,
+        color,
         transparent: true,
         opacity: 0.95,
         depthWrite: false,
         blending: THREE.AdditiveBlending
       })
     );
-    sprite.scale.setScalar(0.75);
+    sprite.scale.setScalar(scale);
     sprite.position.copy(position);
-    sprite.position.y += 0.35;
+    sprite.position.y += lift;
     this.scene.add(sprite);
     this.hitSparks.push({
       sprite,
-      life: 0.18,
-      ttl: 0.18
+      life: ttl,
+      ttl
     });
   }
 
@@ -4199,6 +4420,10 @@ export class Game {
 
     socket.on("pvp:damage", (payload) => {
       this.handlePvpDamage(payload);
+    });
+
+    socket.on("pvp:immune", (payload) => {
+      this.handlePvpImmune(payload);
     });
 
     socket.on("player:respawn", (payload) => {

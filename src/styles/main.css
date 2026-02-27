@@ -659,6 +659,39 @@ canvas {
   opacity: 1;
 }
 
+#respawn-banner {
+  position: fixed;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%) scale(0.96);
+  z-index: 31;
+  min-width: 220px;
+  max-width: min(88vw, 520px);
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 152, 132, 0.44);
+  background:
+    linear-gradient(135deg, rgba(53, 14, 18, 0.9), rgba(25, 9, 12, 0.94)),
+    rgba(30, 9, 12, 0.92);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 236, 232, 0.09),
+    0 14px 30px rgba(0, 0, 0, 0.42);
+  color: #ffd9d1;
+  text-align: center;
+  font-size: 0.94rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+#respawn-banner.show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
 #build-hud {
   position: fixed;
   left: 50%;

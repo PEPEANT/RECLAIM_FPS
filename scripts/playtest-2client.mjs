@@ -295,7 +295,10 @@ async function scenarioCombatAndCtfInteraction(url) {
     a.emit("block:update", { action: "place", x: 12, y: 5, z: 12, typeId: 6 });
     await waitFor(() => sawBlockSync, 4000);
 
-    a.emit("pvp:shoot", { targetId: b.id });
+    for (let i = 0; i < 12 && !sawPvpDamage; i += 1) {
+      a.emit("pvp:shoot", { targetId: b.id });
+      await sleep(220);
+    }
     await waitFor(() => sawPvpDamage, 4000);
 
     const bSame = await emitAck(b, "room:set-team", { team: "alpha" });

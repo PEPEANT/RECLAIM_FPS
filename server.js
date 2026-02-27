@@ -55,6 +55,7 @@ async function probeExistingServer(port) {
 const DEFAULT_ROOM_CODE = "GLOBAL";
 const MAX_ROOM_PLAYERS = 50;
 const PVP_DAMAGE = 34;
+const RESPAWN_SHIELD_MS = 1800;
 const BLOCK_KEY_SEPARATOR = "|";
 const BLOCK_TYPE_MIN = 1;
 const BLOCK_TYPE_MAX = 8;
@@ -194,6 +195,9 @@ function getRoomState(room) {
     ensurePlayerStock(player);
     player.hp = Number.isFinite(player.hp) ? Math.max(0, Math.trunc(player.hp)) : 100;
     player.respawnAt = Number.isFinite(player.respawnAt) ? Math.max(0, Math.trunc(player.respawnAt)) : 0;
+    player.spawnShieldUntil = Number.isFinite(player.spawnShieldUntil)
+      ? Math.max(0, Math.trunc(player.spawnShieldUntil))
+      : 0;
     player.kills = Number.isFinite(player.kills) ? Math.max(0, Math.trunc(player.kills)) : 0;
     player.deaths = Number.isFinite(player.deaths) ? Math.max(0, Math.trunc(player.deaths)) : 0;
     player.captures = Number.isFinite(player.captures) ? Math.max(0, Math.trunc(player.captures)) : 0;
@@ -319,12 +323,14 @@ function schedulePlayerRespawn(room, player) {
     clearPlayerRespawnTimer(current);
     current.hp = 100;
     current.respawnAt = 0;
+    current.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
     current.state = getSpawnStateForTeam(current.team);
 
     const roomState = touchRoomState(room);
     io.to(room.code).emit("player:respawn", {
       id: current.id,
       hp: current.hp,
+      spawnShieldUntil: Number(current.spawnShieldUntil ?? 0),
       state: current.state,
       roomStateRevision: roomState.revision
     });
@@ -358,6 +364,7 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null }
     clearPlayerRespawnTimer(player);
     player.hp = 100;
     player.respawnAt = 0;
+    player.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
     player.state = getSpawnStateForTeam(player.team);
   }
 
@@ -824,6 +831,7 @@ function serializeRoom(room) {
       state: player.state ?? null,
       hp: Number(player.hp ?? 100),
       respawnAt: Number(player.respawnAt ?? 0),
+      spawnShieldUntil: Number(player.spawnShieldUntil ?? 0),
       kills: Number(player.kills ?? 0),
       deaths: Number(player.deaths ?? 0),
       captures: Number(player.captures ?? 0),
@@ -985,6 +993,7 @@ function joinDefaultRoom(socket, nameOverride = null) {
     stock: createDefaultBlockStock(),
     hp: 100,
     respawnAt: 0,
+    spawnShieldUntil: Date.now() + RESPAWN_SHIELD_MS,
     respawnTimer: null,
     kills: 0,
     deaths: 0,
@@ -1320,6 +1329,19 @@ io.on("connection", (socket) => {
     const shooterHp = Number.isFinite(shooter.hp) ? shooter.hp : 100;
     const currentHp = Number.isFinite(target.hp) ? target.hp : 100;
     if (shooterHp <= 0 || currentHp <= 0) {
+      return;
+    }
+
+    const now = Date.now();
+    if ((Number(shooter.spawnShieldUntil) || 0) > now) {
+      shooter.spawnShieldUntil = 0;
+    }
+    if ((Number(target.spawnShieldUntil) || 0) > now) {
+      socket.emit("pvp:immune", {
+        targetId: target.id,
+        until: Number(target.spawnShieldUntil),
+        reason: "respawn_shield"
+      });
       return;
     }
 
