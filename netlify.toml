@@ -4,5 +4,6 @@ publish = "dist"
 
 [[redirects]]
 from = "/*"
-to = "/maintenance.html"
+to = "/index.html"
 status = 200
+
