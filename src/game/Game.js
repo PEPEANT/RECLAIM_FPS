@@ -348,6 +348,7 @@ export class Game {
     this.allowUnlockedLook = !this.pointerLockSupported;
     this.mouseLookEnabled = this.allowUnlockedLook;
     this.mobileEnabled = isLikelyTouchDevice();
+    this.mobileModeLocked = this.mobileEnabled;
     if (this.mobileEnabled) {
       this.allowUnlockedLook = true;
       this.mouseLookEnabled = true;
@@ -515,6 +516,7 @@ export class Game {
     this.centerAdVolumeScale = readStoredCenterAdVolumeScale();
     this.centerAdVolumeBeforeMute = Math.max(0.1, this.centerAdVolumeScale);
     this.centerAdLastSyncSentAt = 0;
+    this.centerAdLastAppliedSyncAt = 0;
     this.centerAdFailureCounts = new Map();
     this.centerAdPlaybackPrimed = false;
     this.centerAdWatchdogNextAt = 0;
@@ -1743,6 +1745,13 @@ export class Game {
       phase === "play" && this.centerAdPlayingIndex >= 0
         ? this.centerAdPlayingIndex
         : this.centerAdVideoIndex;
+    const playbackReady =
+      phase === "play" &&
+      video &&
+      !video.paused &&
+      video.readyState >= 1 &&
+      Number.isFinite(video.currentTime);
+
     const payload = {
       phase,
       index: this.normalizeCenterAdIndex(index),
@@ -1750,14 +1759,17 @@ export class Game {
       restUntil: phase === "rest" ? Math.max(now, Math.trunc(this.centerAdRestUntil || 0)) : 0
     };
 
-    if (
-      phase === "play" &&
-      video &&
-      !video.paused &&
-      video.readyState >= 1 &&
-      Number.isFinite(video.currentTime)
-    ) {
+    if (playbackReady) {
       payload.time = Math.max(0, Number(video.currentTime));
+    } else if (phase === "play") {
+      // Avoid broadcasting a broken play state (time=0) to all clients.
+      if (!force) {
+        return;
+      }
+      payload.phase = "rest";
+      payload.index = this.normalizeCenterAdIndex(this.centerAdVideoIndex);
+      payload.time = 0;
+      payload.restUntil = now + CENTER_AD_RETRY_MS;
     }
 
     socket.emit("ad:sync", payload);
@@ -1767,6 +1779,15 @@ export class Game {
   applyCenterAdSyncPayload(payload = {}) {
     if (this.activeMatchMode !== "online" || this.isOnlineHost()) {
       return;
+    }
+
+    const syncAtRaw = Number(payload.serverNow ?? payload.updatedAt);
+    const syncAt = Number.isFinite(syncAtRaw) ? Math.max(0, Math.trunc(syncAtRaw)) : 0;
+    if (syncAt > 0 && syncAt + 250 < this.centerAdLastAppliedSyncAt) {
+      return;
+    }
+    if (syncAt > 0) {
+      this.centerAdLastAppliedSyncAt = Math.max(this.centerAdLastAppliedSyncAt, syncAt);
     }
 
     const phaseRaw = String(payload.phase ?? "").trim().toLowerCase();
@@ -4479,6 +4500,9 @@ export class Game {
           return;
         }
         this.mobileEnabled = true;
+        this.mobileModeLocked = true;
+        this.allowUnlockedLook = true;
+        this.mouseLookEnabled = true;
         this.setupMobileControls();
         this.updateMobileControlsVisibility();
       },
@@ -4982,7 +5006,12 @@ export class Game {
     this.optionsMenuOpen = false;
     this.hud.hideGameOver();
     this.isRunning = true;
-    this.mobileEnabled = isLikelyTouchDevice();
+    this.mobileEnabled = this.mobileModeLocked || isLikelyTouchDevice();
+    if (this.mobileEnabled) {
+      this.mobileModeLocked = true;
+      this.allowUnlockedLook = true;
+      this.mouseLookEnabled = true;
+    }
     if (this.mobileEnabled && !this._mobileBound) {
       this.setupMobileControls();
     }
@@ -4993,10 +5022,12 @@ export class Game {
     this.primeCenterAdPlaybackUnlock();
     this.setCenterAdActive(true);
     this.isGameOver = false;
-    this.mouseLookEnabled = this.allowUnlockedLook;
+    this.mouseLookEnabled = this.mobileEnabled ? true : this.allowUnlockedLook;
     this.syncCursorVisibility();
     this.clock.start();
-    this.tryPointerLock();
+    if (!this.mobileEnabled) {
+      this.tryPointerLock();
+    }
 
     if (!this.pointerLockSupported) {
       this.hud.setStatus("포인터 락을 사용할 수 없어 자유 시점 모드로 전환합니다.", true, 1.2);
@@ -5556,7 +5587,8 @@ export class Game {
     this.updateOnlineRoundCountdown();
     this.updateRespawnCountdown();
 
-    const requiresLockedLook = !this.mouseLookEnabled && !isChatting && !this.isRespawning;
+    const requiresLockedLook =
+      !this.mobileEnabled && !this.mouseLookEnabled && !isChatting && !this.isRespawning;
     if (!this.isRunning || this.isGameOver || requiresLockedLook) {
       this.hud.update(delta, {
         ...this.state,
@@ -5689,7 +5721,11 @@ export class Game {
   }
 
   onResize() {
-    this.mobileEnabled = isLikelyTouchDevice();
+    this.mobileEnabled = this.mobileModeLocked || isLikelyTouchDevice();
+    if (this.mobileEnabled) {
+      this.mobileModeLocked = true;
+      this.allowUnlockedLook = true;
+    }
     if (this.mobileEnabled && !this._mobileBound) {
       this.setupMobileControls();
     }
@@ -5701,6 +5737,13 @@ export class Game {
   }
 
   tryPointerLock() {
+    if (this.mobileEnabled) {
+      this.allowUnlockedLook = true;
+      this.mouseLookEnabled = true;
+      this.hud.showPauseOverlay(false);
+      this.syncCursorVisibility();
+      return;
+    }
     if (
       !this.pointerLockSupported ||
       this.pointerLocked ||

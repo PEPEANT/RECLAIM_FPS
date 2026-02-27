@@ -978,6 +978,7 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
     mode: state.mode,
     revision: state.revision,
     updatedAt: state.updatedAt,
+    ad: state.ad,
     targetScore: state.targetScore,
     blocks: serializeBlocksSnapshot(room),
     flag: state.flag,
