@@ -194,6 +194,9 @@ async function checkSocketServer() {
     let startedCount = 0;
     let receivedChatText = "";
     let latestRoomPlayers = [];
+    let ctfPickupSeen = false;
+    let ctfCaptureSeen = false;
+    let snapshotReceived = false;
     c1.on("room:started", () => {
       startedCount += 1;
     });
@@ -205,6 +208,17 @@ async function checkSocketServer() {
     });
     c1.on("chat:message", (payload) => {
       receivedChatText = payload?.text ?? "";
+    });
+    c1.on("room:snapshot", (payload) => {
+      snapshotReceived = Array.isArray(payload?.blocks);
+    });
+    c1.on("ctf:update", (payload) => {
+      const eventType = payload?.event?.type ?? "";
+      if (eventType === "pickup") {
+        ctfPickupSeen = true;
+      } else if (eventType === "capture") {
+        ctfCaptureSeen = true;
+      }
     });
 
     const created = await emitWithAck(c1, "room:create", { name: "CheckHost" });
@@ -223,6 +237,19 @@ async function checkSocketServer() {
     const teamGuest = await emitWithAck(c2, "room:set-team", { team: "bravo" });
     assert(teamHost?.ok === true, `host team select failed: ${JSON.stringify(teamHost)}`);
     assert(teamGuest?.ok === true, `guest team select failed: ${JSON.stringify(teamGuest)}`);
+
+    const snapshotAck = await emitWithAck(c1, "room:request-snapshot");
+    assert(snapshotAck?.ok === true, `room:request-snapshot failed: ${JSON.stringify(snapshotAck)}`);
+    assert(
+      Array.isArray(snapshotAck?.snapshot?.blocks),
+      `snapshot blocks missing: ${JSON.stringify(snapshotAck)}`
+    );
+    await waitFor(() => snapshotReceived, 3000);
+
+    c1.emit("player:sync", { x: 42, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    await waitFor(() => ctfPickupSeen, 4000);
+    c1.emit("player:sync", { x: -42, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    await waitFor(() => ctfCaptureSeen, 4000);
 
     const left = await emitWithAck(c2, "room:leave");
     assert(left?.ok === true, `room:leave failed: ${JSON.stringify(left)}`);

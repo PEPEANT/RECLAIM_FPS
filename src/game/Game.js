@@ -24,6 +24,25 @@ const REMOTE_SYNC_INTERVAL = 1 / 12;
 const REMOTE_NAME_TAG_DISTANCE = 72;
 const PVP_HIT_SCORE = 10;
 const PVP_KILL_SCORE = 100;
+const BLOCK_KEY_SEPARATOR = "|";
+
+function normalizeTeamId(team) {
+  return team === "alpha" || team === "bravo" ? team : null;
+}
+
+function getEnemyTeamId(team) {
+  if (team === "alpha") {
+    return "bravo";
+  }
+  if (team === "bravo") {
+    return "alpha";
+  }
+  return null;
+}
+
+function toBlockKey(x, y, z) {
+  return `${x}${BLOCK_KEY_SEPARATOR}${y}${BLOCK_KEY_SEPARATOR}${z}`;
+}
 
 function isLikelyTouchDevice() {
   if (typeof window === "undefined" || typeof navigator === "undefined") {
@@ -221,6 +240,8 @@ export class Game {
     this._pvpBoxMin = new THREE.Vector3();
     this._pvpBoxMax = new THREE.Vector3();
     this._pvpHitPoint = new THREE.Vector3();
+    this.pendingRemoteBlocks = new Map();
+    this.latestRoomSnapshot = null;
 
     this.objective = {
       alphaBase: new THREE.Vector3(),
@@ -242,6 +263,23 @@ export class Game {
     this.controlRing = null;
     this.controlCore = null;
     this.objectiveMarkers = [];
+    this.onlineCtf = {
+      revision: 0,
+      flags: {
+        alpha: {
+          home: new THREE.Vector3(),
+          at: new THREE.Vector3(),
+          carrierId: null
+        },
+        bravo: {
+          home: new THREE.Vector3(),
+          at: new THREE.Vector3(),
+          carrierId: null
+        }
+      },
+      score: { alpha: 0, bravo: 0 },
+      captures: { alpha: 0, bravo: 0 }
+    };
 
     this._initialized = false;
   }
@@ -425,7 +463,274 @@ export class Game {
     this.objectiveMarkers.push(alphaBeacon, bravoBeacon, controlBeacon);
     this.scene.add(alphaBeacon, bravoBeacon, controlBeacon);
     this.applyControlVisual(0);
+    this.resetOnlineCtfFromArena();
     this.state.objectiveText = this.getObjectiveText();
+  }
+
+  resetOnlineCtfFromArena() {
+    this.onlineCtf.revision = 0;
+    this.onlineCtf.flags.alpha.home.copy(this.objective.alphaFlagHome);
+    this.onlineCtf.flags.alpha.at.copy(this.objective.alphaFlagHome);
+    this.onlineCtf.flags.alpha.carrierId = null;
+    this.onlineCtf.flags.bravo.home.copy(this.objective.bravoFlagHome);
+    this.onlineCtf.flags.bravo.at.copy(this.objective.bravoFlagHome);
+    this.onlineCtf.flags.bravo.carrierId = null;
+    this.onlineCtf.score.alpha = 0;
+    this.onlineCtf.score.bravo = 0;
+    this.onlineCtf.captures.alpha = 0;
+    this.onlineCtf.captures.bravo = 0;
+    this.syncOnlineFlagMeshes();
+  }
+
+  getPlayerNameById(id) {
+    const key = String(id ?? "");
+    if (!key) {
+      return "PLAYER";
+    }
+    const player = this.lobbyState.players.find((entry) => String(entry?.id ?? "") === key);
+    return String(player?.name ?? "PLAYER");
+  }
+
+  getOnlineObjectiveText() {
+    const myTeam = normalizeTeamId(this.getMyTeam());
+    if (!myTeam) {
+      return "Objective: select ALPHA or BRAVO team";
+    }
+
+    const enemyTeam = getEnemyTeamId(myTeam);
+    const myId = this.getMySocketId();
+    const myFlag = this.onlineCtf.flags[myTeam];
+    const enemyFlag = enemyTeam ? this.onlineCtf.flags[enemyTeam] : null;
+
+    if (enemyFlag?.carrierId === myId) {
+      return "Objective: return enemy flag to your base";
+    }
+    if (enemyFlag?.carrierId) {
+      return "Objective: escort your flag carrier";
+    }
+    if (myFlag?.carrierId && myFlag.carrierId !== myId) {
+      return "Objective: recover your stolen flag";
+    }
+
+    return "Objective: capture enemy flag";
+  }
+
+  showOnlineCtfEvent(event = {}) {
+    const type = String(event.type ?? "").trim();
+    if (!type) {
+      return;
+    }
+
+    const byPlayerId = String(event.byPlayerId ?? "");
+    const byName = this.getPlayerNameById(byPlayerId);
+    const byTeam = normalizeTeamId(event.byTeam);
+    const isMine = byPlayerId && byPlayerId === this.getMySocketId();
+
+    if (type === "pickup") {
+      const text = isMine
+        ? "Flag secured. Return to base."
+        : `${byName} took the flag (${String(byTeam ?? "team").toUpperCase()})`;
+      this.hud.setStatus(text, false, 1.1);
+      return;
+    }
+
+    if (type === "capture") {
+      const text = isMine ? "Flag captured +500" : `${byName} captured the flag`;
+      this.hud.setStatus(text, false, 1.3);
+      return;
+    }
+
+    if (type === "reset") {
+      this.hud.setStatus("Flag returned to base", true, 0.9);
+      return;
+    }
+
+    if (type === "start") {
+      this.hud.setStatus("CTF active. Capture enemy flag.", false, 0.9);
+    }
+  }
+
+  applyOnlineStatePayload(payload = {}, { showEvent = false } = {}) {
+    const revision = Number(payload.revision);
+    if (Number.isFinite(revision)) {
+      this.onlineCtf.revision = Math.max(this.onlineCtf.revision, Math.trunc(revision));
+    }
+
+    const readCoord = (value, fallback) => {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : fallback;
+    };
+
+    for (const team of ["alpha", "bravo"]) {
+      const flagPayload = payload?.flags?.[team] ?? null;
+      const target = this.onlineCtf.flags[team];
+      const homeFallback = team === "alpha" ? this.objective.alphaFlagHome : this.objective.bravoFlagHome;
+
+      if (flagPayload?.home) {
+        target.home.set(
+          readCoord(flagPayload.home.x, homeFallback.x),
+          readCoord(flagPayload.home.y, homeFallback.y),
+          readCoord(flagPayload.home.z, homeFallback.z)
+        );
+      } else {
+        target.home.copy(homeFallback);
+      }
+
+      if (flagPayload?.at) {
+        target.at.set(
+          readCoord(flagPayload.at.x, target.home.x),
+          readCoord(flagPayload.at.y, target.home.y),
+          readCoord(flagPayload.at.z, target.home.z)
+        );
+      } else {
+        target.at.copy(target.home);
+      }
+
+      const carrierId = String(flagPayload?.carrierId ?? "").trim();
+      target.carrierId = carrierId || null;
+    }
+
+    const scoreAlpha = Number(payload?.score?.alpha);
+    const scoreBravo = Number(payload?.score?.bravo);
+    if (Number.isFinite(scoreAlpha)) {
+      this.onlineCtf.score.alpha = Math.trunc(scoreAlpha);
+    }
+    if (Number.isFinite(scoreBravo)) {
+      this.onlineCtf.score.bravo = Math.trunc(scoreBravo);
+    }
+
+    const capAlpha = Number(payload?.captures?.alpha);
+    const capBravo = Number(payload?.captures?.bravo);
+    if (Number.isFinite(capAlpha)) {
+      this.onlineCtf.captures.alpha = Math.trunc(capAlpha);
+    }
+    if (Number.isFinite(capBravo)) {
+      this.onlineCtf.captures.bravo = Math.trunc(capBravo);
+    }
+
+    if (this.activeMatchMode === "online") {
+      const myTeam = normalizeTeamId(this.getMyTeam());
+      if (myTeam) {
+        this.state.captures = Number(this.onlineCtf.captures[myTeam] ?? 0);
+      }
+      this.state.objectiveText = this.getOnlineObjectiveText();
+    }
+
+    this.syncOnlineFlagMeshes();
+
+    if (showEvent) {
+      this.showOnlineCtfEvent(payload?.event ?? null);
+    }
+  }
+
+  syncOnlineFlagMeshes() {
+    if (!this.alphaFlag || !this.bravoFlag) {
+      return;
+    }
+
+    const myId = this.getMySocketId();
+    const applyFlag = (team, mesh) => {
+      const flag = this.onlineCtf.flags[team];
+      if (!flag) {
+        return;
+      }
+
+      if (!flag.carrierId) {
+        mesh.visible = true;
+        mesh.position.copy(flag.at);
+        return;
+      }
+
+      if (flag.carrierId === myId) {
+        mesh.visible = false;
+        return;
+      }
+
+      const carrier = this.remotePlayers.get(flag.carrierId);
+      if (!carrier) {
+        mesh.visible = false;
+        return;
+      }
+
+      mesh.visible = true;
+      mesh.position.set(
+        carrier.group.position.x,
+        carrier.group.position.y + PLAYER_HEIGHT + 0.58,
+        carrier.group.position.z
+      );
+    };
+
+    applyFlag("alpha", this.alphaFlag);
+    applyFlag("bravo", this.bravoFlag);
+  }
+
+  applyRoomSnapshot(payload = {}) {
+    const blocks = Array.isArray(payload.blocks) ? payload.blocks : null;
+    if (!blocks) {
+      return;
+    }
+
+    this.latestRoomSnapshot = payload;
+    if (this.activeMatchMode !== "online" && this.isRunning) {
+      return;
+    }
+
+    const normalize = (entry = {}) => {
+      const action = entry.action === "place" ? "place" : entry.action === "remove" ? "remove" : null;
+      if (!action) {
+        return null;
+      }
+
+      const rawX = Number(entry.x);
+      const rawY = Number(entry.y);
+      const rawZ = Number(entry.z);
+      if (!Number.isFinite(rawX) || !Number.isFinite(rawY) || !Number.isFinite(rawZ)) {
+        return null;
+      }
+
+      const normalized = {
+        action,
+        x: Math.trunc(rawX),
+        y: Math.trunc(rawY),
+        z: Math.trunc(rawZ)
+      };
+
+      if (action === "place") {
+        const typeId = Number(entry.typeId);
+        if (!Number.isFinite(typeId)) {
+          return null;
+        }
+        normalized.typeId = Math.trunc(typeId);
+      }
+
+      return normalized;
+    };
+
+    this.voxelWorld.generateTerrain();
+    for (const entry of blocks) {
+      const update = normalize(entry);
+      if (!update) {
+        continue;
+      }
+      if (update.action === "place") {
+        this.voxelWorld.setBlock(update.x, update.y, update.z, update.typeId);
+      } else {
+        this.voxelWorld.removeBlock(update.x, update.y, update.z);
+      }
+    }
+
+    this.pendingRemoteBlocks.clear();
+    this.setupObjectives();
+    this.applyOnlineStatePayload(payload, { showEvent: false });
+
+    if (this.activeMatchMode === "online" && this.isRunning) {
+      if (
+        this.isPlayerCollidingAt(this.playerPosition.x, this.playerPosition.y, this.playerPosition.z)
+      ) {
+        this.setOnlineSpawnFromLobby();
+      }
+      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+    }
   }
 
   createBaseMarker(position, color) {
@@ -582,6 +887,10 @@ export class Game {
   }
 
   getObjectiveText() {
+    if (this.activeMatchMode === "online") {
+      return this.getOnlineObjectiveText();
+    }
+
     if (this.objective.playerHasEnemyFlag) {
       return "\uBAA9\uD45C: \uC544\uAD70 \uAC70\uC810\uC73C\uB85C \uBCF5\uADC0\uD558\uC138\uC694";
     }
@@ -618,6 +927,8 @@ export class Game {
       this.bravoFlag.visible = true;
       this.bravoFlag.position.copy(this.objective.bravoFlagHome);
     }
+
+    this.resetOnlineCtfFromArena();
   }
 
   distanceXZ(from, to) {
@@ -628,6 +939,12 @@ export class Game {
 
   updateObjectives(delta) {
     if (!this.isRunning || this.isGameOver || !this.bravoFlag) {
+      return;
+    }
+
+    if (this.activeMatchMode === "online") {
+      this.state.objectiveText = this.getOnlineObjectiveText();
+      this.syncOnlineFlagMeshes();
       return;
     }
 
@@ -715,7 +1032,7 @@ export class Game {
       this.objective.controlOwner = "neutral";
       this.objective.controlBonusTimer = 0;
       this.hud.setStatus("\uC911\uC559 \uAC70\uC810 \uC0C1\uC2E4", true, 1);
-      this.addChatMessage("??????????겸뵛??????????????????????거??????輿????????????耀붾굝?????????????", "warning");
+      this.addChatMessage("??????????寃몃탿??????????????????????嫄??????雍?????????????遺얘턁?????????????", "warning");
     }
 
     this.objective.controlProgress = controlProgress;
@@ -854,7 +1171,7 @@ export class Game {
     const myId = this.getMySocketId();
     const fromLobby = this.lobbyState.players.find((player) => String(player?.id ?? "") === myId);
     const team = fromLobby?.team ?? this.lobbyState.selectedTeam ?? null;
-    return team === "alpha" || team === "bravo" ? team : null;
+    return normalizeTeamId(team);
   }
 
   isEnemyTeam(team) {
@@ -1146,6 +1463,10 @@ export class Game {
         remote.nameTag.visible = !hideEnemyName && distance <= REMOTE_NAME_TAG_DISTANCE;
       }
     }
+
+    if (this.activeMatchMode === "online") {
+      this.syncOnlineFlagMeshes();
+    }
   }
 
   setOnlineSpawnFromLobby() {
@@ -1292,9 +1613,33 @@ export class Game {
     const killed = Boolean(payload.killed);
     const victimHealth = Number(payload.victimHealth);
     const myId = this.getMySocketId();
+    const teamScore = payload?.teamScore ?? null;
+    const teamCaptures = payload?.teamCaptures ?? null;
 
     if (!myId) {
       return;
+    }
+
+    if (teamScore) {
+      const alpha = Number(teamScore.alpha);
+      const bravo = Number(teamScore.bravo);
+      if (Number.isFinite(alpha)) {
+        this.onlineCtf.score.alpha = Math.trunc(alpha);
+      }
+      if (Number.isFinite(bravo)) {
+        this.onlineCtf.score.bravo = Math.trunc(bravo);
+      }
+    }
+
+    if (teamCaptures) {
+      const alpha = Number(teamCaptures.alpha);
+      const bravo = Number(teamCaptures.bravo);
+      if (Number.isFinite(alpha)) {
+        this.onlineCtf.captures.alpha = Math.trunc(alpha);
+      }
+      if (Number.isFinite(bravo)) {
+        this.onlineCtf.captures.bravo = Math.trunc(bravo);
+      }
     }
 
     if (attackerId === myId) {
@@ -1302,7 +1647,7 @@ export class Game {
         this.state.kills += 1;
         this.state.score += PVP_KILL_SCORE;
         this.hud.pulseHitmarker();
-        this.hud.setStatus(`+${PVP_KILL_SCORE} 처치`, false, 0.55);
+        this.hud.setStatus(`+${PVP_KILL_SCORE} 泥섏튂`, false, 0.55);
 
         const now = this.clock.getElapsedTime();
         if (now - this.state.lastKillTime < 4.0) {
@@ -1325,7 +1670,7 @@ export class Game {
         this.state.health = 100;
         this.state.killStreak = 0;
         this.hud.setKillStreak(0);
-        this.hud.setStatus("사망 - 리스폰", true, 0.9);
+        this.hud.setStatus("You were eliminated. Respawning...", true, 0.9);
         this.setOnlineSpawnFromLobby();
         this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
       } else {
@@ -1333,7 +1678,7 @@ export class Game {
           ? victimHealth
           : Math.max(0, this.state.health - damage);
         this.state.health = Math.max(0, Math.min(100, nextHealth));
-        this.hud.setStatus(`피해 -${damage}`, true, 0.35);
+        this.hud.setStatus(`Damage -${damage}`, true, 0.35);
       }
     }
   }
@@ -1378,45 +1723,107 @@ export class Game {
     socket.emit("block:update", payload);
   }
 
-  applyRemoteBlockUpdate(payload = {}) {
-    if (this.activeMatchMode !== "online") {
-      return;
-    }
-
-    const sourceId = String(payload.id ?? "");
-    if (sourceId && sourceId === this.getMySocketId()) {
-      return;
-    }
-
+  normalizeRemoteBlockUpdate(payload = {}) {
     const action = payload.action === "place" ? "place" : payload.action === "remove" ? "remove" : null;
     if (!action) {
-      return;
+      return null;
     }
 
     const rawX = Number(payload.x);
     const rawY = Number(payload.y);
     const rawZ = Number(payload.z);
     if (!Number.isFinite(rawX) || !Number.isFinite(rawY) || !Number.isFinite(rawZ)) {
-      return;
+      return null;
     }
 
-    const x = Math.trunc(rawX);
-    const y = Math.trunc(rawY);
-    const z = Math.trunc(rawZ);
+    const normalized = {
+      action,
+      x: Math.trunc(rawX),
+      y: Math.trunc(rawY),
+      z: Math.trunc(rawZ)
+    };
 
     if (action === "place") {
       const typeId = Number(payload.typeId);
       if (!Number.isFinite(typeId)) {
-        return;
+        return null;
       }
-      if (this.isPlayerIntersectingBlock(x, y, z)) {
-        return;
-      }
-      this.voxelWorld.setBlock(x, y, z, Math.trunc(typeId));
+      normalized.typeId = Math.trunc(typeId);
+    }
+
+    return normalized;
+  }
+
+  queuePendingRemoteBlock(update) {
+    if (!update) {
       return;
     }
 
-    this.voxelWorld.removeBlock(x, y, z);
+    const key = toBlockKey(update.x, update.y, update.z);
+    this.pendingRemoteBlocks.set(key, {
+      ...update,
+      retries: 120
+    });
+  }
+
+  processPendingRemoteBlocks() {
+    if (this.pendingRemoteBlocks.size === 0 || this.activeMatchMode !== "online") {
+      return;
+    }
+
+    for (const [key, update] of this.pendingRemoteBlocks.entries()) {
+      if (update.action === "remove") {
+        this.voxelWorld.removeBlock(update.x, update.y, update.z);
+        this.pendingRemoteBlocks.delete(key);
+        continue;
+      }
+
+      if (!this.isPlayerIntersectingBlock(update.x, update.y, update.z)) {
+        this.voxelWorld.setBlock(update.x, update.y, update.z, update.typeId);
+        this.pendingRemoteBlocks.delete(key);
+        continue;
+      }
+
+      update.retries -= 1;
+      if (update.retries <= 0) {
+        this.pendingRemoteBlocks.delete(key);
+      }
+    }
+  }
+
+  applyRemoteBlockUpdate(payload = {}, { allowQueue = true } = {}) {
+    if (this.activeMatchMode !== "online") {
+      return false;
+    }
+
+    const sourceId = String(payload.id ?? "");
+    if (sourceId && sourceId === this.getMySocketId()) {
+      return false;
+    }
+
+    const update = this.normalizeRemoteBlockUpdate(payload);
+    if (!update) {
+      return false;
+    }
+
+    const key = toBlockKey(update.x, update.y, update.z);
+
+    if (update.action === "remove") {
+      this.pendingRemoteBlocks.delete(key);
+      this.voxelWorld.removeBlock(update.x, update.y, update.z);
+      return true;
+    }
+
+    if (this.isPlayerIntersectingBlock(update.x, update.y, update.z)) {
+      if (allowQueue) {
+        this.queuePendingRemoteBlock(update);
+      }
+      return false;
+    }
+
+    this.pendingRemoteBlocks.delete(key);
+    this.voxelWorld.setBlock(update.x, update.y, update.z, update.typeId);
+    return true;
   }
 
   updateMobileControlsVisibility() {
@@ -2137,6 +2544,10 @@ export class Game {
   start(options = {}) {
     const mode = options.mode ?? this.menuMode;
     this.activeMatchMode = mode === "online" ? "online" : "single";
+    if (this.activeMatchMode === "online" && !this.getMyTeam()) {
+      this.hud.setStatus("Select ALPHA or BRAVO before starting", true, 1);
+      return;
+    }
     this.resetState();
     this.hud.showStartOverlay(false);
     this.hud.showPauseOverlay(false);
@@ -2157,8 +2568,14 @@ export class Game {
     this.addChatMessage("Controls: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
       this.hud.setStatus("Online match: AI disabled", false, 0.9);
+      if (this.latestRoomSnapshot) {
+        this.applyRoomSnapshot(this.latestRoomSnapshot);
+      } else {
+        this.requestRoomSnapshot();
+      }
       this.setOnlineSpawnFromLobby();
       this.syncRemotePlayersFromLobby();
+      this.state.objectiveText = this.getOnlineObjectiveText();
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     }
     this.refreshOnlineStatus();
@@ -2203,6 +2620,7 @@ export class Game {
 
     this.keys.clear();
     this.remoteSyncClock = 0;
+    this.pendingRemoteBlocks.clear();
     this.mobileState.lookPointerId = null;
     this.mobileState.stickPointerId = null;
     this.mobileState.aimPointerId = null;
@@ -2291,7 +2709,7 @@ export class Game {
 
     if (this.activeMatchMode === "online") {
       if (!this.getMyTeam()) {
-        this.hud.setStatus("팀 선택 후 공격 가능", true, 0.7);
+        this.hud.setStatus("Select a team before attacking", true, 0.7);
         if (blockHit?.point) {
           this.spawnHitSpark(blockHit.point);
         }
@@ -2340,11 +2758,11 @@ export class Game {
 
       if (this.state.killStreak >= 3) {
         this.addChatMessage(
-          `${this.state.killStreak}??????????? ??????濾????????????????븐뼐?????????룸챷援??????| ???????????ㅻ깹???????+${this.state.kills * 10}`,
+          `${this.state.killStreak}??????????? ??????癲????????????????釉먮폁?????????猷몄굣???????| ????????????산뭐???????+${this.state.kills * 10}`,
           "streak"
         );
       } else {
-        this.addChatMessage(`????????濾????????????????븐뼐?????????룸챷援??????+100 (??????????獄쏅챶留덌┼??????????????筌롈살젔??${this.state.kills}??`, "kill");
+        this.addChatMessage(`????????癲????????????????釉먮폁?????????猷몄굣???????+100 (???????????꾩룆梨띰쭕?뚢뵾??????????????嶺뚮죭?댁젘??${this.state.kills}??`, "kill");
       }
     }
   }
@@ -2547,6 +2965,7 @@ export class Game {
 
     if (this.activeMatchMode === "online") {
       this.updateRemotePlayers(delta);
+      this.processPendingRemoteBlocks();
       this.emitLocalPlayerSync(delta);
     }
 
@@ -2590,8 +3009,8 @@ export class Game {
       if (damage > 0) {
         this.state.health = Math.max(0, this.state.health - damage);
         this.hud.flashDamage();
-        this.hud.setStatus(`?????????거????????遺얘턁????????熬곣뫖????????????-${damage}`, true, 0.35);
-        this.addChatMessage(`?????????거????????遺얘턁????????熬곣뫖????????????-${damage} HP`, "damage");
+        this.hud.setStatus(`?????????嫄??????????븐뼐??????????ш끽維????????????-${damage}`, true, 0.35);
+        this.addChatMessage(`?????????嫄??????????븐뼐??????????ш끽維????????????-${damage} HP`, "damage");
         if (this.state.health <= 25 && this.state.health > 0) {
           this.addChatMessage("Low health", "warning");
         }
@@ -2612,7 +3031,7 @@ export class Game {
           this.bravoFlag.position.copy(this.objective.bravoFlagHome);
         }
       }
-      this.addChatMessage("??????????????????????????嶺??? ?????????????????ㅻ깹???", "warning");
+      this.addChatMessage("??????????????????????????癲??? ??????????????????산뭐???", "warning");
       this.hud.showGameOver(this.state.score);
       this.syncCursorVisibility();
       if (document.pointerLockElement === this.renderer.domElement) {
@@ -2658,7 +3077,7 @@ export class Game {
           return;
         }
         this.hud.showPauseOverlay(true);
-        this.hud.setStatus("??????????????????濾??????????? ???????????????嫄???????????????????살몝????", true, 1);
+        this.hud.setStatus("??????????????????癲??????????? ???????????????椰????????????????????대첐????", true, 1);
         this.syncCursorVisibility();
       });
     }
@@ -2849,6 +3268,10 @@ export class Game {
       this.requestRoomList();
     });
 
+    socket.on("room:snapshot", (payload) => {
+      this.applyRoomSnapshot(payload);
+    });
+
     socket.on("player:sync", (payload) => {
       this.handleRemotePlayerSync(payload);
     });
@@ -2861,11 +3284,19 @@ export class Game {
       this.handlePvpDamage(payload);
     });
 
+    socket.on("ctf:update", (payload) => {
+      this.applyOnlineStatePayload(payload, { showEvent: true });
+    });
+
     socket.on("room:started", ({ code }) => {
       if (!code || this.lobbyState.roomCode !== code) {
         return;
       }
-      this.hud.setStatus(`??????濾?????????????????嫄????????????????(${code})`, false, 1);
+      if (!this.getMyTeam()) {
+        this.hud.setStatus("Select a team before joining the match", true, 1.1);
+        return;
+      }
+      this.hud.setStatus(`Online match started (${code})`, false, 1);
       this.start({ mode: "online" });
     });
 
@@ -2873,7 +3304,7 @@ export class Game {
       const text = String(message ?? "Lobby error");
       this.hud.setStatus(text, true, 1.2);
       if (this.mpStatusEl) {
-        this.mpStatusEl.textContent = `????????嫄???????????? ${text}`;
+        this.mpStatusEl.textContent = `????????椰???????????? ${text}`;
         this.mpStatusEl.dataset.state = "error";
       }
     });
@@ -2889,6 +3320,23 @@ export class Game {
       return;
     }
     socket.emit("room:list");
+  }
+
+  requestRoomSnapshot() {
+    const socket = this.chat?.socket;
+    if (!socket || !socket.connected || !this.lobbyState.roomCode) {
+      return;
+    }
+
+    socket.emit("room:request-snapshot", (response = {}) => {
+      if (!response.ok) {
+        return;
+      }
+      const snapshot = response.snapshot ?? null;
+      if (snapshot) {
+        this.applyRoomSnapshot(snapshot);
+      }
+    });
   }
 
   joinDefaultRoom({ force = false } = {}) {
@@ -2920,6 +3368,7 @@ export class Game {
       }
       this._nextAutoJoinAt = 0;
       this.setLobbyState(response.room ?? null);
+      this.requestRoomSnapshot();
       this.refreshOnlineStatus();
     });
   }
@@ -2932,7 +3381,7 @@ export class Game {
     const list = Array.isArray(rooms) ? rooms : [];
     const connected = !!this.chat?.isConnected?.();
     if (!connected) {
-      this.mpRoomListEl.innerHTML = '<div class="mp-empty">????????嫄?????????????????????????곕춴????????????????????????꾩룆梨띰쭕?뚢뵾??????꿔꺂??????..</div>';
+      this.mpRoomListEl.innerHTML = '<div class="mp-empty">????????椰?????????????????????????怨뺤떪????????????????????????袁⑸즴筌?씛彛???돗??????轅붽틓??????..</div>';
       return;
     }
 
@@ -2941,7 +3390,7 @@ export class Game {
       list[0] ??
       null;
     if (!globalRoom) {
-      this.mpRoomListEl.innerHTML = '<div class="mp-empty">GLOBAL ?????????????롪퍓梨????????釉먮폁???????????????????????룸챷援??????..</div>';
+      this.mpRoomListEl.innerHTML = '<div class="mp-empty">GLOBAL ?????????????濡ろ뜐筌?????????됰Ŧ????????????????????????猷몄굣???????..</div>';
       return;
     }
 
@@ -2960,6 +3409,8 @@ export class Game {
       this.lobbyState.hostId = null;
       this.lobbyState.players = [];
       this.lobbyState.selectedTeam = null;
+      this.latestRoomSnapshot = null;
+      this.pendingRemoteBlocks.clear();
       this.clearRemotePlayers();
       this.mpLobbyEl?.classList.add("hidden");
       if (this.mpRoomTitleEl) {
@@ -3054,6 +3505,7 @@ export class Game {
     this.mpTeamAlphaBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "alpha");
     this.mpTeamBravoBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "bravo");
     this.mpLobbyEl?.classList.remove("hidden");
+    this.applyOnlineStatePayload(room?.state ?? {}, { showEvent: false });
     this.syncRemotePlayersFromLobby();
     if (this.activeMatchMode === "online" && this.isRunning) {
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
@@ -3138,6 +3590,19 @@ export class Game {
     if (!this.lobbyState.roomCode) {
       this.joinDefaultRoom({ force: true });
       this.hud.setStatus("Auto-joining online room", false, 0.8);
+      return;
+    }
+
+    const myTeam = this.getMyTeam();
+    if (!myTeam) {
+      this.hud.setStatus("Select ALPHA or BRAVO before match start", true, 1.05);
+      return;
+    }
+
+    const alphaCount = this.lobbyState.players.filter((player) => player.team === "alpha").length;
+    const bravoCount = this.lobbyState.players.filter((player) => player.team === "bravo").length;
+    if (alphaCount <= 0 || bravoCount <= 0) {
+      this.hud.setStatus("Need at least one ALPHA and one BRAVO player", true, 1.05);
       return;
     }
 
@@ -3261,3 +3726,4 @@ export class Game {
     this.updateLobbyControls();
   }
 }
+

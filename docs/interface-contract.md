@@ -90,11 +90,14 @@ Socket event contract:
   - `room:create`
   - `room:join`
   - `room:leave`
+  - `room:request-snapshot`
   - `room:set-team`
   - `room:start`
   - `room:update`
+  - `room:snapshot`
   - `room:started`
   - `room:error`
+  - `ctf:update`
 
 ## Input Contract
 
@@ -113,4 +116,3 @@ Socket event contract:
   - `src/game/Game.js`
   - `src/game/Chat.js`
   - `src/game/build/BuildSystem.js`
-

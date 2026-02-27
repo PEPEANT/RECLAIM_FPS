@@ -47,15 +47,344 @@ async function probeExistingServer(port) {
 const DEFAULT_ROOM_CODE = "GLOBAL";
 const MAX_ROOM_PLAYERS = 50;
 const PVP_DAMAGE = 34;
+const BLOCK_KEY_SEPARATOR = "|";
+const FLAG_TEAMS = ["alpha", "bravo"];
+const FLAG_PICKUP_RADIUS = 2.25;
+const FLAG_CAPTURE_RADIUS = 3.1;
+const DEFAULT_FLAG_HOME = Object.freeze({
+  alpha: Object.freeze({ x: -42, y: 0, z: 0 }),
+  bravo: Object.freeze({ x: 42, y: 0, z: 0 })
+});
 
 const rooms = new Map();
 let playerCount = 0;
 
+function clonePoint(point = { x: 0, y: 0, z: 0 }) {
+  return {
+    x: Number(point.x ?? 0),
+    y: Number(point.y ?? 0),
+    z: Number(point.z ?? 0)
+  };
+}
+
+function createDefaultFlags() {
+  return {
+    alpha: {
+      home: clonePoint(DEFAULT_FLAG_HOME.alpha),
+      at: clonePoint(DEFAULT_FLAG_HOME.alpha),
+      carrierId: null
+    },
+    bravo: {
+      home: clonePoint(DEFAULT_FLAG_HOME.bravo),
+      at: clonePoint(DEFAULT_FLAG_HOME.bravo),
+      carrierId: null
+    }
+  };
+}
+
+function createRoomState(players = new Map()) {
+  return {
+    players,
+    blocks: new Map(),
+    flags: createDefaultFlags(),
+    score: { alpha: 0, bravo: 0 },
+    captures: { alpha: 0, bravo: 0 },
+    revision: 0,
+    updatedAt: Date.now()
+  };
+}
+
+function getRoomState(room) {
+  if (!room.players || !(room.players instanceof Map)) {
+    room.players = new Map();
+  }
+
+  if (!room.state || typeof room.state !== "object") {
+    room.state = createRoomState(room.players);
+    return room.state;
+  }
+
+  if (!(room.state.players instanceof Map) || room.state.players !== room.players) {
+    room.state.players = room.players;
+  }
+
+  if (!(room.state.blocks instanceof Map)) {
+    room.state.blocks = new Map();
+  }
+
+  if (!room.state.flags || typeof room.state.flags !== "object") {
+    room.state.flags = createDefaultFlags();
+  }
+
+  if (!room.state.score || typeof room.state.score !== "object") {
+    room.state.score = { alpha: 0, bravo: 0 };
+  }
+
+  if (!room.state.captures || typeof room.state.captures !== "object") {
+    room.state.captures = { alpha: 0, bravo: 0 };
+  }
+
+  room.state.revision = Number.isFinite(room.state.revision) ? room.state.revision : 0;
+  room.state.updatedAt = Number.isFinite(room.state.updatedAt)
+    ? room.state.updatedAt
+    : Date.now();
+
+  return room.state;
+}
+
+function touchRoomState(room) {
+  const state = getRoomState(room);
+  state.revision += 1;
+  state.updatedAt = Date.now();
+  return state;
+}
+
+function cloneFlagState(flags = null) {
+  const source = flags && typeof flags === "object" ? flags : {};
+  const next = {};
+
+  for (const team of FLAG_TEAMS) {
+    const fallbackHome = DEFAULT_FLAG_HOME[team];
+    const flag = source[team] ?? {};
+    const home = clonePoint(flag.home ?? fallbackHome);
+    next[team] = {
+      home,
+      at: clonePoint(flag.at ?? home),
+      carrierId: flag.carrierId ? String(flag.carrierId) : null
+    };
+  }
+
+  return next;
+}
+
+function serializeRoomState(room) {
+  const state = getRoomState(room);
+  return {
+    revision: state.revision,
+    updatedAt: state.updatedAt,
+    blockCount: state.blocks.size,
+    flags: cloneFlagState(state.flags),
+    score: {
+      alpha: Number(state.score.alpha ?? 0),
+      bravo: Number(state.score.bravo ?? 0)
+    },
+    captures: {
+      alpha: Number(state.captures.alpha ?? 0),
+      bravo: Number(state.captures.bravo ?? 0)
+    }
+  };
+}
+
+function resetFlagsForPlayer(room, playerId) {
+  const id = String(playerId ?? "").trim();
+  if (!id) {
+    return [];
+  }
+
+  const state = getRoomState(room);
+  const resetFlagTeams = [];
+
+  for (const team of FLAG_TEAMS) {
+    const flag = state.flags?.[team];
+    if (!flag || flag.carrierId !== id) {
+      continue;
+    }
+
+    flag.carrierId = null;
+    flag.at = clonePoint(flag.home ?? DEFAULT_FLAG_HOME[team]);
+    resetFlagTeams.push(team);
+  }
+
+  if (resetFlagTeams.length > 0) {
+    touchRoomState(room);
+  }
+
+  return resetFlagTeams;
+}
+
+function blockStateKey(x, y, z) {
+  return `${x}${BLOCK_KEY_SEPARATOR}${y}${BLOCK_KEY_SEPARATOR}${z}`;
+}
+
+function applyBlockUpdateToRoomState(room, update) {
+  const state = getRoomState(room);
+  const key = blockStateKey(update.x, update.y, update.z);
+
+  if (update.action === "place") {
+    state.blocks.set(key, {
+      action: "place",
+      x: update.x,
+      y: update.y,
+      z: update.z,
+      typeId: update.typeId
+    });
+  } else {
+    state.blocks.set(key, {
+      action: "remove",
+      x: update.x,
+      y: update.y,
+      z: update.z
+    });
+  }
+
+  return touchRoomState(room);
+}
+
+function handleCtfPlayerSync(room, player) {
+  if (!room || !player?.state) {
+    return null;
+  }
+
+  const team = normalizeTeam(player.team);
+  const enemyTeam = getEnemyTeam(team);
+  if (!team || !enemyTeam) {
+    return null;
+  }
+
+  const state = getRoomState(room);
+  const ownFlag = state.flags?.[team];
+  const enemyFlag = state.flags?.[enemyTeam];
+  if (!ownFlag || !enemyFlag) {
+    return null;
+  }
+
+  const playerPos = player.state;
+  let changed = false;
+  let event = null;
+
+  if (enemyFlag.carrierId === player.id) {
+    enemyFlag.at = {
+      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home.x),
+      y: Number(enemyFlag.home?.y ?? 0),
+      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home.z)
+    };
+    changed = true;
+  } else if (!enemyFlag.carrierId && distanceXZ(playerPos, enemyFlag.at) <= FLAG_PICKUP_RADIUS) {
+    enemyFlag.carrierId = player.id;
+    enemyFlag.at = {
+      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home.x),
+      y: Number(enemyFlag.home?.y ?? 0),
+      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home.z)
+    };
+    changed = true;
+    event = {
+      type: "pickup",
+      byPlayerId: player.id,
+      byTeam: team,
+      flagTeam: enemyTeam
+    };
+  }
+
+  if (enemyFlag.carrierId === player.id) {
+    const nearHome = distanceXZ(playerPos, ownFlag.home) <= FLAG_CAPTURE_RADIUS;
+    const ownFlagAtHome = !ownFlag.carrierId && distanceXZ(ownFlag.at, ownFlag.home) <= 0.25;
+    if (nearHome && ownFlagAtHome) {
+      enemyFlag.carrierId = null;
+      enemyFlag.at = clonePoint(enemyFlag.home);
+      state.captures[team] = (Number(state.captures[team]) || 0) + 1;
+      state.score[team] = (Number(state.score[team]) || 0) + 500;
+      changed = true;
+      event = {
+        type: "capture",
+        byPlayerId: player.id,
+        byTeam: team,
+        flagTeam: enemyTeam,
+        captures: Number(state.captures[team]),
+        teamScore: Number(state.score[team])
+      };
+    }
+  }
+
+  if (!changed) {
+    return null;
+  }
+
+  touchRoomState(room);
+  return event;
+}
+
+function normalizeTeam(team) {
+  return team === "alpha" || team === "bravo" ? team : null;
+}
+
+function getEnemyTeam(team) {
+  if (team === "alpha") {
+    return "bravo";
+  }
+  if (team === "bravo") {
+    return "alpha";
+  }
+  return null;
+}
+
+function distanceXZ(a = null, b = null) {
+  if (!a || !b) {
+    return Infinity;
+  }
+  const dx = Number(a.x ?? 0) - Number(b.x ?? 0);
+  const dz = Number(a.z ?? 0) - Number(b.z ?? 0);
+  return Math.hypot(dx, dz);
+}
+
+function serializeBlocksSnapshot(room) {
+  const state = getRoomState(room);
+  return Array.from(state.blocks.values()).map((entry) => {
+    const base = {
+      action: entry.action === "place" ? "place" : "remove",
+      x: Number(entry.x ?? 0),
+      y: Number(entry.y ?? 0),
+      z: Number(entry.z ?? 0)
+    };
+    if (base.action === "place") {
+      base.typeId = Number(entry.typeId ?? 1);
+    }
+    return base;
+  });
+}
+
+function serializeCtfState(room, event = null) {
+  const state = serializeRoomState(room);
+  return {
+    revision: state.revision,
+    updatedAt: state.updatedAt,
+    flags: state.flags,
+    score: state.score,
+    captures: state.captures,
+    event
+  };
+}
+
+function emitRoomSnapshot(socket, room, reason = "sync") {
+  if (!socket || !room) {
+    return;
+  }
+
+  const state = serializeRoomState(room);
+  socket.emit("room:snapshot", {
+    reason,
+    revision: state.revision,
+    updatedAt: state.updatedAt,
+    blocks: serializeBlocksSnapshot(room),
+    flags: state.flags,
+    score: state.score,
+    captures: state.captures
+  });
+}
+
+function emitCtfUpdate(room, event = null) {
+  if (!room) {
+    return;
+  }
+  io.to(room.code).emit("ctf:update", serializeCtfState(room, event));
+}
+
 function createPersistentRoom() {
+  const players = new Map();
   return {
     code: DEFAULT_ROOM_CODE,
     hostId: null,
-    players: new Map(),
+    players,
+    state: createRoomState(players),
     persistent: true,
     createdAt: Date.now()
   };
@@ -67,6 +396,7 @@ function getDefaultRoom() {
     room = createPersistentRoom();
     rooms.set(DEFAULT_ROOM_CODE, room);
   }
+  getRoomState(room);
   return room;
 }
 
@@ -140,28 +470,31 @@ function sanitizeShootPayload(raw = {}) {
 
 function serializeRoom(room) {
   pruneRoomPlayers(room);
+  const state = getRoomState(room);
   return {
     code: room.code,
     hostId: room.hostId,
-    players: Array.from(room.players.values()).map((player) => ({
+    players: Array.from(state.players.values()).map((player) => ({
       id: player.id,
       name: player.name,
       team: player.team ?? null,
       state: player.state ?? null,
       hp: Number(player.hp ?? 100)
-    }))
+    })),
+    state: serializeRoomState(room)
   };
 }
 
 function summarizeRooms() {
   const room = getDefaultRoom();
+  const state = getRoomState(room);
   pruneRoomPlayers(room);
   return [
     {
       code: room.code,
-      count: room.players.size,
+      count: state.players.size,
       capacity: MAX_ROOM_PLAYERS,
-      hostName: room.players.get(room.hostId)?.name ?? "AUTO"
+      hostName: state.players.get(room.hostId)?.name ?? "AUTO"
     }
   ];
 }
@@ -175,10 +508,11 @@ function emitRoomUpdate(room) {
 }
 
 function updateHost(room) {
-  if (room.hostId && room.players.has(room.hostId)) {
+  const state = getRoomState(room);
+  if (room.hostId && state.players.has(room.hostId)) {
     return;
   }
-  room.hostId = room.players.keys().next().value ?? null;
+  room.hostId = state.players.keys().next().value ?? null;
 }
 
 function pruneRoomPlayers(room) {
@@ -186,16 +520,34 @@ function pruneRoomPlayers(room) {
     return false;
   }
 
+  const state = getRoomState(room);
   let changed = false;
-  for (const socketId of room.players.keys()) {
+  const removedIds = [];
+  let ctfChanged = false;
+
+  for (const socketId of state.players.keys()) {
     if (!io.sockets.sockets.has(socketId)) {
-      room.players.delete(socketId);
+      state.players.delete(socketId);
+      removedIds.push(socketId);
       changed = true;
     }
   }
 
   if (changed) {
+    for (const socketId of removedIds) {
+      const resetTeams = resetFlagsForPlayer(room, socketId);
+      if (resetTeams.length > 0) {
+        ctfChanged = true;
+      }
+    }
+    touchRoomState(room);
     updateHost(room);
+    if (ctfChanged) {
+      emitCtfUpdate(room, {
+        type: "reset",
+        reason: "disconnect"
+      });
+    }
   }
   return changed;
 }
@@ -221,9 +573,20 @@ function leaveCurrentRoom(socket) {
     return;
   }
 
-  room.players.delete(socket.id);
+  const state = getRoomState(room);
+  state.players.delete(socket.id);
+  room.players = state.players;
+  const resetTeams = resetFlagsForPlayer(room, socket.id);
   pruneRoomPlayers(room);
   updateHost(room);
+  touchRoomState(room);
+  if (resetTeams.length > 0) {
+    emitCtfUpdate(room, {
+      type: "reset",
+      reason: "leave",
+      byPlayerId: socket.id
+    });
+  }
 
   if (!room.persistent && room.players.size === 0) {
     rooms.delete(room.code);
@@ -235,24 +598,26 @@ function leaveCurrentRoom(socket) {
 
 function joinDefaultRoom(socket, nameOverride = null) {
   const room = getDefaultRoom();
+  const state = getRoomState(room);
   pruneRoomPlayers(room);
   const name = sanitizeName(nameOverride ?? socket.data.playerName);
   socket.data.playerName = name;
 
-  if (socket.data.roomCode === room.code && room.players.has(socket.id)) {
+  if (socket.data.roomCode === room.code && state.players.has(socket.id)) {
+    emitRoomSnapshot(socket, room, "resync");
     return { ok: true, room: serializeRoom(room) };
   }
 
   leaveCurrentRoom(socket);
 
-  if (room.players.size >= MAX_ROOM_PLAYERS) {
+  if (state.players.size >= MAX_ROOM_PLAYERS) {
     return {
       ok: false,
       error: `GLOBAL room is full (${MAX_ROOM_PLAYERS})`
     };
   }
 
-  room.players.set(socket.id, {
+  state.players.set(socket.id, {
     id: socket.id,
     name,
     team: null,
@@ -261,10 +626,13 @@ function joinDefaultRoom(socket, nameOverride = null) {
     kills: 0,
     deaths: 0
   });
+  room.players = state.players;
+  touchRoomState(room);
 
   updateHost(room);
   socket.join(room.code);
   socket.data.roomCode = room.code;
+  emitRoomSnapshot(socket, room, "join");
 
   emitRoomUpdate(room);
   emitRoomList();
@@ -282,6 +650,7 @@ const httpServer = createServer((req, res) => {
       online: playerCount,
       globalPlayers: globalRoom.players.size,
       globalCapacity: MAX_ROOM_PLAYERS,
+      globalState: serializeRoomState(globalRoom),
       now: Date.now()
     });
     return;
@@ -345,7 +714,8 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const player = room.players.get(socket.id);
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
     if (!player) {
       return;
     }
@@ -359,12 +729,22 @@ io.on("connection", (socket) => {
       team: player.team ?? null,
       state: nextState
     });
+
+    const ctfEvent = handleCtfPlayerSync(room, player);
+    if (ctfEvent) {
+      emitCtfUpdate(room, ctfEvent);
+    }
   });
 
   socket.on("block:update", (payload = {}) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
-    if (!room || !room.players.has(socket.id)) {
+    if (!room) {
+      return;
+    }
+
+    const state = getRoomState(room);
+    if (!state.players.has(socket.id)) {
       return;
     }
 
@@ -373,9 +753,12 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const roomState = applyBlockUpdateToRoomState(room, sanitized);
+
     socket.to(room.code).emit("block:update", {
       id: socket.id,
-      ...sanitized
+      ...sanitized,
+      roomStateRevision: roomState.revision
     });
   });
 
@@ -386,7 +769,8 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const shooter = room.players.get(socket.id);
+    const state = getRoomState(room);
+    const shooter = state.players.get(socket.id);
     if (!shooter) {
       return;
     }
@@ -396,7 +780,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const target = room.players.get(sanitized.targetId);
+    const target = state.players.get(sanitized.targetId);
     if (!target || target.id === shooter.id) {
       return;
     }
@@ -417,9 +801,28 @@ io.on("connection", (socket) => {
     const killed = nextHp <= 0;
 
     target.hp = killed ? 100 : nextHp;
+    let ctfEvent = null;
     if (killed) {
       shooter.kills = (Number(shooter.kills) || 0) + 1;
       target.deaths = (Number(target.deaths) || 0) + 1;
+      if (shooterTeam === "alpha" || shooterTeam === "bravo") {
+        state.score[shooterTeam] = (Number(state.score[shooterTeam]) || 0) + 1;
+      }
+
+      const resetTeams = resetFlagsForPlayer(room, target.id);
+      if (resetTeams.length > 0) {
+        ctfEvent = {
+          type: "reset",
+          reason: "carrier_eliminated",
+          byPlayerId: target.id,
+          flagTeams: resetTeams
+        };
+      }
+    }
+
+    touchRoomState(room);
+    if (ctfEvent) {
+      emitCtfUpdate(room, ctfEvent);
     }
 
     io.to(room.code).emit("pvp:damage", {
@@ -429,12 +832,39 @@ io.on("connection", (socket) => {
       victimHealth: target.hp,
       killed,
       attackerKills: shooter.kills ?? 0,
-      victimDeaths: target.deaths ?? 0
+      victimDeaths: target.deaths ?? 0,
+      teamScore: {
+        alpha: Number(state.score.alpha ?? 0),
+        bravo: Number(state.score.bravo ?? 0)
+      },
+      teamCaptures: {
+        alpha: Number(state.captures.alpha ?? 0),
+        bravo: Number(state.captures.bravo ?? 0)
+      },
+      roomStateRevision: state.revision
     });
   });
 
   socket.on("room:list", () => {
     emitRoomList(socket);
+  });
+
+  socket.on("room:request-snapshot", (ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "Not in room" });
+      return;
+    }
+
+    emitRoomSnapshot(socket, room, "manual");
+    ack(ackFn, {
+      ok: true,
+      snapshot: {
+        ...serializeRoomState(room),
+        blocks: serializeBlocksSnapshot(room)
+      }
+    });
   });
 
   socket.on("room:quick-join", (payload = {}, ackFn) => {
@@ -467,13 +897,15 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const player = room.players.get(socket.id);
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
     if (!player) {
       ack(ackFn, { ok: false, error: "Not in room" });
       return;
     }
 
     player.team = team;
+    touchRoomState(room);
     emitRoomUpdate(room);
     ack(ackFn, { ok: true });
   });
@@ -486,7 +918,27 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const state = getRoomState(room);
+    const players = Array.from(state.players.values());
+    const starter = state.players.get(socket.id);
+    const alphaCount = players.filter((player) => player.team === "alpha").length;
+    const bravoCount = players.filter((player) => player.team === "bravo").length;
+
+    if (!starter || !normalizeTeam(starter.team)) {
+      ack(ackFn, { ok: false, error: "Select a team before starting" });
+      return;
+    }
+
+    if (alphaCount <= 0 || bravoCount <= 0) {
+      ack(ackFn, { ok: false, error: "Need at least one ALPHA and one BRAVO player" });
+      return;
+    }
+
     io.to(room.code).emit("room:started", { code: room.code, startedAt: Date.now() });
+    emitCtfUpdate(room, {
+      type: "start",
+      byPlayerId: socket.id
+    });
     ack(ackFn, { ok: true });
   });
 

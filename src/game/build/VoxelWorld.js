@@ -22,6 +22,7 @@ export class VoxelWorld {
     this.arenaMeta = null;
     this._losDirection = new THREE.Vector3();
     this._losPoint = new THREE.Vector3();
+    this.dirtyBoundsBuckets = new Set();
   }
 
   clear() {
@@ -36,6 +37,7 @@ export class VoxelWorld {
 
     this.buckets.clear();
     this.raycastTargets.length = 0;
+    this.dirtyBoundsBuckets.clear();
   }
 
   key(x, y, z) {
@@ -88,6 +90,7 @@ export class VoxelWorld {
     mesh.count = 0;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.frustumCulled = false;
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.userData.typeId = typeId;
     mesh.userData.isVoxelBucket = true;
@@ -103,6 +106,31 @@ export class VoxelWorld {
     this.group.add(mesh);
     this.raycastTargets.push(mesh);
     return bucket;
+  }
+
+  markBucketBoundsDirty(bucket) {
+    if (!bucket) {
+      return;
+    }
+    bucket.boundsDirty = true;
+    this.dirtyBoundsBuckets.add(bucket);
+  }
+
+  flushDirtyBounds() {
+    if (this.dirtyBoundsBuckets.size === 0) {
+      return;
+    }
+
+    for (const bucket of this.dirtyBoundsBuckets) {
+      if (!bucket?.mesh) {
+        continue;
+      }
+      bucket.mesh.computeBoundingSphere();
+      bucket.mesh.computeBoundingBox();
+      bucket.boundsDirty = false;
+    }
+
+    this.dirtyBoundsBuckets.clear();
   }
 
   setBlock(x, y, z, typeId) {
@@ -127,6 +155,7 @@ export class VoxelWorld {
     this.tmpMatrix.makeTranslation(x + 0.5, y + 0.5, z + 0.5);
     bucket.mesh.setMatrixAt(index, this.tmpMatrix);
     bucket.mesh.instanceMatrix.needsUpdate = true;
+    this.markBucketBoundsDirty(bucket);
 
     bucket.keys[index] = key;
     bucket.indexByKey.set(key, index);
@@ -179,6 +208,7 @@ export class VoxelWorld {
     bucket.indexByKey.delete(key);
     bucket.mesh.count = lastIndex;
     bucket.mesh.instanceMatrix.needsUpdate = true;
+    this.markBucketBoundsDirty(bucket);
     this.blockMap.delete(key);
 
     const columnKey = this.columnKey(x, z);
@@ -249,6 +279,7 @@ export class VoxelWorld {
   }
 
   raycast(raycaster, maxDistance = 8) {
+    this.flushDirtyBounds();
     const previousFar = raycaster.far;
     raycaster.far = maxDistance;
     const hits = raycaster.intersectObjects(this.raycastTargets, false);
@@ -450,6 +481,7 @@ export class VoxelWorld {
     this.buildBase(42, 0, "west", 6, 8, 5);
 
     this.decorateArena();
+    this.flushDirtyBounds();
     this.arenaMeta = {
       alphaBase: { x: -42, y: 0, z: 0 },
       bravoBase: { x: 42, y: 0, z: 0 },
