@@ -1299,11 +1299,12 @@ function joinDefaultRoom(socket, nameOverride = null) {
     };
   }
 
+  const assignedTeam = pickBalancedTeam(state.players);
   state.players.set(socket.id, {
     id: socket.id,
     name,
-    team: pickBalancedTeam(state.players),
-    state: sanitizePlayerState(),
+    team: assignedTeam,
+    state: getSpawnStateForTeam(assignedTeam),
     stock: createDefaultBlockStock(),
     hp: 100,
     respawnAt: 0,

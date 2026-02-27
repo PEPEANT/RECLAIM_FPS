@@ -3412,12 +3412,13 @@ export class Game {
       }
 
       liveIds.add(id);
+      const hadRemote = this.remotePlayers.has(id);
       const remote = this.ensureRemotePlayer(player);
       if (!remote) {
         continue;
       }
       if (player.state) {
-        this.applyRemoteState(remote, player.state, true);
+        this.applyRemoteState(remote, player.state, !hadRemote);
       }
       const hp = Number(player?.hp);
       if (Number.isFinite(hp) && hp <= 0) {
