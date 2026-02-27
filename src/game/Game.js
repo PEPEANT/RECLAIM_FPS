@@ -6244,7 +6244,6 @@ export class Game {
     }
     if (this.activeMatchMode === "online" && this.isRunning) {
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
-      this.emitCenterAdSync();
     }
     this.updateTeamScoreHud();
     this.updateFlagInteractUi();
