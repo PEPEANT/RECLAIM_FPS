@@ -6355,6 +6355,13 @@ export class Game {
       return;
     }
 
+    const myId = this.getMySocketId();
+    const hostId = String(this.lobbyState.hostId ?? "");
+    if (!myId || !hostId || myId !== hostId) {
+      this.hud.setStatus("방장만 매치를 시작할 수 있습니다.", true, 1);
+      return;
+    }
+
     socket.emit("room:start", (response = {}) => {
       if (!response.ok) {
         this.hud.setStatus(response.error ?? "온라인 매치 시작에 실패했습니다.", true, 1);

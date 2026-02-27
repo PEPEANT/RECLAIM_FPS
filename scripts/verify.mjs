@@ -219,6 +219,7 @@ async function checkSocketServer() {
     let startedCount = 0;
     let receivedChatText = "";
     let latestRoomPlayers = [];
+    let latestRoomHostId = "";
     let ctfPickupSeen = false;
     let ctfCaptureSeen = false;
     let hazardDamageSeen = false;
@@ -231,6 +232,7 @@ async function checkSocketServer() {
     });
     c1.on("room:update", (room) => {
       latestRoomPlayers = Array.isArray(room?.players) ? room.players : [];
+      latestRoomHostId = String(room?.hostId ?? "");
     });
     c1.on("chat:message", (payload) => {
       receivedChatText = payload?.text ?? "";
@@ -333,7 +335,8 @@ async function checkSocketServer() {
     assert(left?.ok === true, `room:leave failed: ${JSON.stringify(left)}`);
     assert(left?.room?.code === "GLOBAL", `leave should keep GLOBAL room: ${JSON.stringify(left)}`);
 
-    const started = await emitWithAck(c1, "room:start");
+    const startClient = latestRoomHostId && latestRoomHostId === c2.id ? c2 : c1;
+    const started = await emitWithAck(startClient, "room:start");
     assert(started?.ok === true, `room:start failed: ${JSON.stringify(started)}`);
     await waitFor(() => startedCount >= 2, 4000);
 

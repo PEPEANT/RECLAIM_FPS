@@ -262,7 +262,9 @@ async function scenarioCombatAndCtfInteraction(url) {
     ]);
     assert(joinA?.ok === true && joinB?.ok === true, "전투 시나리오 join 실패");
 
-    const startAck = await emitAck(a, "room:start");
+    const hostId = String(joinA?.room?.hostId ?? joinB?.room?.hostId ?? "");
+    const starter = hostId && hostId === b.id ? b : a;
+    const startAck = await emitAck(starter, "room:start");
     assert(startAck?.ok === true, "전투 시나리오 room:start 실패");
 
     const teamA = await emitAck(a, "room:set-team", { team: "alpha" });
