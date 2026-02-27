@@ -58,7 +58,7 @@ function buildFlagFortress(
   const maxZ = centerZ + half;
 
   builder.fillRect(minX, maxX, -1, 0, minZ, maxZ, floorType);
-  builder.fillRect(centerX - 3, centerX + 3, 0, 0, centerZ - 3, centerZ + 3, BLOCK.clay);
+  builder.fillRect(centerX - 3, centerX + 3, 0, 0, centerZ - 3, centerZ + 3, BLOCK.stone);
 
   for (let y = 1; y <= 5; y += 1) {
     for (let x = minX; x <= maxX; x += 1) {
@@ -124,8 +124,8 @@ function buildControlHub(builder) {
 
 function plantTree(builder, x, y, z, seed, variant = 0) {
   const trunkHeight = 3 + Math.floor(hash2D(x + 7, z - 11, seed) * 3);
-  const trunkType = variant === 0 ? BLOCK.brick : BLOCK.clay;
-  const leavesType = variant === 0 ? BLOCK.grass : BLOCK.clay;
+  const trunkType = variant === 0 ? BLOCK.brick : BLOCK.dirt;
+  const leavesType = BLOCK.grass;
 
   for (let i = 1; i <= trunkHeight; i += 1) {
     if (!builder.hasBlock(x, y + i, z)) {
@@ -186,7 +186,7 @@ function plantForest(builder, halfExtent, surfaceMap, seed) {
           builder.setBlock(x, topY + 1, z, BLOCK.grass);
         }
         if (!builder.hasBlock(x + 1, topY + 1, z)) {
-          builder.setBlock(x + 1, topY + 1, z, BLOCK.clay);
+          builder.setBlock(x + 1, topY + 1, z, BLOCK.dirt);
         }
         continue;
       }
@@ -285,4 +285,3 @@ export function generateForestFrontlineMap(builder, options = {}) {
     }
   };
 }
-

@@ -130,6 +130,11 @@ canvas {
   display: none;
 }
 
+.hud-left > div:nth-child(3),
+.hud-left > div:nth-child(4) {
+  display: none;
+}
+
 .hud-health-bar-wrap {
   height: 5px;
   background: rgba(255, 255, 255, 0.1);
@@ -206,11 +211,130 @@ canvas {
   min-height: 1em;
 }
 
+#tab-scoreboard {
+  position: fixed;
+  top: 86px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 26;
+  min-width: min(760px, calc(100vw - 32px));
+  max-width: min(760px, calc(100vw - 32px));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+#tab-scoreboard.show {
+  opacity: 1;
+}
+
+.tab-board-shell {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 221, 232, 0.28);
+  background:
+    linear-gradient(150deg, rgba(13, 24, 41, 0.88), rgba(9, 17, 30, 0.9)),
+    rgba(7, 18, 30, 0.86);
+  box-shadow:
+    inset 0 0 0 1px rgba(210, 247, 255, 0.08),
+    0 12px 28px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(6px);
+}
+
+.tab-team-column {
+  border-radius: 8px;
+  border: 1px solid rgba(148, 221, 232, 0.2);
+  padding: 8px 10px;
+  min-height: 176px;
+  background: rgba(9, 18, 30, 0.68);
+}
+
+.tab-team-column.alpha {
+  border-color: rgba(110, 196, 255, 0.34);
+}
+
+.tab-team-column.bravo {
+  border-color: rgba(255, 136, 122, 0.34);
+}
+
+.tab-team-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(148, 221, 232, 0.2);
+}
+
+.tab-team-name {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  font-weight: 800;
+}
+
+.tab-team-column.alpha .tab-team-name {
+  color: #8dd1ff;
+}
+
+.tab-team-column.bravo .tab-team-name {
+  color: #ffb3a8;
+}
+
+.tab-team-count {
+  font-size: 0.74rem;
+  color: var(--ui-text-dim);
+  font-weight: 700;
+}
+
+.tab-team-list {
+  display: grid;
+  gap: 6px;
+}
+
+.tab-player-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(11, 23, 38, 0.62);
+  border: 1px solid rgba(148, 221, 232, 0.14);
+  font-size: 0.75rem;
+}
+
+.tab-player-row.is-self {
+  border-color: rgba(157, 238, 194, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(157, 238, 194, 0.22);
+}
+
+.tab-player-name {
+  color: #e3f4ff;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tab-player-meta {
+  color: rgba(201, 229, 255, 0.7);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+}
+
+.tab-player-empty {
+  opacity: 0.58;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 7px 2px;
+}
+
 /* ── Chat Panel ─────────────────────────────── */
 #chat-panel {
   position: fixed;
   left: 14px;
-  bottom: 20px;
+  bottom: 104px;
   width: 270px;
   z-index: 20;
   pointer-events: none; /* Container: click-through */

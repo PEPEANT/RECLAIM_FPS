@@ -47,6 +47,7 @@ async function probeExistingServer(port) {
 const DEFAULT_ROOM_CODE = "GLOBAL";
 const MAX_ROOM_PLAYERS = 50;
 const PVP_DAMAGE = 34;
+const PVP_RESPAWN_MS = 5000;
 const BLOCK_KEY_SEPARATOR = "|";
 const BLOCK_TYPE_MIN = 1;
 const BLOCK_TYPE_MAX = 8;
@@ -182,6 +183,11 @@ function getRoomState(room) {
 
   for (const player of room.state.players.values()) {
     ensurePlayerStock(player);
+    player.hp = Number.isFinite(player.hp) ? Math.max(0, Math.trunc(player.hp)) : 100;
+    player.respawnAt = Number.isFinite(player.respawnAt) ? Math.max(0, Math.trunc(player.respawnAt)) : 0;
+    if (typeof player.respawnTimer === "undefined") {
+      player.respawnTimer = null;
+    }
   }
 
   if (!(room.state.blocks instanceof Map)) {
@@ -213,6 +219,65 @@ function touchRoomState(room) {
   state.revision += 1;
   state.updatedAt = Date.now();
   return state;
+}
+
+function clearPlayerRespawnTimer(player) {
+  if (!player || typeof player !== "object") {
+    return;
+  }
+  if (player.respawnTimer) {
+    clearTimeout(player.respawnTimer);
+    player.respawnTimer = null;
+  }
+}
+
+function getSpawnStateForTeam(team) {
+  const normalized = normalizeTeam(team);
+  const home = normalized ? DEFAULT_FLAG_HOME[normalized] : { x: 0, y: 0, z: 0 };
+  const yaw = normalized === "alpha" ? -Math.PI * 0.5 : normalized === "bravo" ? Math.PI * 0.5 : 0;
+  return sanitizePlayerState({
+    x: home.x,
+    y: 1.75,
+    z: home.z,
+    yaw,
+    pitch: 0
+  });
+}
+
+function schedulePlayerRespawn(room, player) {
+  if (!room || !player?.id) {
+    return Date.now() + PVP_RESPAWN_MS;
+  }
+
+  clearPlayerRespawnTimer(player);
+  const respawnAt = Date.now() + PVP_RESPAWN_MS;
+  player.hp = 0;
+  player.respawnAt = respawnAt;
+
+  const playerId = String(player.id);
+  player.respawnTimer = setTimeout(() => {
+    const state = getRoomState(room);
+    const current = state.players.get(playerId);
+    if (!current) {
+      return;
+    }
+
+    clearPlayerRespawnTimer(current);
+    current.hp = 100;
+    current.respawnAt = 0;
+    current.state = getSpawnStateForTeam(current.team);
+
+    const roomState = touchRoomState(room);
+    io.to(room.code).emit("player:respawn", {
+      id: current.id,
+      hp: current.hp,
+      state: current.state,
+      roomStateRevision: roomState.revision
+    });
+    emitRoomUpdate(room);
+  }, PVP_RESPAWN_MS);
+
+  return respawnAt;
 }
 
 function cloneFlagState(flags = null) {
@@ -620,6 +685,7 @@ function serializeRoom(room) {
       team: player.team ?? null,
       state: player.state ?? null,
       hp: Number(player.hp ?? 100),
+      respawnAt: Number(player.respawnAt ?? 0),
       stock: serializeBlockStock(player.stock)
     })),
     state: serializeRoomState(room)
@@ -668,6 +734,8 @@ function pruneRoomPlayers(room) {
 
   for (const socketId of state.players.keys()) {
     if (!io.sockets.sockets.has(socketId)) {
+      const removedPlayer = state.players.get(socketId);
+      clearPlayerRespawnTimer(removedPlayer);
       state.players.delete(socketId);
       removedIds.push(socketId);
       changed = true;
@@ -715,6 +783,8 @@ function leaveCurrentRoom(socket) {
   }
 
   const state = getRoomState(room);
+  const leavingPlayer = state.players.get(socket.id);
+  clearPlayerRespawnTimer(leavingPlayer);
   state.players.delete(socket.id);
   room.players = state.players;
   const resetTeams = resetFlagsForPlayer(room, socket.id);
@@ -765,6 +835,8 @@ function joinDefaultRoom(socket, nameOverride = null) {
     state: sanitizePlayerState(),
     stock: createDefaultBlockStock(),
     hp: 100,
+    respawnAt: 0,
+    respawnTimer: null,
     kills: 0,
     deaths: 0
   });
@@ -859,6 +931,9 @@ io.on("connection", (socket) => {
     const state = getRoomState(room);
     const player = state.players.get(socket.id);
     if (!player) {
+      return;
+    }
+    if ((Number.isFinite(player.hp) ? player.hp : 100) <= 0) {
       return;
     }
 
@@ -1004,11 +1079,17 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const shooterHp = Number.isFinite(shooter.hp) ? shooter.hp : 100;
     const currentHp = Number.isFinite(target.hp) ? target.hp : 100;
+    if (shooterHp <= 0 || currentHp <= 0) {
+      return;
+    }
+
     const nextHp = Math.max(0, currentHp - PVP_DAMAGE);
     const killed = nextHp <= 0;
+    let respawnAt = 0;
 
-    target.hp = killed ? 100 : nextHp;
+    target.hp = nextHp;
     let ctfEvent = null;
     if (killed) {
       shooter.kills = (Number(shooter.kills) || 0) + 1;
@@ -1016,6 +1097,7 @@ io.on("connection", (socket) => {
       if (shooterTeam === "alpha" || shooterTeam === "bravo") {
         state.score[shooterTeam] = (Number(state.score[shooterTeam]) || 0) + 1;
       }
+      respawnAt = schedulePlayerRespawn(room, target);
 
       const resetTeams = resetFlagsForPlayer(room, target.id);
       if (resetTeams.length > 0) {
@@ -1026,6 +1108,9 @@ io.on("connection", (socket) => {
           flagTeams: resetTeams
         };
       }
+    } else {
+      target.respawnAt = 0;
+      clearPlayerRespawnTimer(target);
     }
 
     touchRoomState(room);
@@ -1037,8 +1122,9 @@ io.on("connection", (socket) => {
       attackerId: shooter.id,
       victimId: target.id,
       damage: PVP_DAMAGE,
-      victimHealth: target.hp,
+      victimHealth: killed ? 0 : target.hp,
       killed,
+      respawnAt,
       attackerKills: shooter.kills ?? 0,
       victimDeaths: target.deaths ?? 0,
       teamScore: {

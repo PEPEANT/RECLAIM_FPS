@@ -1,50 +1,50 @@
-export const BLOCK_TYPES = [
+﻿export const BLOCK_TYPES = [
   {
     id: 1,
     key: "grass",
-    name: "잔디",
+    name: "Grass",
     texture: "/assets/graphics/world/blocks/kenney/grass.png"
   },
   {
     id: 2,
     key: "dirt",
-    name: "흙",
+    name: "Dirt",
     texture: "/assets/graphics/world/blocks/kenney/dirt.png"
   },
   {
     id: 3,
     key: "stone",
-    name: "돌",
+    name: "Stone",
     texture: "/assets/graphics/world/blocks/kenney/stone.png"
   },
   {
     id: 4,
     key: "sand",
-    name: "모래",
+    name: "Sand",
     texture: "/assets/graphics/world/blocks/kenney/sand.png"
   },
   {
     id: 5,
     key: "clay",
-    name: "점토",
+    name: "Clay",
     texture: "/assets/graphics/world/blocks/kenney/clay.png"
   },
   {
     id: 6,
     key: "brick",
-    name: "벽돌",
+    name: "Brick",
     texture: "/assets/graphics/world/blocks/kenney/brick.png"
   },
   {
     id: 7,
     key: "ice",
-    name: "얼음",
+    name: "Ice",
     texture: "/assets/graphics/world/blocks/kenney/ice.png"
   },
   {
     id: 8,
     key: "metal",
-    name: "금속",
+    name: "Metal",
     texture: "/assets/graphics/world/blocks/kenney/metal.png"
   }
 ];

@@ -1,4 +1,4 @@
-import * as THREE from "three";
+﻿import * as THREE from "three";
 import { EnemyManager } from "./EnemyManager.js";
 import { WeaponSystem } from "./WeaponSystem.js";
 import { HUD } from "./HUD.js";
@@ -26,6 +26,7 @@ const MAX_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME = 96;
 const MAX_PENDING_REMOTE_BLOCK_RETRIES = 120;
 const PVP_HIT_SCORE = 10;
 const PVP_KILL_SCORE = 100;
+const PVP_RESPAWN_MS = 5000;
 const BLOCK_KEY_SEPARATOR = "|";
 
 function normalizeTeamId(team) {
@@ -44,12 +45,12 @@ function getEnemyTeamId(team) {
 
 function formatTeamLabel(team) {
   if (team === "alpha") {
-    return "알파";
+    return "ALPHA";
   }
   if (team === "bravo") {
-    return "브라보";
+    return "BRAVO";
   }
-  return "중립";
+  return "NEUTRAL";
 }
 
 function toBlockKey(x, y, z) {
@@ -134,6 +135,7 @@ export class Game {
       canInteract: () =>
         this.isRunning &&
         !this.isGameOver &&
+        !this.isRespawning &&
         !this.chat?.isInputFocused &&
         !this.hud.startOverlayEl?.classList.contains("show")
     });
@@ -172,7 +174,7 @@ export class Game {
       captures: 0,
       controlPercent: 0,
       controlOwner: "neutral",
-      objectiveText: "목표: 적 깃발을 탈취하세요",
+      objectiveText: "Objective: Eliminate enemies and capture the flag.",
       killStreak: 0,
       lastKillTime: 0
     };
@@ -238,10 +240,16 @@ export class Game {
     this.mpTeamBravoBtn = document.getElementById("mp-team-bravo");
     this.mpTeamAlphaCountEl = document.getElementById("mp-team-alpha-count");
     this.mpTeamBravoCountEl = document.getElementById("mp-team-bravo-count");
+    this.tabScoreboardEl = document.getElementById("tab-scoreboard");
+    this.tabAlphaListEl = document.getElementById("tab-alpha-list");
+    this.tabBravoListEl = document.getElementById("tab-bravo-list");
+    this.tabAlphaCountEl = document.getElementById("tab-alpha-count");
+    this.tabBravoCountEl = document.getElementById("tab-bravo-count");
     this.lastAppliedFov = DEFAULT_FOV;
     this._lobbySocketBound = false;
     this._joiningDefaultRoom = false;
     this._nextAutoJoinAt = 0;
+    this.tabBoardVisible = false;
 
     this.lobbyState = {
       roomCode: null,
@@ -301,6 +309,9 @@ export class Game {
     this._initialized = false;
     this.mapId = "forest_frontline";
     this._bucketOptimizeCooldown = 0;
+    this.isRespawning = false;
+    this.respawnEndAt = 0;
+    this.respawnLastSecond = -1;
   }
 
   init() {
@@ -470,14 +481,13 @@ export class Game {
     this.bravoFlag.position.copy(this.objective.bravoFlagHome);
     this.scene.add(this.bravoFlag);
 
-    const alphaBeacon = this.createBaseMarker(this.objective.alphaBase, 0x5db2ff);
-    const bravoBeacon = this.createBaseMarker(this.objective.bravoBase, 0xff7b66);
+    const centerBeacon = this.createBaseMarker(this.objective.controlPoint, 0x8ecfff);
     const controlBeacon = this.createControlBeacon(this.objective.controlPoint);
     this.controlBeacon = controlBeacon;
     this.controlRing = controlBeacon.userData.ring ?? null;
     this.controlCore = controlBeacon.userData.core ?? null;
-    this.objectiveMarkers.push(alphaBeacon, bravoBeacon, controlBeacon);
-    this.scene.add(alphaBeacon, bravoBeacon, controlBeacon);
+    this.objectiveMarkers.push(centerBeacon, controlBeacon);
+    this.scene.add(centerBeacon, controlBeacon);
     this.applyControlVisual(0);
     this.resetOnlineCtfFromArena();
     this.state.objectiveText = this.getObjectiveText();
@@ -510,7 +520,7 @@ export class Game {
   getOnlineObjectiveText() {
     const myTeam = normalizeTeamId(this.getMyTeam());
     if (!myTeam) {
-      return "목표: 알파 또는 브라보 팀을 선택하세요";
+      return "목표: ALPHA 또는 BRAVO 팀을 먼저 선택하세요";
     }
 
     const enemyTeam = getEnemyTeamId(myTeam);
@@ -519,13 +529,13 @@ export class Game {
     const enemyFlag = enemyTeam ? this.onlineCtf.flags[enemyTeam] : null;
 
     if (enemyFlag?.carrierId === myId) {
-      return "목표: 적 깃발을 우리 기지로 운반하세요";
+      return "목표: 탈취한 깃발을 우리 거점으로 운반하세요";
     }
     if (enemyFlag?.carrierId) {
-      return "목표: 우리 팀 깃발 운반자를 엄호하세요";
+      return "목표: 아군 깃발 운반자를 엄호하세요";
     }
     if (myFlag?.carrierId && myFlag.carrierId !== myId) {
-      return "목표: 빼앗긴 우리 깃발을 되찾으세요";
+      return "목표: 적 깃발 탈취를 막고 아군 깃발을 지키세요";
     }
 
     return "목표: 적 깃발을 탈취하세요";
@@ -544,25 +554,31 @@ export class Game {
 
     if (type === "pickup") {
       const text = isMine
-        ? "깃발 확보! 우리 기지로 복귀하세요."
-        : `${byName}님이 깃발을 탈취했습니다 (${formatTeamLabel(byTeam)})`;
+        ? "깃발 탈취 성공! 우리 거점으로 복귀하세요"
+        : `${byName}이(가) 깃발을 탈취했습니다 (${formatTeamLabel(byTeam)})`;
       this.hud.setStatus(text, false, 1.1);
+      this.chat?.addSystemMessage(text, "system");
       return;
     }
 
     if (type === "capture") {
-      const text = isMine ? "깃발 탈취 성공 +500" : `${byName}님이 깃발 탈취에 성공했습니다`;
+      const text = isMine ? "깃발 점수 획득 +500" : `${byName}이(가) 깃발 점수 획득`;
       this.hud.setStatus(text, false, 1.3);
+      this.chat?.addSystemMessage(text, "system");
       return;
     }
 
     if (type === "reset") {
-      this.hud.setStatus("깃발이 기지로 복귀했습니다", true, 0.9);
+      const text = "깃발이 원래 위치로 복귀했습니다";
+      this.hud.setStatus(text, true, 0.9);
+      this.chat?.addSystemMessage(text, "system");
       return;
     }
 
     if (type === "start") {
-      this.hud.setStatus("깃발전 시작. 적 깃발을 탈취하세요.", false, 0.9);
+      const text = "깃발전 시작: 적 깃발을 탈취하세요";
+      this.hud.setStatus(text, false, 0.9);
+      this.chat?.addSystemMessage(text, "system");
     }
   }
 
@@ -795,18 +811,18 @@ export class Game {
     const group = new THREE.Group();
 
     const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.045, 0.045, 2.4, 12),
+      new THREE.CylinderGeometry(0.06, 0.06, 2.8, 12),
       new THREE.MeshStandardMaterial({
         color: poleColor,
         roughness: 0.35,
         metalness: 0.58
       })
     );
-    pole.position.y = 1.2;
+    pole.position.y = 1.4;
     pole.castShadow = true;
 
     const cloth = new THREE.Mesh(
-      new THREE.BoxGeometry(0.14, 0.82, 0.04),
+      new THREE.BoxGeometry(0.54, 0.86, 0.05),
       new THREE.MeshStandardMaterial({
         color: flagColor,
         emissive: flagColor,
@@ -815,7 +831,7 @@ export class Game {
         metalness: 0.1
       })
     );
-    cloth.position.set(0.2, 1.72, 0);
+    cloth.position.set(0.34, 2.0, 0);
     cloth.castShadow = true;
 
     const tip = new THREE.Mesh(
@@ -826,7 +842,7 @@ export class Game {
         emissiveIntensity: 0.22
       })
     );
-    tip.position.y = 2.42;
+    tip.position.y = 2.84;
     tip.castShadow = true;
 
     group.add(pole, cloth, tip);
@@ -1057,7 +1073,7 @@ export class Game {
       this.objective.controlOwner = "neutral";
       this.objective.controlBonusTimer = 0;
       this.hud.setStatus("\uC911\uC559 \uAC70\uC810 \uC0C1\uC2E4", true, 1);
-      this.addChatMessage("중앙 거점을 상실했습니다. 재탈환이 필요합니다.", "warning");
+      this.addChatMessage("以묒븰 嫄곗젏???곸떎?덉뒿?덈떎. ?ы깉?섏씠 ?꾩슂?⑸땲??", "warning");
     }
 
     this.objective.controlProgress = controlProgress;
@@ -1197,6 +1213,173 @@ export class Game {
     const fromLobby = this.lobbyState.players.find((player) => String(player?.id ?? "") === myId);
     const team = fromLobby?.team ?? this.lobbyState.selectedTeam ?? null;
     return normalizeTeamId(team);
+  }
+
+  setTabScoreboardVisible(visible) {
+    const show = Boolean(
+      visible &&
+        this.tabScoreboardEl &&
+        this.activeMatchMode === "online" &&
+        this.isRunning &&
+        !this.isGameOver
+    );
+    this.tabBoardVisible = show;
+    if (!this.tabScoreboardEl) {
+      return;
+    }
+    this.tabScoreboardEl.classList.toggle("show", show);
+    this.tabScoreboardEl.setAttribute("aria-hidden", show ? "false" : "true");
+    if (show) {
+      this.renderTabScoreboard();
+    }
+  }
+
+  renderTabScoreboard() {
+    if (!this.tabAlphaListEl || !this.tabBravoListEl) {
+      return;
+    }
+
+    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
+    const myId = this.getMySocketId();
+    const teamOrder = ["alpha", "bravo"];
+
+    for (const team of teamOrder) {
+      const listEl = team === "alpha" ? this.tabAlphaListEl : this.tabBravoListEl;
+      const countEl = team === "alpha" ? this.tabAlphaCountEl : this.tabBravoCountEl;
+      const teamPlayers = players
+        .filter((player) => normalizeTeamId(player?.team) === team)
+        .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")));
+
+      if (countEl) {
+        countEl.textContent = String(teamPlayers.length);
+      }
+
+      listEl.innerHTML = "";
+      if (teamPlayers.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "tab-player-empty";
+        empty.textContent = "대기 중";
+        listEl.appendChild(empty);
+        continue;
+      }
+
+      for (const player of teamPlayers) {
+        const row = document.createElement("div");
+        row.className = "tab-player-row";
+        if (String(player?.id ?? "") === myId) {
+          row.classList.add("is-self");
+        }
+
+        const name = document.createElement("span");
+        name.className = "tab-player-name";
+        name.textContent = String(player?.name ?? "PLAYER");
+        row.appendChild(name);
+
+        const meta = document.createElement("span");
+        meta.className = "tab-player-meta";
+        meta.textContent =
+          String(player?.id ?? "") === myId
+            ? `${formatTeamLabel(team)} | YOU`
+            : `${formatTeamLabel(team)}`;
+        row.appendChild(meta);
+
+        listEl.appendChild(row);
+      }
+    }
+  }
+
+  beginRespawnCountdown(respawnAtRaw = null) {
+    const parsedRespawnAt = Number(respawnAtRaw);
+    this.isRespawning = true;
+    this.respawnEndAt =
+      Number.isFinite(parsedRespawnAt) && parsedRespawnAt > Date.now()
+        ? parsedRespawnAt
+        : Date.now() + PVP_RESPAWN_MS;
+    this.respawnLastSecond = -1;
+    this.leftMouseDown = false;
+    this.rightMouseAiming = false;
+    this.isAiming = false;
+    this.handlePrimaryActionUp();
+  }
+
+  updateRespawnCountdown() {
+    if (!this.isRespawning) {
+      return;
+    }
+
+    const remainingMs = this.respawnEndAt - Date.now();
+    if (remainingMs <= 0) {
+      if (this.respawnLastSecond !== 0) {
+        this.respawnLastSecond = 0;
+        this.hud.setStatus("부활 중...", true, 0.5);
+      }
+      return;
+    }
+
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
+    if (seconds === this.respawnLastSecond) {
+      return;
+    }
+    this.respawnLastSecond = seconds;
+    this.hud.setStatus(`사망 - ${seconds}초 후 부활`, true, 1.0);
+  }
+
+  handlePlayerRespawn(payload = {}) {
+    if (this.activeMatchMode !== "online") {
+      return;
+    }
+
+    const id = String(payload.id ?? "").trim();
+    if (!id) {
+      return;
+    }
+
+    const hpRaw = Number(payload.hp);
+    const hp = Number.isFinite(hpRaw) ? Math.max(0, Math.min(100, Math.trunc(hpRaw))) : 100;
+    const state = payload?.state ?? null;
+    const myId = this.getMySocketId();
+
+    if (id === myId) {
+      this.state.health = hp;
+      this.state.killStreak = 0;
+      this.hud.setKillStreak(0);
+      this.isRespawning = false;
+      this.respawnEndAt = 0;
+      this.respawnLastSecond = -1;
+
+      const x = Number(state?.x);
+      const y = Number(state?.y);
+      const z = Number(state?.z);
+      const yaw = Number(state?.yaw);
+      const pitch = Number(state?.pitch);
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+        this.playerPosition.set(x, y, z);
+        this.yaw = Number.isFinite(yaw) ? yaw : this.yaw;
+        this.pitch = Number.isFinite(pitch) ? pitch : 0;
+      } else {
+        this.setOnlineSpawnFromLobby();
+      }
+      this.verticalVelocity = 0;
+      this.onGround = true;
+      this.camera.position.copy(this.playerPosition);
+      this.camera.rotation.order = "YXZ";
+      this.camera.rotation.y = this.yaw;
+      this.camera.rotation.x = this.pitch;
+      this.hud.setStatus("부활 완료", false, 0.8);
+      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+      return;
+    }
+
+    const lobbyPlayer =
+      this.lobbyState.players.find((player) => String(player?.id ?? "") === id) ?? {
+        id,
+        name: "PLAYER",
+        team: null
+      };
+    const remote = this.ensureRemotePlayer(lobbyPlayer);
+    if (remote && state) {
+      this.applyRemoteState(remote, state, true);
+    }
   }
 
   isEnemyTeam(team) {
@@ -1637,6 +1820,7 @@ export class Game {
     const damage = Math.max(0, Number(payload.damage ?? 0));
     const killed = Boolean(payload.killed);
     const victimHealth = Number(payload.victimHealth);
+    const respawnAt = Number(payload.respawnAt);
     const myId = this.getMySocketId();
     const teamScore = payload?.teamScore ?? null;
     const teamCaptures = payload?.teamCaptures ?? null;
@@ -1692,17 +1876,16 @@ export class Game {
       this.hud.flashDamage();
 
       if (killed) {
-        this.state.health = 100;
+        this.state.health = 0;
         this.state.killStreak = 0;
         this.hud.setKillStreak(0);
-        this.hud.setStatus("사망했습니다. 리스폰합니다...", true, 0.9);
-        this.setOnlineSpawnFromLobby();
-        this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+        this.beginRespawnCountdown(respawnAt);
       } else {
-        const nextHealth = Number.isFinite(victimHealth)
-          ? victimHealth
-          : Math.max(0, this.state.health - damage);
-        this.state.health = Math.max(0, Math.min(100, nextHealth));
+        const fallbackHealth = Math.max(0, this.state.health - damage);
+        const nextHealth = Number.isFinite(victimHealth) ? victimHealth : fallbackHealth;
+        const clampedServerHealth = Math.max(0, Math.min(100, nextHealth));
+        // Never allow local health to increase on damage packets.
+        this.state.health = Math.min(this.state.health, clampedServerHealth);
         this.hud.setStatus(`피해 -${damage}`, true, 0.35);
       }
     }
@@ -1768,7 +1951,7 @@ export class Game {
         }
       }
 
-      const text = String(response?.error ?? "블록 동기화에 실패했습니다");
+      const text = String(response?.error ?? "釉붾줉 ?숆린?붿뿉 ?ㅽ뙣?덉뒿?덈떎");
       this.hud.setStatus(text, true, 0.9);
     });
   }
@@ -2134,11 +2317,11 @@ export class Game {
     });
     bindUtilityTap(this.mobileReloadBtn, () => {
       if (!this.buildSystem.isGunMode()) {
-        this.hud.setStatus("재장전하려면 총 모드로 전환하세요", true, 0.75);
+        this.hud.setStatus("Switch to gun mode to reload.", true, 0.75);
         return;
       }
       if (this.weapon.startReload()) {
-        this.hud.setStatus("재장전 중...", true, 0.55);
+        this.hud.setStatus("Reloading...", true, 0.55);
       }
     });
 
@@ -2209,6 +2392,7 @@ export class Game {
       this.isAiming = false;
       this.rightMouseAiming = false;
       this.handlePrimaryActionUp();
+      this.setTabScoreboardVisible(false);
       this.mobileState.lookPointerId = null;
       this.mobileState.aimPointerId = null;
       this.resetMobileStick();
@@ -2247,6 +2431,14 @@ export class Game {
     ]);
 
     document.addEventListener("keydown", (event) => {
+      if (event.code === "Tab") {
+        event.preventDefault();
+        if (!this.chat?.isInputFocused) {
+          this.setTabScoreboardVisible(true);
+        }
+        return;
+      }
+
       if (
         this.isRunning &&
         this.chat &&
@@ -2291,9 +2483,9 @@ export class Game {
 
       if (event.code === "KeyR") {
         if (!this.buildSystem.isGunMode()) {
-          this.hud.setStatus("3번 키로 총 모드로 전환하세요", true, 0.9);
+          this.hud.setStatus("Press 3 to switch to gun mode.", true, 0.9);
         } else if (this.weapon.startReload()) {
-          this.hud.setStatus("재장전 중...", true, 0.6);
+          this.hud.setStatus("Reloading...", true, 0.6);
         }
       }
 
@@ -2308,6 +2500,12 @@ export class Game {
     });
 
     document.addEventListener("keyup", (event) => {
+      if (event.code === "Tab") {
+        event.preventDefault();
+        this.setTabScoreboardVisible(false);
+        return;
+      }
+
       if (this.chat?.isInputFocused) {
         return;
       }
@@ -2615,6 +2813,7 @@ export class Game {
     const mode = options.mode ?? this.menuMode;
     this.activeMatchMode = mode === "online" ? "online" : "single";
     this.resetState();
+    this.setTabScoreboardVisible(false);
     this.hud.showStartOverlay(false);
     this.hud.showPauseOverlay(false);
     this.hud.hideGameOver();
@@ -2626,14 +2825,14 @@ export class Game {
     this.tryPointerLock();
 
     if (!this.pointerLockSupported) {
-      this.hud.setStatus("포인터락을 사용할 수 없어 자유 시점 모드로 전환합니다", true, 1.2);
+      this.hud.setStatus("Pointer lock unavailable. Free-look mode enabled.", true, 1.2);
     }
 
-    this.addChatMessage("작전 시작. 생존하며 점수를 확보하세요.", "info");
-    this.addChatMessage("목표: 적 깃발 탈취 및 중앙 거점 유지.", "info");
-    this.addChatMessage("조작: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
+    this.addChatMessage("Match started. Survive and secure objectives.", "info");
+    this.addChatMessage("Objective: eliminate enemies and capture the center flag.", "info");
+    this.addChatMessage("議곗옉: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
-      this.hud.setStatus("온라인 매치 시작: AI 비활성화", false, 0.9);
+      this.hud.setStatus("Online match started. AI disabled.", false, 0.9);
       if (this.latestRoomSnapshot) {
         this.applyRoomSnapshot(this.latestRoomSnapshot);
       } else {
@@ -2673,7 +2872,7 @@ export class Game {
       this.allowUnlockedLook = true;
       this.mouseLookEnabled = true;
       this.hud.showPauseOverlay(false);
-      this.hud.setStatus("포인터락 대체 모드를 활성화했습니다", true, 1);
+      this.hud.setStatus("Pointer lock fallback mode enabled.", true, 1);
       this.syncCursorVisibility();
     }, POINTER_LOCK_FALLBACK_MS);
   }
@@ -2692,6 +2891,10 @@ export class Game {
     this.mobileState.aimPointerId = null;
     this.resetMobileStick();
     this.handlePrimaryActionUp();
+    this.isRespawning = false;
+    this.respawnEndAt = 0;
+    this.respawnLastSecond = -1;
+    this.setTabScoreboardVisible(false);
     this.weapon.reset();
     this.enemyManager.reset();
     this.playerPosition.set(0, PLAYER_HEIGHT, 0);
@@ -2750,6 +2953,7 @@ export class Game {
     if (
       !this.isRunning ||
       this.isGameOver ||
+      this.isRespawning ||
       this.chat?.isInputFocused ||
       !this.buildSystem.isGunMode()
     ) {
@@ -2762,7 +2966,7 @@ export class Game {
         const now = this.clock.getElapsedTime();
         if (now - this.lastDryFireAt > 0.22) {
           this.lastDryFireAt = now;
-          this.hud.setStatus("탄약 없음", true, 0.55);
+          this.hud.setStatus("?꾩빟 ?놁쓬", true, 0.55);
           this.sound.play("dry", { rateJitter: 0.08 });
         }
       }
@@ -2778,7 +2982,7 @@ export class Game {
 
     if (this.activeMatchMode === "online") {
       if (!this.getMyTeam()) {
-        this.hud.setStatus("공격 전에 팀을 먼저 선택하세요", true, 0.7);
+        this.hud.setStatus("Select a team before attacking.", true, 0.7);
         if (blockHit?.point) {
           this.spawnHitSpark(blockHit.point);
         }
@@ -2822,16 +3026,16 @@ export class Game {
         this.state.killStreak = 1;
       }
       this.state.lastKillTime = now;
-      this.hud.setStatus("+100 처치", false, 0.45);
+      this.hud.setStatus("+100 泥섏튂", false, 0.45);
       this.hud.setKillStreak(this.state.killStreak);
 
       if (this.state.killStreak >= 3) {
         this.addChatMessage(
-          `${this.state.killStreak}연속 처치! 처치 보너스 +${this.state.kills * 10}`,
+          `${this.state.killStreak}?곗냽 泥섏튂! 泥섏튂 蹂대꼫??+${this.state.kills * 10}`,
           "streak"
         );
       } else {
-        this.addChatMessage(`적 처치 +100 (총 처치 ${this.state.kills})`, "kill");
+        this.addChatMessage(`??泥섏튂 +100 (珥?泥섏튂 ${this.state.kills})`, "kill");
       }
     }
   }
@@ -3053,6 +3257,21 @@ export class Game {
       return;
     }
 
+    this.updateRespawnCountdown();
+    if (this.isRespawning) {
+      this.leftMouseDown = false;
+      this.rightMouseAiming = false;
+      this.isAiming = false;
+      this.verticalVelocity = 0;
+      this.updateCamera(delta);
+      this.hud.update(delta, {
+        ...this.state,
+        ...this.weapon.getState(),
+        enemyCount: aiEnabled ? this.enemyManager.enemies.length : 0
+      });
+      return;
+    }
+
     if (gunMode && this.leftMouseDown) {
       this.fire();
     }
@@ -3066,7 +3285,7 @@ export class Game {
       this.sound.play("reload", { gain: 0.9, rateJitter: 0.03 });
     }
     if (gunMode && this._wasReloading && !weapState.reloading) {
-      this.addChatMessage("재장전 완료", "info");
+      this.addChatMessage("?ъ옣???꾨즺", "info");
     }
     this._wasReloading = gunMode ? weapState.reloading : false;
 
@@ -3084,13 +3303,13 @@ export class Game {
       if (damage > 0) {
         this.state.health = Math.max(0, this.state.health - damage);
         this.hud.flashDamage();
-        this.hud.setStatus(`피격 -${damage}`, true, 0.35);
-        this.addChatMessage(`피격 -${damage} HP`, "damage");
+        this.hud.setStatus(`?쇨꺽 -${damage}`, true, 0.35);
+        this.addChatMessage(`?쇨꺽 -${damage} HP`, "damage");
         if (this.state.health <= 25 && this.state.health > 0) {
-          this.addChatMessage("체력이 낮습니다", "warning");
+          this.addChatMessage("泥대젰????뒿?덈떎", "warning");
         }
       } else if (combatResult.firedShots > 0) {
-        this.hud.setStatus("아슬아슬! 적 탄환이 스쳐갔습니다", true, 0.16);
+        this.hud.setStatus("?꾩뒳?꾩뒳! ???꾪솚???ㅼ퀜媛붿뒿?덈떎", true, 0.16);
       }
     }
 
@@ -3106,7 +3325,7 @@ export class Game {
           this.bravoFlag.position.copy(this.objective.bravoFlagHome);
         }
       }
-      this.addChatMessage("작전 실패. 다시 배치해 전선을 회복하세요.", "warning");
+      this.addChatMessage("?묒쟾 ?ㅽ뙣. ?ㅼ떆 諛곗튂???꾩꽑???뚮났?섏꽭??", "warning");
       this.hud.showGameOver(this.state.score);
       this.syncCursorVisibility();
       if (document.pointerLockElement === this.renderer.domElement) {
@@ -3153,7 +3372,7 @@ export class Game {
           return;
         }
         this.hud.showPauseOverlay(true);
-        this.hud.setStatus("마우스를 다시 클릭해 시점 고정을 활성화하세요", true, 1);
+        this.hud.setStatus("留덉슦?ㅻ? ?ㅼ떆 ?대┃???쒖젏 怨좎젙???쒖꽦?뷀븯?몄슂", true, 1);
         this.syncCursorVisibility();
       });
     }
@@ -3302,10 +3521,6 @@ export class Game {
     if (!this.chat) {
       return;
     }
-    if (this.chatIntroShown && type !== "intro") {
-      return;
-    }
-    this.chatIntroShown = true;
     this.chat.addSystemMessage(text, "system");
   }
 
@@ -3364,6 +3579,10 @@ export class Game {
       this.handlePvpDamage(payload);
     });
 
+    socket.on("player:respawn", (payload) => {
+      this.handlePlayerRespawn(payload);
+    });
+
     socket.on("ctf:update", (payload) => {
       this.applyOnlineStatePayload(payload, { showEvent: true });
     });
@@ -3372,15 +3591,15 @@ export class Game {
       if (!code || this.lobbyState.roomCode !== code) {
         return;
       }
-      this.hud.setStatus(`온라인 매치 시작 (${code})`, false, 1);
+      this.hud.setStatus(`?⑤씪??留ㅼ튂 ?쒖옉 (${code})`, false, 1);
       this.start({ mode: "online" });
     });
 
     socket.on("room:error", (message) => {
-      const text = String(message ?? "로비 오류");
+      const text = String(message ?? "濡쒕퉬 ?ㅻ쪟");
       this.hud.setStatus(text, true, 1.2);
       if (this.mpStatusEl) {
-        this.mpStatusEl.textContent = `로비 오류: ${text}`;
+        this.mpStatusEl.textContent = `濡쒕퉬 ?ㅻ쪟: ${text}`;
         this.mpStatusEl.dataset.state = "error";
       }
     });
@@ -3438,7 +3657,7 @@ export class Game {
       this._joiningDefaultRoom = false;
       if (!response.ok) {
         this._nextAutoJoinAt = Date.now() + 1800;
-        this.hud.setStatus(response.error ?? "온라인 방 참가에 실패했습니다", true, 1);
+        this.hud.setStatus(response.error ?? "?⑤씪??諛?李멸????ㅽ뙣?덉뒿?덈떎", true, 1);
         this.refreshOnlineStatus();
         return;
       }
@@ -3458,7 +3677,7 @@ export class Game {
     const connected = !!this.chat?.isConnected?.();
     if (!connected) {
       this.mpRoomListEl.innerHTML =
-        '<div class="mp-empty">서버 연결을 시도 중입니다. 잠시 후 다시 시도해 주세요.</div>';
+        '<div class="mp-empty">?쒕쾭 ?곌껐???쒕룄 以묒엯?덈떎. ?좎떆 ???ㅼ떆 ?쒕룄??二쇱꽭??</div>';
       return;
     }
 
@@ -3467,7 +3686,7 @@ export class Game {
       list[0] ??
       null;
     if (!globalRoom) {
-      this.mpRoomListEl.innerHTML = '<div class="mp-empty">GLOBAL 방 정보를 불러오지 못했습니다.</div>';
+      this.mpRoomListEl.innerHTML = '<div class="mp-empty">GLOBAL 諛??뺣낫瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??</div>';
       return;
     }
 
@@ -3475,7 +3694,7 @@ export class Game {
     this.mpRoomListEl.innerHTML =
       `<div class="mp-room-row is-single">` +
       `<div class="mp-room-label">${ONLINE_ROOM_CODE}  ${playerCount}/${ONLINE_MAX_PLAYERS}` +
-      `<span class="mp-room-host">24시간 운영</span>` +
+      `<span class="mp-room-host">24?쒓컙 ?댁쁺</span>` +
       `</div>` +
       `</div>`;
   }
@@ -3489,15 +3708,16 @@ export class Game {
       this.latestRoomSnapshot = null;
       this.pendingRemoteBlocks.clear();
       this.clearRemotePlayers();
+      this.setTabScoreboardVisible(false);
       this.mpLobbyEl?.classList.add("hidden");
       if (this.mpRoomTitleEl) {
-        this.mpRoomTitleEl.textContent = "로비";
+        this.mpRoomTitleEl.textContent = "濡쒕퉬";
       }
       if (this.mpRoomSubtitleEl) {
-        this.mpRoomSubtitleEl.textContent = "미참가 상태";
+        this.mpRoomSubtitleEl.textContent = "誘몄갭媛 ?곹깭";
       }
       if (this.mpPlayerListEl) {
-        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">플레이어를 기다리는 중...</div>';
+        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">?뚮젅?댁뼱瑜?湲곕떎由щ뒗 以?..</div>';
       }
       this.mpTeamAlphaBtn?.classList.remove("is-active");
       this.mpTeamBravoBtn?.classList.remove("is-active");
@@ -3541,7 +3761,7 @@ export class Game {
         if (player.id === myId) {
           const selfTag = document.createElement("span");
           selfTag.className = "mp-tag self-tag";
-          selfTag.textContent = "나";
+          selfTag.textContent = "You";
           line.appendChild(selfTag);
         }
 
@@ -3555,7 +3775,7 @@ export class Game {
         if (player.id === this.lobbyState.hostId) {
           const hostTag = document.createElement("span");
           hostTag.className = "mp-tag host-tag";
-          hostTag.textContent = "방장";
+          hostTag.textContent = "諛⑹옣";
           line.appendChild(hostTag);
         }
 
@@ -3563,7 +3783,7 @@ export class Game {
       }
 
       if (this.lobbyState.players.length === 0) {
-        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">플레이어를 기다리는 중...</div>';
+        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">?뚮젅?댁뼱瑜?湲곕떎由щ뒗 以?..</div>';
       }
     }
 
@@ -3577,7 +3797,7 @@ export class Game {
     }
 
     if (this.mpRoomSubtitleEl) {
-      this.mpRoomSubtitleEl.textContent = `24시간 GLOBAL 방 | ${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS}`;
+      this.mpRoomSubtitleEl.textContent = `24?쒓컙 GLOBAL 諛?| ${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS}`;
     }
 
     this.mpTeamAlphaBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "alpha");
@@ -3585,6 +3805,9 @@ export class Game {
     this.mpLobbyEl?.classList.remove("hidden");
     this.applyOnlineStatePayload(room?.state ?? {}, { showEvent: false });
     this.syncRemotePlayersFromLobby();
+    if (this.tabBoardVisible) {
+      this.renderTabScoreboard();
+    }
     if (this.activeMatchMode === "online" && this.isRunning) {
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     }
@@ -3624,13 +3847,13 @@ export class Game {
 
     socket.emit("room:leave", (response = {}) => {
       if (!response.ok) {
-        this.hud.setStatus(response.error ?? "방 나가기에 실패했습니다", true, 1);
+        this.hud.setStatus(response.error ?? "諛??섍?湲곗뿉 ?ㅽ뙣?덉뒿?덈떎", true, 1);
         return;
       }
 
       this.setLobbyState(response.room ?? null);
       this.requestRoomList();
-      this.hud.setStatus("로비 상태를 동기화했습니다", false, 0.75);
+      this.hud.setStatus("Lobby state refreshed.", false, 0.75);
     });
   }
 
@@ -3641,39 +3864,39 @@ export class Game {
 
     const socket = this.chat?.socket;
     if (!socket || !socket.connected || !this.lobbyState.roomCode) {
-      this.hud.setStatus("팀 선택 전에 먼저 방에 참가해 주세요", true, 0.8);
+      this.hud.setStatus("Join a room before selecting a team.", true, 0.8);
       return;
     }
 
     socket.emit("room:set-team", { team }, (response = {}) => {
       if (!response.ok) {
-        this.hud.setStatus(response.error ?? "팀 선택에 실패했습니다", true, 1);
+        this.hud.setStatus(response.error ?? "Team selection failed.", true, 1);
         return;
       }
 
       this.lobbyState.selectedTeam = team;
       this.mpTeamAlphaBtn?.classList.toggle("is-active", team === "alpha");
       this.mpTeamBravoBtn?.classList.toggle("is-active", team === "bravo");
-      this.hud.setStatus(`팀 선택 완료: ${formatTeamLabel(team)}`, false, 0.7);
+      this.hud.setStatus(`Team selected: ${formatTeamLabel(team)}`, false, 0.7);
     });
   }
 
   startOnlineMatch() {
     const socket = this.chat?.socket;
     if (!socket || !socket.connected) {
-      this.hud.setStatus("서버가 오프라인입니다", true, 1);
+      this.hud.setStatus("Server is offline.", true, 1);
       return;
     }
 
     if (!this.lobbyState.roomCode) {
       this.joinDefaultRoom({ force: true });
-      this.hud.setStatus("온라인 방에 자동 참가 중입니다", false, 0.8);
+      this.hud.setStatus("Joining online room automatically...", false, 0.8);
       return;
     }
 
     socket.emit("room:start", (response = {}) => {
       if (!response.ok) {
-        this.hud.setStatus(response.error ?? "온라인 매치 시작에 실패했습니다", true, 1);
+        this.hud.setStatus(response.error ?? "?⑤씪??留ㅼ튂 ?쒖옉???ㅽ뙣?덉뒿?덈떎", true, 1);
       }
     });
   }
@@ -3681,7 +3904,7 @@ export class Game {
   async copyCurrentRoomCode() {
     const code = this.lobbyState.roomCode;
     if (!code) {
-      this.hud.setStatus("복사할 방 코드가 없습니다", true, 0.9);
+      this.hud.setStatus("蹂듭궗??諛?肄붾뱶媛 ?놁뒿?덈떎", true, 0.9);
       return;
     }
 
@@ -3696,9 +3919,9 @@ export class Game {
         document.execCommand("copy");
         document.body.removeChild(temp);
       }
-      this.hud.setStatus(`방 코드 복사 완료: ${code}`, false, 0.8);
+      this.hud.setStatus(`諛?肄붾뱶 蹂듭궗 ?꾨즺: ${code}`, false, 0.8);
     } catch {
-      this.hud.setStatus("복사에 실패했습니다", true, 0.9);
+      this.hud.setStatus("蹂듭궗???ㅽ뙣?덉뒿?덈떎", true, 0.9);
     }
   }
 
@@ -3723,13 +3946,13 @@ export class Game {
     if (this.mpStartBtn) {
       this.mpStartBtn.disabled = !canStart;
       if (!connected && connecting) {
-        this.mpStartBtn.textContent = "서버 연결 중...";
+        this.mpStartBtn.textContent = "?쒕쾭 ?곌껐 以?..";
       } else if (!connected) {
-        this.mpStartBtn.textContent = "서버 오프라인";
+        this.mpStartBtn.textContent = "?쒕쾭 ?ㅽ봽?쇱씤";
       } else if (!inRoom) {
-        this.mpStartBtn.textContent = "방 자동 참가 중...";
+        this.mpStartBtn.textContent = "諛??먮룞 李멸? 以?..";
       } else {
-        this.mpStartBtn.textContent = "온라인 매치 시작";
+        this.mpStartBtn.textContent = "?⑤씪??留ㅼ튂 ?쒖옉";
       }
     }
     if (this.mpLeaveBtn) {
@@ -3758,37 +3981,38 @@ export class Game {
     }
 
     if (!this.chat) {
-      this.mpStatusEl.textContent = "서버: 채팅 모듈 없음";
+      this.mpStatusEl.textContent = "?쒕쾭: 梨꾪똿 紐⑤뱢 ?놁쓬";
       this.mpStatusEl.dataset.state = "offline";
       this.updateLobbyControls();
       return;
     }
 
     if (this.chat.isConnecting()) {
-      this.mpStatusEl.textContent = "서버: 연결 중 (기동 대기)...";
+      this.mpStatusEl.textContent = "?쒕쾭: ?곌껐 以?(湲곕룞 ?湲?...";
       this.mpStatusEl.dataset.state = "offline";
       this.updateLobbyControls();
       return;
     }
 
     if (!this.chat.isConnected()) {
-      this.mpStatusEl.textContent = "서버: 오프라인";
+      this.mpStatusEl.textContent = "?쒕쾭: ?ㅽ봽?쇱씤";
       this.mpStatusEl.dataset.state = "offline";
       this.updateLobbyControls();
       return;
     }
 
     if (this.lobbyState.roomCode) {
-      this.mpStatusEl.textContent = `서버: 온라인 | ${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;
+      this.mpStatusEl.textContent = `?쒕쾭: ?⑤씪??| ${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;
       this.mpStatusEl.dataset.state = "online";
       this.updateLobbyControls();
       return;
     }
 
-    this.mpStatusEl.textContent = "서버: 온라인 | 방 자동 참가 중...";
+    this.mpStatusEl.textContent = "?쒕쾭: ?⑤씪??| 諛??먮룞 李멸? 以?..";
     this.mpStatusEl.dataset.state = "online";
     this.joinDefaultRoom();
     this.updateLobbyControls();
   }
 }
+
 
