@@ -2981,9 +2981,17 @@ export class Game {
       const yaw = Number(state?.yaw);
       const pitch = Number(state?.pitch);
       if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-        this.playerPosition.set(x, y, z);
+        const safeSpawn = this.findSafeSpawnPlacement(x, z, y);
+        if (safeSpawn) {
+          this.playerPosition.set(safeSpawn.x, safeSpawn.y, safeSpawn.z);
+        } else {
+          this.playerPosition.set(x, y, z);
+        }
         this.yaw = Number.isFinite(yaw) ? yaw : this.yaw;
         this.pitch = Number.isFinite(pitch) ? pitch : 0;
+        if (this.isPlayerCollidingAt(this.playerPosition.x, this.playerPosition.y, this.playerPosition.z)) {
+          this.setOnlineSpawnFromLobby();
+        }
       } else {
         this.setOnlineSpawnFromLobby();
       }
@@ -3590,11 +3598,33 @@ export class Game {
       faceYaw = leftSide ? -Math.PI * 0.4 : Math.PI * 0.4;
     }
 
-    const spawnX = anchorX + Math.cos(angle) * ring;
-    const spawnZ = anchorZ + Math.sin(angle) * ring;
-    const spawnY = (this.voxelWorld.getSurfaceYAt(spawnX, spawnZ) ?? 0) + PLAYER_HEIGHT;
+    let spawnPoint = null;
+    const ringVariants = [ring, ring + 0.65, ring + 1.3];
+    for (const ringValue of ringVariants) {
+      for (let i = 0; i < 10; i += 1) {
+        const tryAngle = angle + i * (Math.PI / 5);
+        const tryX = anchorX + Math.cos(tryAngle) * ringValue;
+        const tryZ = anchorZ + Math.sin(tryAngle) * ringValue;
+        spawnPoint = this.findSafeSpawnPlacement(tryX, tryZ);
+        if (spawnPoint) {
+          break;
+        }
+      }
+      if (spawnPoint) {
+        break;
+      }
+    }
 
-    this.playerPosition.set(spawnX, spawnY, spawnZ);
+    if (!spawnPoint) {
+      const fallbackY = (this.voxelWorld.getSurfaceYAt(anchorX, anchorZ) ?? 0) + PLAYER_HEIGHT;
+      spawnPoint = this.findSafeSpawnPlacement(anchorX, anchorZ, fallbackY) ?? {
+        x: anchorX,
+        y: fallbackY + 2,
+        z: anchorZ
+      };
+    }
+
+    this.playerPosition.set(spawnPoint.x, spawnPoint.y, spawnPoint.z);
     this.verticalVelocity = 0;
     this.onGround = true;
     this.fallStartY = this.playerPosition.y;
@@ -3604,6 +3634,47 @@ export class Game {
     this.camera.rotation.order = "YXZ";
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
+  }
+
+  findSafeSpawnPlacement(originX, originZ, preferredY = Number.NaN) {
+    if (!Number.isFinite(originX) || !Number.isFinite(originZ)) {
+      return null;
+    }
+
+    const offsets = [
+      [0, 0],
+      [0.42, 0],
+      [-0.42, 0],
+      [0, 0.42],
+      [0, -0.42],
+      [0.35, 0.35],
+      [0.35, -0.35],
+      [-0.35, 0.35],
+      [-0.35, -0.35]
+    ];
+    const surfaceY = this.voxelWorld.getSurfaceYAt(originX, originZ);
+    const baseY = Number.isFinite(preferredY)
+      ? preferredY
+      : (Number.isFinite(surfaceY) ? surfaceY : 0) + PLAYER_HEIGHT;
+
+    for (const [offsetX, offsetZ] of offsets) {
+      const x = originX + offsetX;
+      const z = originZ + offsetZ;
+      const localSurfaceY = this.voxelWorld.getSurfaceYAt(x, z);
+      const candidateBaseY =
+        Number.isFinite(preferredY)
+          ? baseY
+          : (Number.isFinite(localSurfaceY) ? localSurfaceY : baseY - PLAYER_HEIGHT) + PLAYER_HEIGHT;
+
+      for (let lift = 0; lift <= 8; lift += 0.5) {
+        const y = candidateBaseY + lift;
+        if (!this.isPlayerCollidingAt(x, y, z)) {
+          return { x, y, z };
+        }
+      }
+    }
+
+    return null;
   }
 
   emitLocalPlayerSync(delta, force = false) {
@@ -6358,7 +6429,12 @@ export class Game {
     const myId = this.getMySocketId();
     const hostId = String(this.lobbyState.hostId ?? "");
     if (!myId || !hostId || myId !== hostId) {
-      this.hud.setStatus("방장만 매치를 시작할 수 있습니다.", true, 1);
+      if (this.activeMatchMode === "online" && this.isRunning && !this.isGameOver) {
+        this.hud.setStatus("이미 온라인 매치에 참가 중입니다.", false, 0.8);
+        return;
+      }
+      this.hud.setStatus("온라인 매치에 참가합니다.", false, 0.8);
+      this.start({ mode: "online" });
       return;
     }
 
@@ -6400,7 +6476,7 @@ export class Game {
     const myId = this.getMySocketId();
     const hostId = String(this.lobbyState.hostId ?? "");
     const isHost = !!inRoom && !!myId && !!hostId && myId === hostId;
-    const canStart = connected && inRoom && isHost;
+    const canStart = connected && inRoom;
 
     if (this.mpCreateBtn) {
       this.mpCreateBtn.disabled = true;
@@ -6423,7 +6499,7 @@ export class Game {
       } else if (!inRoom) {
         this.mpStartBtn.textContent = "방 자동 참가 중...";
       } else if (!isHost) {
-        this.mpStartBtn.textContent = "방장 시작 대기 중...";
+        this.mpStartBtn.textContent = "게임 참가";
       } else {
         this.mpStartBtn.textContent = "온라인 매치 시작";
       }
