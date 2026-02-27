@@ -21,6 +21,8 @@ const CENTER_AD_VIDEO_URLS = [
 ];
 const CENTER_AD_REST_MS = 60_000;
 const CENTER_AD_RETRY_MS = 4_000;
+const CENTER_AD_MAX_FAILURES_PER_CLIP = 3;
+const CENTER_AD_WATCHDOG_INTERVAL_MS = 750;
 const CENTER_AD_AUDIO_MAX_GAIN = 0.26;
 const CENTER_AD_AUDIO_MIN_GAIN = 0;
 const CENTER_AD_AUDIO_NEAR_DISTANCE = 4;
@@ -513,6 +515,9 @@ export class Game {
     this.centerAdVolumeScale = readStoredCenterAdVolumeScale();
     this.centerAdVolumeBeforeMute = Math.max(0.1, this.centerAdVolumeScale);
     this.centerAdLastSyncSentAt = 0;
+    this.centerAdFailureCounts = new Map();
+    this.centerAdPlaybackPrimed = false;
+    this.centerAdWatchdogNextAt = 0;
     this.optionsMenuOpen = false;
 
     this._initialized = false;
@@ -1877,6 +1882,66 @@ export class Game {
     return texture;
   }
 
+  primeCenterAdPlaybackUnlock() {
+    if (this.centerAdPlaybackPrimed || CENTER_AD_VIDEO_URLS.length === 0) {
+      return;
+    }
+    this.centerAdPlaybackPrimed = true;
+
+    const video = this.ensureCenterAdVideoElement();
+    if (!video) {
+      return;
+    }
+
+    const targetIndex = this.normalizeCenterAdIndex(this.centerAdVideoIndex);
+    const targetUrl = CENTER_AD_VIDEO_URLS[targetIndex];
+    if (!targetUrl) {
+      return;
+    }
+
+    const prevMuted = video.muted;
+    const prevVolume = video.volume;
+    const prevPreload = video.preload;
+
+    try {
+      video.preload = "metadata";
+      video.muted = true;
+      video.volume = 0;
+      video.src = targetUrl;
+      video.currentTime = 0;
+      video.load();
+    } catch {
+      video.muted = prevMuted;
+      video.volume = prevVolume;
+      video.preload = prevPreload;
+      return;
+    }
+
+    const restore = () => {
+      video.muted = prevMuted;
+      video.volume = prevVolume;
+      video.preload = prevPreload;
+      this.releaseCenterAdSource();
+    };
+
+    const playPromise = video.play?.();
+    if (playPromise && typeof playPromise.then === "function") {
+      playPromise
+        .then(() => {
+          try {
+            video.pause();
+          } catch {}
+          restore();
+        })
+        .catch(() => {
+          restore();
+        });
+      return;
+    }
+
+    restore();
+  }
+
   clearCenterAdRestTimer() {
     if (this.centerAdRestTimer === null || typeof window === "undefined") {
       return;
@@ -1907,6 +1972,55 @@ export class Game {
     this.centerAdDuckedUntil = 0;
     this.centerAdPlayingIndex = -1;
     this.applyCenterAdTextureToPanels(null);
+  }
+
+  markCenterAdPlaybackFailure(index) {
+    const targetIndex = this.normalizeCenterAdIndex(index);
+    const attempts = (this.centerAdFailureCounts.get(targetIndex) ?? 0) + 1;
+    this.centerAdFailureCounts.set(targetIndex, attempts);
+
+    if (attempts >= CENTER_AD_MAX_FAILURES_PER_CLIP && CENTER_AD_VIDEO_URLS.length > 1) {
+      this.centerAdFailureCounts.set(targetIndex, 0);
+      this.centerAdVideoIndex = this.normalizeCenterAdIndex(targetIndex + 1);
+    }
+  }
+
+  updateCenterAdPlaybackWatchdog() {
+    if (!this.centerAdActive) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now < this.centerAdWatchdogNextAt) {
+      return;
+    }
+    this.centerAdWatchdogNextAt = now + CENTER_AD_WATCHDOG_INTERVAL_MS;
+
+    if (this.centerAdPhase === "rest") {
+      const waitMs = Math.max(0, Math.trunc(this.centerAdRestUntil - now));
+      if (this.centerAdRestTimer === null && waitMs <= 0) {
+        this.playNextCenterAdVideo(this.centerAdSessionNonce);
+      }
+      return;
+    }
+
+    if (this.centerAdPhase !== "play") {
+      return;
+    }
+
+    const video = this.centerAdVideoEl;
+    if (!video || this.centerAdPlayingIndex < 0) {
+      return;
+    }
+    if (!video.paused || video.ended) {
+      return;
+    }
+
+    const startTime = Number.isFinite(video.currentTime) ? Math.max(0, Number(video.currentTime)) : 0;
+    this.playCenterAdVideoAtIndex(this.centerAdPlayingIndex, this.centerAdSessionNonce, {
+      startTimeSec: startTime,
+      advancePlaylist: false
+    });
   }
 
   scheduleNextCenterAdVideo(restMs, sessionNonce) {
@@ -1982,6 +2096,7 @@ export class Game {
       video.currentTime = 0;
       video.load();
     } catch {
+      this.markCenterAdPlaybackFailure(targetIndex);
       this.handleCenterAdPlaybackEnded({ failed: true });
       return;
     }
@@ -2009,6 +2124,7 @@ export class Game {
       this.centerAdPhase = "play";
       this.centerAdPlayingIndex = targetIndex;
       this.centerAdRestUntil = 0;
+      this.centerAdFailureCounts.set(targetIndex, 0);
       if (advancePlaylist) {
         this.centerAdVideoIndex = (targetIndex + 1) % playlistLength;
       }
@@ -2024,6 +2140,7 @@ export class Game {
         if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
           return;
         }
+        this.markCenterAdPlaybackFailure(targetIndex);
         this.handleCenterAdPlaybackEnded({ failed: true });
       });
       return;
@@ -2046,11 +2163,13 @@ export class Game {
     if (!nextActive) {
       this.centerAdPhase = "idle";
       this.centerAdRestUntil = 0;
+      this.centerAdWatchdogNextAt = 0;
       this.releaseCenterAdSource();
       this.emitCenterAdSync({ force: true });
       return;
     }
 
+    this.centerAdWatchdogNextAt = 0;
     this.centerAdPhase = "play";
     this.playNextCenterAdVideo(sessionNonce);
   }
@@ -4871,6 +4990,7 @@ export class Game {
     this.chat?.close?.();
     this.requestMobileFullscreen();
     this.sound.unlock();
+    this.primeCenterAdPlaybackUnlock();
     this.setCenterAdActive(true);
     this.isGameOver = false;
     this.mouseLookEnabled = this.allowUnlockedLook;
@@ -5415,6 +5535,7 @@ export class Game {
     this.updateSparks(delta);
     this.updateSky(delta);
     this.updateCenterAdAudio(delta);
+    this.updateCenterAdPlaybackWatchdog();
     if (this.activeMatchMode === "online" && this.centerAdActive) {
       this.emitCenterAdSync();
     }
