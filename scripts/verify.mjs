@@ -333,7 +333,7 @@ async function checkSocketServer() {
     assert(left?.ok === true, `room:leave failed: ${JSON.stringify(left)}`);
     assert(left?.room?.code === "GLOBAL", `leave should keep GLOBAL room: ${JSON.stringify(left)}`);
 
-    const started = await emitWithAck(c2, "room:start");
+    const started = await emitWithAck(c1, "room:start");
     assert(started?.ok === true, `room:start failed: ${JSON.stringify(started)}`);
     await waitFor(() => startedCount >= 2, 4000);
 

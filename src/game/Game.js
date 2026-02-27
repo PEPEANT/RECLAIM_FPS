@@ -495,6 +495,7 @@ export class Game {
     this.onlineRoundWinnerTeam = null;
     this.onlineRoundRestartAt = 0;
     this.onlineRoundLastSecond = -1;
+    this.lastRoomStartedAt = 0;
     this.flagInteractVisible = false;
     this.flagInteractCooldownUntil = 0;
     this.scoreHudState = { show: null, alpha: null, bravo: null };
@@ -6009,10 +6010,21 @@ export class Game {
       this.handleOnlineMatchEnd(payload);
     });
 
-    socket.on("room:started", ({ code }) => {
+    socket.on("room:started", ({ code, startedAt }) => {
       if (!code || this.lobbyState.roomCode !== code) {
         return;
       }
+      const startedAtNum = Number(startedAt);
+      const roundStartedAt = Number.isFinite(startedAtNum) ? Math.max(0, Math.trunc(startedAtNum)) : 0;
+      if (roundStartedAt > 0 && this.lastRoomStartedAt > 0 && roundStartedAt <= this.lastRoomStartedAt) {
+        return;
+      }
+      if (roundStartedAt > 0) {
+        this.lastRoomStartedAt = roundStartedAt;
+      }
+
+      const alreadyRunningOnline =
+        this.activeMatchMode === "online" && this.isRunning && !this.onlineRoundEnded;
       this.setOnlineRoundState({
         ended: false,
         winnerTeam: null,
@@ -6020,6 +6032,11 @@ export class Game {
         targetScore: this.onlineTargetScore,
         announce: false
       });
+      if (alreadyRunningOnline) {
+        this.hud.setStatus(`온라인 라운드 갱신 (${code})`, false, 0.8);
+        this.requestRoomSnapshot();
+        return;
+      }
       this.hud.setStatus(`온라인 매치 시작 (${code})`, false, 1);
       this.start({ mode: "online" });
     });
@@ -6134,6 +6151,7 @@ export class Game {
       this.lobbyState.hostId = null;
       this.lobbyState.players = [];
       this.lobbyState.selectedTeam = null;
+      this.lastRoomStartedAt = 0;
       this.latestRoomSnapshot = null;
       this.pendingRemoteBlocks.clear();
       this.clearRemotePlayers();
@@ -6372,7 +6390,10 @@ export class Game {
     const connected = !!this.chat?.isConnected?.();
     const connecting = !!this.chat?.isConnecting?.();
     const inRoom = !!this.lobbyState.roomCode;
-    const canStart = connected && inRoom;
+    const myId = this.getMySocketId();
+    const hostId = String(this.lobbyState.hostId ?? "");
+    const isHost = !!inRoom && !!myId && !!hostId && myId === hostId;
+    const canStart = connected && inRoom && isHost;
 
     if (this.mpCreateBtn) {
       this.mpCreateBtn.disabled = true;
@@ -6394,6 +6415,8 @@ export class Game {
         this.mpStartBtn.textContent = "서버 오프라인";
       } else if (!inRoom) {
         this.mpStartBtn.textContent = "방 자동 참가 중...";
+      } else if (!isHost) {
+        this.mpStartBtn.textContent = "방장 시작 대기 중...";
       } else {
         this.mpStartBtn.textContent = "온라인 매치 시작";
       }

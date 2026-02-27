@@ -1946,11 +1946,27 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
+    if (!player) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
+      return;
+    }
+    if (room.hostId && room.hostId !== socket.id) {
+      ack(ackFn, { ok: false, error: "방장만 매치를 시작할 수 있습니다" });
+      return;
+    }
+    if (state.round?.restartTimer) {
+      ack(ackFn, { ok: false, error: "라운드 재시작 대기 중입니다" });
+      return;
+    }
+
+    const startedAt = Date.now();
     resetRoomRoundState(room, {
-      startedAt: Date.now(),
+      startedAt,
       byPlayerId: socket.id
     });
-    ack(ackFn, { ok: true });
+    ack(ackFn, { ok: true, startedAt });
   });
 
   socket.on("disconnecting", () => {
