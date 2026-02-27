@@ -273,6 +273,12 @@ async function checkSocketServer() {
       snapshotAck?.snapshot?.stock && typeof snapshotAck.snapshot.stock === "object",
       `snapshot stock missing: ${JSON.stringify(snapshotAck)}`
     );
+    assert(
+      Number(snapshotAck?.snapshot?.targetScore) >= 1 &&
+        snapshotAck?.snapshot?.round &&
+        typeof snapshotAck.snapshot.round === "object",
+      `snapshot round metadata missing: ${JSON.stringify(snapshotAck)}`
+    );
     await waitFor(() => snapshotReceived, 3000);
 
     const baselineTypeId = 6;

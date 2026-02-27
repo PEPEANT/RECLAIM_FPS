@@ -254,8 +254,9 @@ async function scenarioCombatAndCtfInteraction(url) {
 
     let sawPvpDamage = false;
     let sawBlockSync = false;
-    let sawPickup = false;
-    let sawCapture = false;
+    let pickupCount = 0;
+    let captureCount = 0;
+    let sawMatchEnd = false;
 
     a.on("pvp:damage", (payload = {}) => {
       if (String(payload.attackerId ?? "") === String(a.id) && String(payload.victimId ?? "") === String(b.id)) {
@@ -278,9 +279,16 @@ async function scenarioCombatAndCtfInteraction(url) {
     a.on("ctf:update", (payload = {}) => {
       const type = String(payload?.event?.type ?? "");
       if (type === "pickup") {
-        sawPickup = true;
+        pickupCount += 1;
       } else if (type === "capture") {
-        sawCapture = true;
+        captureCount += 1;
+      }
+    });
+
+    a.on("match:end", (payload = {}) => {
+      const winnerTeam = String(payload?.winnerTeam ?? "");
+      if (winnerTeam === "alpha") {
+        sawMatchEnd = true;
       }
     });
 
@@ -300,13 +308,17 @@ async function scenarioCombatAndCtfInteraction(url) {
     const bBack = await emitAck(b, "room:set-team", { team: "bravo" });
     assert(bBack?.ok === true, "적 팀 복귀 실패");
 
-    a.emit("player:sync", { x: 0, y: 1.75, z: 0, yaw: 0, pitch: 0 });
-    await sleep(80);
-    const pickupAck = await emitAck(a, "ctf:interact");
-    assert(pickupAck?.ok === true, "ctf:interact 실패");
-    await waitFor(() => sawPickup, 4500);
-    a.emit("player:sync", { x: -35, y: 1.75, z: 0, yaw: 0, pitch: 0 });
-    await waitFor(() => sawCapture, 4500);
+    for (let i = 0; i < 3; i += 1) {
+      a.emit("player:sync", { x: 0, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+      await sleep(80);
+      const pickupAck = await emitAck(a, "ctf:interact");
+      assert(pickupAck?.ok === true, `ctf:interact 실패 (#${i + 1})`);
+      await waitFor(() => pickupCount >= i + 1, 4500);
+      a.emit("player:sync", { x: -35, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+      await waitFor(() => captureCount >= i + 1, 4500);
+      await sleep(80);
+    }
+    await waitFor(() => sawMatchEnd, 4500);
   } finally {
     a.disconnect();
     b.disconnect();

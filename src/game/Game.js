@@ -6,7 +6,7 @@ import { VoxelWorld } from "./build/VoxelWorld.js";
 import { BuildSystem } from "./build/BuildSystem.js";
 import { SoundSystem } from "./audio/SoundSystem.js";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../shared/gameModes.js";
-import { CTF_PICKUP_RADIUS, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
+import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
 
 const PLAYER_HEIGHT = 1.75;
 const DEFAULT_FOV = 75;
@@ -344,6 +344,11 @@ export class Game {
       score: { alpha: 0, bravo: 0 },
       captures: { alpha: 0, bravo: 0 }
     };
+    this.onlineTargetScore = CTF_WIN_SCORE;
+    this.onlineRoundEnded = false;
+    this.onlineRoundWinnerTeam = null;
+    this.onlineRoundRestartAt = 0;
+    this.onlineRoundLastSecond = -1;
     this.flagInteractVisible = false;
     this.flagInteractCooldownUntil = 0;
     this.scoreHudState = { show: null, alpha: null, bravo: null };
@@ -378,6 +383,7 @@ export class Game {
     this.camera.add(this.weaponView);
     this.camera.add(this.shovelView);
     this.setupWorld();
+    this.repairUiLabels();
     this.bindEvents();
     this.setupMobileControls();
     this.resetState();
@@ -569,8 +575,95 @@ export class Game {
     this.onlineCtf.score.bravo = 0;
     this.onlineCtf.captures.alpha = 0;
     this.onlineCtf.captures.bravo = 0;
+    this.onlineTargetScore = CTF_WIN_SCORE;
+    this.onlineRoundEnded = false;
+    this.onlineRoundWinnerTeam = null;
+    this.onlineRoundRestartAt = 0;
+    this.onlineRoundLastSecond = -1;
     this.syncOnlineFlagMeshes();
     this.updateTeamScoreHud();
+  }
+
+  repairUiLabels() {
+    const setText = (id, text) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.textContent = text;
+      }
+    };
+
+    setText("mode-online", "온라인");
+    setText("mode-single", "훈련");
+    setText("start-button", "훈련 시작");
+    setText("mp-start", "온라인 시작");
+    setText("mp-refresh", "새로고침");
+    setText("mobile-mode-place", "설치");
+    setText("mobile-mode-dig", "파괴");
+    setText("mobile-mode-gun", "총");
+    setText("mobile-aim", "조준");
+    setText("mobile-jump", "점프");
+    setText("mobile-reload", "장전");
+    setText("flag-interact-btn", "깃발 탈취");
+  }
+
+  setOnlineRoundState({
+    ended = false,
+    winnerTeam = null,
+    restartAt = 0,
+    targetScore = this.onlineTargetScore,
+    announce = false
+  } = {}) {
+    const normalizedWinner = normalizeTeamId(winnerTeam);
+    const nextEnded = Boolean(ended);
+    const nextRestartAt =
+      Number.isFinite(Number(restartAt)) && Number(restartAt) > 0 ? Math.trunc(Number(restartAt)) : 0;
+
+    if (Number.isFinite(Number(targetScore)) && Number(targetScore) > 0) {
+      this.onlineTargetScore = Math.trunc(Number(targetScore));
+    }
+
+    const changed =
+      this.onlineRoundEnded !== nextEnded ||
+      this.onlineRoundWinnerTeam !== normalizedWinner ||
+      this.onlineRoundRestartAt !== nextRestartAt;
+
+    this.onlineRoundEnded = nextEnded;
+    this.onlineRoundWinnerTeam = normalizedWinner;
+    this.onlineRoundRestartAt = nextRestartAt;
+    if (!nextEnded) {
+      this.onlineRoundLastSecond = -1;
+      return;
+    }
+
+    if (changed || announce) {
+      const winnerLabel = formatTeamLabel(normalizedWinner);
+      const remainSec =
+        nextRestartAt > Date.now() ? Math.max(1, Math.ceil((nextRestartAt - Date.now()) / 1000)) : 1;
+      const statusText = `${winnerLabel} 승리! ${remainSec}초 후 재시작`;
+      this.hud.setStatus(statusText, false, 1.0);
+      if (announce) {
+        this.chat?.addSystemMessage(statusText, "system");
+      }
+      this.onlineRoundLastSecond = remainSec;
+    }
+  }
+
+  updateOnlineRoundCountdown() {
+    if (!this.onlineRoundEnded) {
+      return;
+    }
+    const remainMs = this.onlineRoundRestartAt - Date.now();
+    const remainSec = remainMs > 0 ? Math.max(1, Math.ceil(remainMs / 1000)) : 0;
+    if (remainSec === this.onlineRoundLastSecond) {
+      return;
+    }
+    this.onlineRoundLastSecond = remainSec;
+    const winnerLabel = formatTeamLabel(this.onlineRoundWinnerTeam);
+    const statusText =
+      remainSec > 0
+        ? `${winnerLabel} 승리! ${remainSec}초 후 재시작`
+        : "새 라운드를 시작합니다...";
+    this.hud.setStatus(statusText, false, 0.95);
   }
 
   getPlayerNameById(id) {
@@ -592,6 +685,11 @@ export class Game {
   }
 
   getOnlineObjectiveText() {
+    if (this.onlineRoundEnded) {
+      const winnerLabel = formatTeamLabel(this.onlineRoundWinnerTeam);
+      return `라운드 종료: ${winnerLabel} 승리`;
+    }
+
     const mode = normalizeGameMode(this.onlineCtf.mode);
     if (mode === GAME_MODE.ELIMINATION) {
       return "목표: 적 팀을 제압하세요";
@@ -616,7 +714,7 @@ export class Game {
       return "목표: 적 깃발 운반자를 저지하세요";
     }
 
-    return "목표: 중앙 깃발 근처에서 F키(모바일 버튼)로 탈취하세요";
+    return `목표: 중앙 깃발 탈취 (승리 조건 ${this.onlineTargetScore}점)`;
   }
 
   showOnlineCtfEvent(event = {}) {
@@ -657,11 +755,22 @@ export class Game {
       const text = "깃발전 시작: 적 깃발을 탈취하세요";
       this.hud.setStatus(text, false, 0.9);
       this.chat?.addSystemMessage(text, "system");
+      return;
+    }
+
+    if (type === "match_end") {
+      const winner = formatTeamLabel(normalizeTeamId(event.winnerTeam));
+      const text = `${winner} 팀 승리`;
+      this.hud.setStatus(text, false, 1.1);
+      this.chat?.addSystemMessage(text, "system");
     }
   }
 
   applyOnlineStatePayload(payload = {}, { showEvent = false } = {}) {
     this.onlineCtf.mode = normalizeGameMode(payload?.mode ?? this.onlineCtf.mode ?? DEFAULT_GAME_MODE);
+    if (Number.isFinite(Number(payload?.targetScore)) && Number(payload.targetScore) > 0) {
+      this.onlineTargetScore = Math.trunc(Number(payload.targetScore));
+    }
 
     const revision = Number(payload.revision);
     if (Number.isFinite(revision)) {
@@ -717,6 +826,15 @@ export class Game {
     if (Number.isFinite(capBravo)) {
       this.onlineCtf.captures.bravo = Math.trunc(capBravo);
     }
+
+    const roundPayload = payload?.round ?? null;
+    this.setOnlineRoundState({
+      ended: Boolean(roundPayload?.ended),
+      winnerTeam: roundPayload?.winnerTeam ?? null,
+      restartAt: roundPayload?.restartAt ?? 0,
+      targetScore: payload?.targetScore ?? this.onlineTargetScore,
+      announce: false
+    });
 
     if (this.activeMatchMode === "online") {
       const myTeam = normalizeTeamId(this.getMyTeam());
@@ -1111,7 +1229,7 @@ export class Game {
       if (reachedHome) {
         this.objective.playerHasEnemyFlag = false;
         this.state.captures += 1;
-        this.state.score += 500;
+        this.state.score += 1;
         this.state.health = Math.min(100, this.state.health + 20);
 
         this.bravoFlag.visible = true;
@@ -1119,7 +1237,7 @@ export class Game {
 
         this.enemyManager.maxEnemies = Math.min(36, this.enemyManager.maxEnemies + 1);
         this.hud.setStatus(
-          "\uAE43\uBC1C \uD0C8\uCDE8 \uC131\uACF5 +500 (\uCD1D " + this.state.captures + "\uD68C)",
+          "\uAE43\uBC1C \uD0C8\uCDE8 \uC131\uACF5 +1 (\uCD1D " + this.state.captures + "\uD68C)",
           false,
           1.3
         );
@@ -1443,7 +1561,8 @@ export class Game {
       this.activeMatchMode !== "online" ||
       !this.isRunning ||
       this.isGameOver ||
-      this.isRespawning
+      this.isRespawning ||
+      this.onlineRoundEnded
     ) {
       return false;
     }
@@ -1487,7 +1606,10 @@ export class Game {
 
     if (!this.canLocalPickupCenterFlag()) {
       if (source === "key") {
-        this.hud.setStatus("중앙 깃발 근처에서 상호작용하세요.", true, 0.45);
+        const text = this.onlineRoundEnded
+          ? "라운드 종료: 자동 재시작 대기 중입니다."
+          : "중앙 깃발 근처에서 상호작용하세요.";
+        this.hud.setStatus(text, true, 0.45);
       }
       return;
     }
@@ -1509,6 +1631,27 @@ export class Game {
         this.hud.setStatus("이미 깃발을 운반 중입니다.", false, 0.6);
       }
     });
+  }
+
+  handleOnlineMatchEnd(payload = {}) {
+    if (this.activeMatchMode !== "online") {
+      return;
+    }
+
+    const winnerTeam = normalizeTeamId(payload?.winnerTeam);
+    const restartAt = Number(payload?.restartAt);
+    const targetScore = Number(payload?.targetScore);
+    this.setOnlineRoundState({
+      ended: true,
+      winnerTeam,
+      restartAt,
+      targetScore,
+      announce: true
+    });
+    this.leftMouseDown = false;
+    this.rightMouseAiming = false;
+    this.isAiming = false;
+    this.handlePrimaryActionUp();
   }
 
   beginRespawnCountdown(respawnAtRaw = null) {
@@ -2415,10 +2558,10 @@ export class Game {
 
     const clampedDistance = Math.hypot(clampedX, clampedY);
     const normDistance = maxRadius > 0 ? Math.min(1, clampedDistance / maxRadius) : 0;
-    const deadZone = 0.12;
+    const deadZone = 0.08;
     const activeDistance =
       normDistance <= deadZone ? 0 : (normDistance - deadZone) / (1 - deadZone);
-    const easedDistance = activeDistance * activeDistance;
+    const easedDistance = Math.pow(activeDistance, 1.08);
     const dirX = clampedDistance > 0.0001 ? clampedX / clampedDistance : 0;
     const dirY = clampedDistance > 0.0001 ? clampedY / clampedDistance : 0;
 
@@ -3279,6 +3422,7 @@ export class Game {
       !this.isRunning ||
       this.isGameOver ||
       this.isRespawning ||
+      (this.activeMatchMode === "online" && this.onlineRoundEnded) ||
       this.chat?.isInputFocused ||
       !this.buildSystem.isGunMode()
     ) {
@@ -3366,6 +3510,10 @@ export class Game {
   }
 
   applyMovement(delta) {
+    if (this.activeMatchMode === "online" && this.onlineRoundEnded) {
+      return;
+    }
+
     const mobileForward = this.mobileEnabled ? this.mobileState.moveForward : 0;
     const mobileStrafe = this.mobileEnabled ? this.mobileState.moveStrafe : 0;
     const mobileMoveMagnitude = this.mobileEnabled ? Math.hypot(mobileForward, mobileStrafe) : 0;
@@ -3617,6 +3765,7 @@ export class Game {
       return;
     }
 
+    this.updateOnlineRoundCountdown();
     this.updateRespawnCountdown();
     if (this.isRespawning) {
       this.leftMouseDown = false;
@@ -3982,10 +4131,21 @@ export class Game {
       this.applyOnlineStatePayload(payload, { showEvent: true });
     });
 
+    socket.on("match:end", (payload) => {
+      this.handleOnlineMatchEnd(payload);
+    });
+
     socket.on("room:started", ({ code }) => {
       if (!code || this.lobbyState.roomCode !== code) {
         return;
       }
+      this.setOnlineRoundState({
+        ended: false,
+        winnerTeam: null,
+        restartAt: 0,
+        targetScore: this.onlineTargetScore,
+        announce: false
+      });
       this.hud.setStatus(`온라인 매치 시작 (${code})`, false, 1);
       this.start({ mode: "online" });
     });
@@ -4103,6 +4263,13 @@ export class Game {
       this.latestRoomSnapshot = null;
       this.pendingRemoteBlocks.clear();
       this.clearRemotePlayers();
+      this.setOnlineRoundState({
+        ended: false,
+        winnerTeam: null,
+        restartAt: 0,
+        targetScore: CTF_WIN_SCORE,
+        announce: false
+      });
       this.setTabScoreboardVisible(false);
       this.mpLobbyEl?.classList.add("hidden");
       if (this.mpRoomTitleEl) {

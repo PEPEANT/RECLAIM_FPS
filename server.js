@@ -1,7 +1,13 @@
 ﻿import { createServer } from "http";
 import { Server } from "socket.io";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "./src/shared/gameModes.js";
-import { CTF_CAPTURE_RADIUS, CTF_PICKUP_RADIUS, PVP_RESPAWN_MS } from "./src/shared/matchConfig.js";
+import {
+  CTF_CAPTURE_RADIUS,
+  CTF_PICKUP_RADIUS,
+  CTF_WIN_SCORE,
+  PVP_RESPAWN_MS,
+  ROUND_RESTART_DELAY_MS
+} from "./src/shared/matchConfig.js";
 
 function parseCorsOrigins(rawValue) {
   const value = String(rawValue ?? "").trim();
@@ -159,6 +165,12 @@ function createRoomState(players = new Map()) {
     flag: createDefaultCenterFlag(),
     score: { alpha: 0, bravo: 0 },
     captures: { alpha: 0, bravo: 0 },
+    round: {
+      ended: false,
+      winnerTeam: null,
+      restartAt: 0,
+      restartTimer: null
+    },
     revision: 0,
     updatedAt: Date.now()
   };
@@ -216,6 +228,24 @@ function getRoomState(room) {
     room.state.captures = { alpha: 0, bravo: 0 };
   }
 
+  if (!room.state.round || typeof room.state.round !== "object") {
+    room.state.round = {
+      ended: false,
+      winnerTeam: null,
+      restartAt: 0,
+      restartTimer: null
+    };
+  } else {
+    room.state.round.ended = Boolean(room.state.round.ended);
+    room.state.round.winnerTeam = normalizeTeam(room.state.round.winnerTeam);
+    room.state.round.restartAt = Number.isFinite(room.state.round.restartAt)
+      ? Math.max(0, Math.trunc(room.state.round.restartAt))
+      : 0;
+    if (typeof room.state.round.restartTimer === "undefined") {
+      room.state.round.restartTimer = null;
+    }
+  }
+
   room.state.revision = Number.isFinite(room.state.revision) ? room.state.revision : 0;
   room.state.updatedAt = Number.isFinite(room.state.updatedAt)
     ? room.state.updatedAt
@@ -239,6 +269,20 @@ function clearPlayerRespawnTimer(player) {
     clearTimeout(player.respawnTimer);
     player.respawnTimer = null;
   }
+}
+
+function clearRoundRestartTimer(state) {
+  if (!state?.round) {
+    return;
+  }
+  if (state.round.restartTimer) {
+    clearTimeout(state.round.restartTimer);
+    state.round.restartTimer = null;
+  }
+}
+
+function isRoundEnded(state) {
+  return Boolean(state?.round?.ended);
 }
 
 function getSpawnStateForTeam(team) {
@@ -290,6 +334,90 @@ function schedulePlayerRespawn(room, player) {
   return respawnAt;
 }
 
+function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null } = {}) {
+  if (!room) {
+    return null;
+  }
+
+  const state = getRoomState(room);
+  clearRoundRestartTimer(state);
+  state.mode = DEFAULT_GAME_MODE;
+  state.flag = createDefaultCenterFlag();
+  state.score.alpha = 0;
+  state.score.bravo = 0;
+  state.captures.alpha = 0;
+  state.captures.bravo = 0;
+  state.round.ended = false;
+  state.round.winnerTeam = null;
+  state.round.restartAt = 0;
+
+  for (const player of state.players.values()) {
+    player.kills = 0;
+    player.deaths = 0;
+    player.captures = 0;
+    clearPlayerRespawnTimer(player);
+    player.hp = 100;
+    player.respawnAt = 0;
+    player.state = getSpawnStateForTeam(player.team);
+  }
+
+  ensurePlayerTeamsBalanced(state.players);
+  touchRoomState(room);
+  emitRoomUpdate(room);
+  io.to(room.code).emit("room:started", { code: room.code, startedAt });
+  emitCtfUpdate(room, {
+    type: "start",
+    byPlayerId,
+    flagTeam: "center"
+  });
+  return state;
+}
+
+function endRoundAndScheduleRestart(room, { winnerTeam, byPlayerId = null } = {}) {
+  if (!room) {
+    return false;
+  }
+
+  const state = getRoomState(room);
+  const normalizedWinner = normalizeTeam(winnerTeam);
+  if (!normalizedWinner || isRoundEnded(state)) {
+    return false;
+  }
+
+  clearRoundRestartTimer(state);
+  state.round.ended = true;
+  state.round.winnerTeam = normalizedWinner;
+  state.round.restartAt = Date.now() + ROUND_RESTART_DELAY_MS;
+  touchRoomState(room);
+
+  const matchEndPayload = {
+    type: "match_end",
+    byPlayerId,
+    winnerTeam: normalizedWinner,
+    restartAt: state.round.restartAt,
+    targetScore: CTF_WIN_SCORE,
+    score: {
+      alpha: Number(state.score.alpha ?? 0),
+      bravo: Number(state.score.bravo ?? 0)
+    }
+  };
+
+  emitCtfUpdate(room, matchEndPayload);
+  io.to(room.code).emit("match:end", matchEndPayload);
+  emitRoomUpdate(room);
+
+  state.round.restartTimer = setTimeout(() => {
+    const liveState = getRoomState(room);
+    liveState.round.restartTimer = null;
+    resetRoomRoundState(room, {
+      startedAt: Date.now(),
+      byPlayerId: "auto_restart"
+    });
+  }, ROUND_RESTART_DELAY_MS);
+
+  return true;
+}
+
 function cloneCenterFlagState(flag = null) {
   const source = flag && typeof flag === "object" ? flag : {};
   const home = clonePoint(source.home ?? DEFAULT_CENTER_FLAG_HOME);
@@ -323,6 +451,7 @@ function serializeRoomState(room) {
     mode: normalizeGameMode(state.mode),
     revision: state.revision,
     updatedAt: state.updatedAt,
+    targetScore: CTF_WIN_SCORE,
     blockCount: state.blocks.size,
     flag: centerFlag,
     // Legacy compatibility for older clients/scripts.
@@ -334,6 +463,11 @@ function serializeRoomState(room) {
     captures: {
       alpha: Number(state.captures.alpha ?? 0),
       bravo: Number(state.captures.bravo ?? 0)
+    },
+    round: {
+      ended: Boolean(state.round?.ended),
+      winnerTeam: normalizeTeam(state.round?.winnerTeam),
+      restartAt: Number(state.round?.restartAt ?? 0)
     }
   };
 }
@@ -413,6 +547,9 @@ function handleCtfPlayerSync(room, player) {
 
   const state = getRoomState(room);
   if (normalizeGameMode(state.mode) !== GAME_MODE.CTF) {
+    return null;
+  }
+  if (isRoundEnded(state)) {
     return null;
   }
 
@@ -537,10 +674,12 @@ function serializeCtfState(room, event = null) {
     mode: state.mode,
     revision: state.revision,
     updatedAt: state.updatedAt,
+    targetScore: state.targetScore,
     flag: state.flag,
     flags: state.flags,
     score: state.score,
     captures: state.captures,
+    round: state.round,
     event
   };
 }
@@ -558,11 +697,13 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
     mode: state.mode,
     revision: state.revision,
     updatedAt: state.updatedAt,
+    targetScore: state.targetScore,
     blocks: serializeBlocksSnapshot(room),
     flag: state.flag,
     flags: state.flags,
     score: state.score,
     captures: state.captures,
+    round: state.round,
     stock: serializeBlockStock(player?.stock)
   });
 }
@@ -751,6 +892,12 @@ function pruneRoomPlayers(room) {
     }
     touchRoomState(room);
     updateHost(room);
+    if (state.players.size === 0) {
+      clearRoundRestartTimer(state);
+      state.round.ended = false;
+      state.round.winnerTeam = null;
+      state.round.restartAt = 0;
+    }
     if (ctfChanged) {
       emitCtfUpdate(room, {
         type: "reset",
@@ -953,7 +1100,16 @@ io.on("connection", (socket) => {
     const ctfEvent = handleCtfPlayerSync(room, player);
     if (ctfEvent) {
       emitCtfUpdate(room, ctfEvent);
-      emitRoomUpdate(room);
+      const captureTeam = normalizeTeam(ctfEvent.byTeam);
+      const teamScore = captureTeam ? Number(state.score[captureTeam] ?? 0) : 0;
+      if (ctfEvent.type === "capture" && captureTeam && teamScore >= CTF_WIN_SCORE) {
+        endRoundAndScheduleRestart(room, {
+          winnerTeam: captureTeam,
+          byPlayerId: ctfEvent.byPlayerId ?? player.id
+        });
+      } else {
+        emitRoomUpdate(room);
+      }
     }
   });
 
@@ -968,6 +1124,10 @@ io.on("connection", (socket) => {
     const state = getRoomState(room);
     if (normalizeGameMode(state.mode) !== GAME_MODE.CTF) {
       ack(ackFn, { ok: false, error: "현재 모드에서는 깃발 상호작용을 사용할 수 없습니다" });
+      return;
+    }
+    if (isRoundEnded(state)) {
+      ack(ackFn, { ok: false, error: "라운드가 종료되어 재시작 대기 중입니다" });
       return;
     }
 
@@ -1128,6 +1288,9 @@ io.on("connection", (socket) => {
     }
 
     const state = getRoomState(room);
+    if (isRoundEnded(state)) {
+      return;
+    }
     const shooter = state.players.get(socket.id);
     if (!shooter) {
       return;
@@ -1289,31 +1452,9 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const state = getRoomState(room);
-    state.mode = DEFAULT_GAME_MODE;
-    state.flag = createDefaultCenterFlag();
-    state.score.alpha = 0;
-    state.score.bravo = 0;
-    state.captures.alpha = 0;
-    state.captures.bravo = 0;
-    for (const player of state.players.values()) {
-      player.kills = 0;
-      player.deaths = 0;
-      player.captures = 0;
-      clearPlayerRespawnTimer(player);
-      player.hp = 100;
-      player.respawnAt = 0;
-      player.state = getSpawnStateForTeam(player.team);
-    }
-    ensurePlayerTeamsBalanced(state.players);
-    touchRoomState(room);
-    emitRoomUpdate(room);
-
-    io.to(room.code).emit("room:started", { code: room.code, startedAt: Date.now() });
-    emitCtfUpdate(room, {
-      type: "start",
-      byPlayerId: socket.id,
-      flagTeam: "center"
+    resetRoomRoundState(room, {
+      startedAt: Date.now(),
+      byPlayerId: socket.id
     });
     ack(ackFn, { ok: true });
   });
