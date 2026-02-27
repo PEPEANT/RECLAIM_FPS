@@ -1166,6 +1166,17 @@ function updateHost(room) {
   room.hostId = state.players.keys().next().value ?? null;
 }
 
+function resetAdStateWhenRoomEmpty(state) {
+  if (!state || !(state.players instanceof Map)) {
+    return false;
+  }
+  if (state.players.size !== 0) {
+    return false;
+  }
+  state.ad = createDefaultAdState();
+  return true;
+}
+
 function pruneRoomPlayers(room) {
   if (!room || !io?.sockets?.sockets) {
     return false;
@@ -1200,6 +1211,7 @@ function pruneRoomPlayers(room) {
       state.round.ended = false;
       state.round.winnerTeam = null;
       state.round.restartAt = 0;
+      resetAdStateWhenRoomEmpty(state);
     }
     if (ctfChangedTeam) {
       emitCtfUpdate(room, {
@@ -1241,6 +1253,13 @@ function leaveCurrentRoom(socket) {
   const resetTeam = resetFlagForPlayer(room, socket.id);
   pruneRoomPlayers(room);
   updateHost(room);
+  if (state.players.size === 0) {
+    clearRoundRestartTimer(state);
+    state.round.ended = false;
+    state.round.winnerTeam = null;
+    state.round.restartAt = 0;
+    resetAdStateWhenRoomEmpty(state);
+  }
   touchRoomState(room);
   if (resetTeam) {
     emitCtfUpdate(room, {
