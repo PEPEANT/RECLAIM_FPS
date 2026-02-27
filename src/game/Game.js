@@ -1319,7 +1319,7 @@ export class Game {
     }
   }
 
-  applyOnlineStatePayload(payload = {}, { showEvent = false } = {}) {
+  applyOnlineStatePayload(payload = {}, { showEvent = false, applyAd = true } = {}) {
     this.onlineCtf.mode = normalizeGameMode(payload?.mode ?? this.onlineCtf.mode ?? DEFAULT_GAME_MODE);
     if (Number.isFinite(Number(payload?.targetScore)) && Number(payload.targetScore) > 0) {
       this.onlineTargetScore = Math.trunc(Number(payload.targetScore));
@@ -1420,7 +1420,7 @@ export class Game {
       this.showOnlineCtfEvent(payload?.event ?? null);
     }
 
-    if (payload?.ad && typeof payload.ad === "object") {
+    if (applyAd && payload?.ad && typeof payload.ad === "object") {
       this.applyCenterAdSyncPayload(payload.ad);
     }
   }
@@ -5992,7 +5992,7 @@ export class Game {
     });
 
     socket.on("ctf:update", (payload) => {
-      this.applyOnlineStatePayload(payload, { showEvent: true });
+      this.applyOnlineStatePayload(payload, { showEvent: true, applyAd: false });
     });
     socket.on("ad:sync", (payload = {}) => {
       this.applyCenterAdSyncPayload(payload);
@@ -6234,14 +6234,17 @@ export class Game {
     this.mpTeamAlphaBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "alpha");
     this.mpTeamBravoBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "bravo");
     this.mpLobbyEl?.classList.remove("hidden");
-    this.applyOnlineStatePayload(room?.state ?? {}, { showEvent: false });
+    this.applyOnlineStatePayload(room?.state ?? {}, {
+      showEvent: false,
+      applyAd: !(this.activeMatchMode === "online" && this.isRunning)
+    });
     this.syncRemotePlayersFromLobby();
     if (this.tabBoardVisible) {
       this.renderTabScoreboard();
     }
     if (this.activeMatchMode === "online" && this.isRunning) {
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
-      this.emitCenterAdSync({ force: true });
+      this.emitCenterAdSync();
     }
     this.updateTeamScoreHud();
     this.updateFlagInteractUi();
