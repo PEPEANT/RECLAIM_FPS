@@ -37,6 +37,13 @@ const CTF_INTERACT_COOLDOWN_MS = 260;
 const PVP_HIT_SCORE = 10;
 const PVP_KILL_SCORE = 100;
 const BLOCK_KEY_SEPARATOR = "|";
+const LOCAL_DEATH_FALL_MS = 460;
+const LOCAL_DEATH_OFFSET_Y = 0.92;
+const LOCAL_DEATH_PITCH = 0.52;
+const LOCAL_DEATH_ROLL = -0.68;
+const REMOTE_DEATH_FALL_MS = 320;
+const REMOTE_DEATH_OFFSET_Y = 0.56;
+const REMOTE_DEATH_ROLL = -1.18;
 
 function normalizeTeamId(team) {
   return team === "alpha" || team === "bravo" ? team : null;
@@ -286,6 +293,7 @@ export class Game {
     this.ctfScoreAlphaEl = document.getElementById("ctf-score-alpha");
     this.ctfScoreBravoEl = document.getElementById("ctf-score-bravo");
     this.flagInteractBtnEl = document.getElementById("flag-interact-btn");
+    this.respawnBannerEl = document.getElementById("respawn-banner");
     this.lastAppliedFov = DEFAULT_FOV;
     this._lobbySocketBound = false;
     this._joiningDefaultRoom = false;
@@ -367,6 +375,8 @@ export class Game {
     this.isRespawning = false;
     this.respawnEndAt = 0;
     this.respawnLastSecond = -1;
+    this.localDeathAnimStartAt = 0;
+    this.localDeathAnimBlend = 0;
   }
 
   init() {
@@ -537,15 +547,13 @@ export class Game {
     this.state.controlPercent = 0;
     this.state.controlOwner = "neutral";
 
-    if (this.activeMatchMode !== "online") {
-      this.alphaFlag = this.createFlagMesh(0x6fbeff, 0xb7e9ff);
-      this.alphaFlag.position.copy(this.objective.alphaFlagHome);
-      this.scene.add(this.alphaFlag);
+    this.alphaFlag = this.createFlagMesh(0x6fbeff, 0xb7e9ff);
+    this.alphaFlag.position.copy(this.objective.alphaFlagHome);
+    this.scene.add(this.alphaFlag);
 
-      this.bravoFlag = this.createFlagMesh(0xff7d6a, 0xffc8ba);
-      this.bravoFlag.position.copy(this.objective.bravoFlagHome);
-      this.scene.add(this.bravoFlag);
-    }
+    this.bravoFlag = this.createFlagMesh(0xff7d6a, 0xffc8ba);
+    this.bravoFlag.position.copy(this.objective.bravoFlagHome);
+    this.scene.add(this.bravoFlag);
 
     const centerFlagMesh = this.createFlagMesh(0xdde6f4, 0x4bd965);
     centerFlagMesh.position.copy(this.objective.centerFlagHome);
@@ -553,12 +561,14 @@ export class Game {
     this.onlineCenterFlagCloth = centerFlagMesh.userData?.cloth ?? null;
     this.scene.add(centerFlagMesh);
 
-    const controlBeacon = this.createControlBeacon(this.objective.controlPoint);
-    this.controlBeacon = controlBeacon;
-    this.controlRing = controlBeacon.userData.ring ?? null;
-    this.controlCore = controlBeacon.userData.core ?? null;
-    this.objectiveMarkers.push(controlBeacon);
-    this.scene.add(controlBeacon);
+    if (this.activeMatchMode !== "online") {
+      const controlBeacon = this.createControlBeacon(this.objective.controlPoint);
+      this.controlBeacon = controlBeacon;
+      this.controlRing = controlBeacon.userData.ring ?? null;
+      this.controlCore = controlBeacon.userData.core ?? null;
+      this.objectiveMarkers.push(controlBeacon);
+      this.scene.add(controlBeacon);
+    }
     this.applyControlVisual(0);
     this.resetOnlineCtfFromArena();
     this.state.objectiveText = this.getObjectiveText();
@@ -866,10 +876,12 @@ export class Game {
     }
 
     if (this.alphaFlag) {
-      this.alphaFlag.visible = false;
+      this.alphaFlag.visible = true;
+      this.alphaFlag.position.copy(this.objective.alphaFlagHome);
     }
     if (this.bravoFlag) {
-      this.bravoFlag.visible = false;
+      this.bravoFlag.visible = true;
+      this.bravoFlag.position.copy(this.objective.bravoFlagHome);
     }
 
     const myId = this.getMySocketId();
@@ -1863,7 +1875,10 @@ export class Game {
       detailMaterial,
       targetPosition: new THREE.Vector3(),
       targetYaw: 0,
-      yaw: 0
+      yaw: 0,
+      isDowned: false,
+      downedStartAt: 0,
+      downedBlend: 0
     };
   }
 
@@ -1960,6 +1975,33 @@ export class Game {
     }
   }
 
+  setRemoteDowned(remote, respawnAtRaw = 0) {
+    if (!remote) {
+      return;
+    }
+    if (!remote.isDowned) {
+      remote.downedStartAt = Date.now();
+    }
+    remote.isDowned = true;
+    remote.downedBlend = Math.max(remote.downedBlend, 0.02);
+    const respawnAt = Number(respawnAtRaw);
+    if (Number.isFinite(respawnAt) && respawnAt > 0) {
+      // Keep for potential future countdown UI per remote player.
+      remote.respawnAt = Math.trunc(respawnAt);
+    } else {
+      remote.respawnAt = 0;
+    }
+  }
+
+  clearRemoteDowned(remote) {
+    if (!remote) {
+      return;
+    }
+    remote.isDowned = false;
+    remote.downedStartAt = 0;
+    remote.respawnAt = 0;
+  }
+
   syncRemotePlayersFromLobby() {
     if (this.activeMatchMode !== "online") {
       this.clearRemotePlayers();
@@ -1983,6 +2025,12 @@ export class Game {
       }
       if (player.state) {
         this.applyRemoteState(remote, player.state, true);
+      }
+      const hp = Number(player?.hp);
+      if (Number.isFinite(hp) && hp <= 0) {
+        this.setRemoteDowned(remote, player?.respawnAt ?? 0);
+      } else {
+        this.clearRemoteDowned(remote);
       }
     }
 
@@ -2026,6 +2074,20 @@ export class Game {
       );
       remote.yaw += yawDiff * smooth;
       remote.group.rotation.y = remote.yaw;
+      remote.group.rotation.x = 0;
+
+      if (remote.isDowned) {
+        const elapsed = Math.max(0, Date.now() - remote.downedStartAt);
+        const t = THREE.MathUtils.clamp(elapsed / REMOTE_DEATH_FALL_MS, 0, 1);
+        remote.downedBlend = Math.max(remote.downedBlend, t);
+      } else if (remote.downedBlend > 0) {
+        remote.downedBlend = Math.max(0, remote.downedBlend - delta * 4.8);
+      }
+
+      if (remote.downedBlend > 0) {
+        remote.group.position.y -= REMOTE_DEATH_OFFSET_Y * remote.downedBlend;
+      }
+      remote.group.rotation.z = REMOTE_DEATH_ROLL * remote.downedBlend;
 
       this._remoteHead.copy(remote.group.position);
       this._remoteHead.y += PLAYER_HEIGHT + 0.72;
@@ -2034,7 +2096,9 @@ export class Game {
 
       if (remote.nameTag) {
         const hideEnemyName = this.isEnemyTeam(remote.team);
-        remote.nameTag.visible = !hideEnemyName && distance <= REMOTE_NAME_TAG_DISTANCE;
+        const hideForDeath = remote.isDowned || remote.downedBlend > 0.2;
+        remote.nameTag.visible =
+          !hideForDeath && !hideEnemyName && distance <= REMOTE_NAME_TAG_DISTANCE;
       }
     }
 
@@ -2133,6 +2197,9 @@ export class Game {
     let bestDistance = Number.isFinite(maxDistance) ? maxDistance : Infinity;
 
     for (const remote of this.remotePlayers.values()) {
+      if (remote.isDowned || remote.downedBlend > 0.65) {
+        continue;
+      }
       if (!this.isEnemyTeam(remote.team)) {
         continue;
       }
@@ -2259,6 +2326,17 @@ export class Game {
       }
       player.respawnAt = 0;
     });
+
+    if (victimId && victimId !== myId) {
+      const remoteVictim = this.remotePlayers.get(victimId);
+      if (remoteVictim) {
+        if (killed) {
+          this.setRemoteDowned(remoteVictim, respawnAt);
+        } else if (Number.isFinite(victimHealth) && victimHealth > 0) {
+          this.clearRemoteDowned(remoteVictim);
+        }
+      }
+    }
 
     if (attackerId === myId) {
       if (killed) {
