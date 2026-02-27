@@ -426,6 +426,7 @@ function createRoomState(players = new Map()) {
       ended: false,
       winnerTeam: null,
       restartAt: 0,
+      startedAt: 0,
       restartTimer: null
     },
     revision: 0,
@@ -493,6 +494,7 @@ function getRoomState(room) {
       ended: false,
       winnerTeam: null,
       restartAt: 0,
+      startedAt: 0,
       restartTimer: null
     };
   } else {
@@ -500,6 +502,9 @@ function getRoomState(room) {
     room.state.round.winnerTeam = normalizeTeam(room.state.round.winnerTeam);
     room.state.round.restartAt = Number.isFinite(room.state.round.restartAt)
       ? Math.max(0, Math.trunc(room.state.round.restartAt))
+      : 0;
+    room.state.round.startedAt = Number.isFinite(room.state.round.startedAt)
+      ? Math.max(0, Math.trunc(room.state.round.startedAt))
       : 0;
     if (typeof room.state.round.restartTimer === "undefined") {
       room.state.round.restartTimer = null;
@@ -612,6 +617,7 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null }
   state.round.ended = false;
   state.round.winnerTeam = null;
   state.round.restartAt = 0;
+  state.round.startedAt = Math.max(0, Math.trunc(Number(startedAt) || Date.now()));
 
   for (const player of state.players.values()) {
     player.kills = 0;
@@ -705,7 +711,8 @@ function serializeRoomState(room) {
     round: {
       ended: Boolean(state.round?.ended),
       winnerTeam: normalizeTeam(state.round?.winnerTeam),
-      restartAt: Number(state.round?.restartAt ?? 0)
+      restartAt: Number(state.round?.restartAt ?? 0),
+      startedAt: Number(state.round?.startedAt ?? 0)
     }
   };
 }
@@ -1211,6 +1218,7 @@ function pruneRoomPlayers(room) {
       state.round.ended = false;
       state.round.winnerTeam = null;
       state.round.restartAt = 0;
+      state.round.startedAt = 0;
       resetAdStateWhenRoomEmpty(state);
     }
     if (ctfChangedTeam) {
@@ -1258,6 +1266,7 @@ function leaveCurrentRoom(socket) {
     state.round.ended = false;
     state.round.winnerTeam = null;
     state.round.restartAt = 0;
+    state.round.startedAt = 0;
     resetAdStateWhenRoomEmpty(state);
   }
   touchRoomState(room);
@@ -1321,6 +1330,12 @@ function joinDefaultRoom(socket, nameOverride = null) {
   socket.join(room.code);
   socket.data.roomCode = room.code;
   emitRoomSnapshot(socket, room, "join");
+  if (Number(state.round?.startedAt) > 0 && !Boolean(state.round?.ended)) {
+    socket.emit("room:started", {
+      code: room.code,
+      startedAt: Number(state.round.startedAt)
+    });
+  }
 
   emitRoomUpdate(room);
   emitRoomList();
