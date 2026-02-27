@@ -6,6 +6,17 @@ import { CTF_WIN_SCORE } from "../src/shared/matchConfig.js";
 const HOST = "127.0.0.1";
 const START_PORT = 3301;
 const END_PORT = 5300;
+const RUN_COORD_SEED = Math.trunc(Date.now() % 97) + Math.floor(Math.random() * 53) + 19;
+const RUN_BASE_X = Math.max(-210, Math.min(210, 24 + RUN_COORD_SEED));
+const RUN_BASE_Z = Math.max(-210, Math.min(210, -24 - RUN_COORD_SEED));
+const RUN_BLOCK_Y = 96;
+
+function makeRunCoord(dx, dz) {
+  return {
+    x: RUN_BASE_X + Math.trunc(dx),
+    z: RUN_BASE_Z + Math.trunc(dz)
+  };
+}
 
 function assert(condition, message) {
   if (!condition) {
@@ -135,8 +146,10 @@ async function scenarioReconnectAndJoinInProgress(url) {
     assert(readMyTeam(joinA?.room, a.id), "A 자동 팀 배정 실패");
     assert(readMyTeam(joinB?.room, b.id), "B 자동 팀 배정 실패");
 
-    const baseBlock = { x: 21, y: 5, z: 21, typeId: 3 };
-    const lateBlock = { x: 22, y: 5, z: 21, typeId: 4 };
+    const basePos = makeRunCoord(1, 1);
+    const latePos = makeRunCoord(2, 1);
+    const baseBlock = { x: basePos.x, y: RUN_BLOCK_Y, z: basePos.z, typeId: 3 };
+    const lateBlock = { x: latePos.x, y: RUN_BLOCK_Y, z: latePos.z, typeId: 4 };
 
     a.emit("block:update", { action: "place", ...baseBlock });
     await sleep(120);
@@ -199,9 +212,12 @@ async function scenarioConcurrentBuild(url) {
     ]);
     assert(joinA?.ok === true && joinB?.ok === true, "동시건설 join 실패");
 
-    const p1 = { x: 31, y: 5, z: 31, typeId: 5 };
-    const p2 = { x: 32, y: 5, z: 31, typeId: 6 };
-    const same = { x: 33, y: 5, z: 31, typeId: 2 };
+    const p1Pos = makeRunCoord(11, 11);
+    const p2Pos = makeRunCoord(12, 11);
+    const samePos = makeRunCoord(13, 11);
+    const p1 = { x: p1Pos.x, y: RUN_BLOCK_Y, z: p1Pos.z, typeId: 5 };
+    const p2 = { x: p2Pos.x, y: RUN_BLOCK_Y, z: p2Pos.z, typeId: 6 };
+    const same = { x: samePos.x, y: RUN_BLOCK_Y, z: samePos.z, typeId: 2 };
 
     a.emit("block:update", { action: "place", ...p1 });
     b.emit("block:update", { action: "place", ...p2 });
@@ -269,9 +285,9 @@ async function scenarioCombatAndCtfInteraction(url) {
       if (
         String(payload.id ?? "") === String(a.id) &&
         payload.action === "place" &&
-        Number(payload.x) === 12 &&
-        Number(payload.y) === 5 &&
-        Number(payload.z) === 12
+        Number(payload.x) === makeRunCoord(-8, -8).x &&
+        Number(payload.y) === RUN_BLOCK_Y &&
+        Number(payload.z) === makeRunCoord(-8, -8).z
       ) {
         sawBlockSync = true;
       }
@@ -293,7 +309,14 @@ async function scenarioCombatAndCtfInteraction(url) {
       }
     });
 
-    a.emit("block:update", { action: "place", x: 12, y: 5, z: 12, typeId: 6 });
+    const combatBlockPos = makeRunCoord(-8, -8);
+    a.emit("block:update", {
+      action: "place",
+      x: combatBlockPos.x,
+      y: RUN_BLOCK_Y,
+      z: combatBlockPos.z,
+      typeId: 6
+    });
     await waitFor(() => sawBlockSync, 4000);
 
     for (let i = 0; i < 12 && !sawPvpDamage; i += 1) {
@@ -357,9 +380,9 @@ async function scenarioBlockStockAuthoritative(url) {
     const baselineStock = readStockValue(baselineSnapshot?.snapshot?.stock, baseTypeId);
     assert(baselineStock > 0, `초기 재고가 0입니다 (type=${baseTypeId})`);
 
-    const baseX = 110;
-    const baseY = 5;
-    const baseZ = 44;
+    const baseX = -200 + (RUN_COORD_SEED % 20);
+    const baseY = RUN_BLOCK_Y;
+    const baseZ = 70 + (RUN_COORD_SEED % 18);
 
     const placeAck = await emitAck(a, "block:update", {
       action: "place",

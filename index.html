@@ -123,6 +123,7 @@
     </div>
 
     <div id="mobile-controls" aria-hidden="true">
+      <button id="mobile-tab" type="button" aria-label="Scoreboard">탭</button>
       <button id="mobile-options" type="button" aria-label="Options">옵션</button>
       <div id="mobile-joystick" aria-label="Move joystick">
         <div class="mobile-joystick-ring"></div>
@@ -246,21 +247,51 @@
 
     <div id="pause-overlay" class="overlay overlay-pause" aria-hidden="true">
       <section class="options-panel" role="dialog" aria-modal="true" aria-labelledby="options-title">
-        <h2 id="options-title">Options</h2>
-        <p class="options-subtitle">Adjust MP4 background audio, continue, or exit the game.</p>
-        <div class="options-audio">
-          <button id="options-bgm-mute" class="options-secondary-btn" type="button">Mute BGM</button>
-          <label id="options-bgm-label" class="options-volume-label" for="options-bgm-volume">BGM Volume</label>
-          <input id="options-bgm-volume" type="range" min="0" max="100" step="1" value="70" />
-          <div id="options-bgm-value" class="options-volume-value">70%</div>
-          <button id="options-sfx-mute" class="options-secondary-btn" type="button">Mute SFX</button>
-          <label id="options-sfx-label" class="options-volume-label" for="options-sfx-volume">SFX Volume</label>
-          <input id="options-sfx-volume" type="range" min="0" max="100" step="1" value="100" />
-          <div id="options-sfx-value" class="options-volume-value">100%</div>
+        <div class="options-header">
+          <h2 id="options-title">옵션</h2>
+          <p class="options-subtitle">왼쪽에서 항목을 고르고 오른쪽에서 값을 조절하세요.</p>
         </div>
-        <div class="options-actions">
-          <button id="options-continue" type="button">Continue</button>
-          <button id="options-exit" class="options-danger-btn" type="button">Exit</button>
+        <div class="options-layout">
+          <nav class="options-nav" aria-label="Option categories">
+            <button type="button" class="options-nav-btn is-active" data-target="options-section-audio">사운드</button>
+            <button type="button" class="options-nav-btn" data-target="options-section-controls">조작</button>
+            <button type="button" class="options-nav-btn" data-target="options-section-system">시스템</button>
+          </nav>
+          <div class="options-content">
+            <section id="options-section-audio" class="options-section">
+              <h3>사운드</h3>
+              <p class="options-help">배경음(MP4)과 효과음(총/피격/장전) 크기를 각각 조절합니다.</p>
+              <div class="options-row">
+                <label id="options-bgm-label" class="options-volume-label" for="options-bgm-volume">배경음 볼륨</label>
+                <input id="options-bgm-volume" type="range" min="0" max="100" step="1" value="100" />
+                <div id="options-bgm-value" class="options-volume-value">100%</div>
+                <button id="options-bgm-mute" class="options-secondary-btn" type="button">배경음 끄기</button>
+              </div>
+              <div class="options-row">
+                <label id="options-sfx-label" class="options-volume-label" for="options-sfx-volume">효과음 볼륨</label>
+                <input id="options-sfx-volume" type="range" min="0" max="100" step="1" value="100" />
+                <div id="options-sfx-value" class="options-volume-value">100%</div>
+                <button id="options-sfx-mute" class="options-secondary-btn" type="button">효과음 끄기</button>
+              </div>
+            </section>
+            <section id="options-section-controls" class="options-section">
+              <h3>조작</h3>
+              <p class="options-help">모바일 화면 드래그(시점 회전) 감도를 조절합니다.</p>
+              <div class="options-row">
+                <label id="options-mobile-look-label" class="options-volume-label" for="options-mobile-look">모바일 감도</label>
+                <input id="options-mobile-look" type="range" min="40" max="220" step="1" value="100" />
+                <div id="options-mobile-look-value" class="options-volume-value">100%</div>
+              </div>
+            </section>
+            <section id="options-section-system" class="options-section">
+              <h3>시스템</h3>
+              <p class="options-help">게임을 계속하거나 로비로 종료합니다.</p>
+              <div class="options-actions">
+                <button id="options-continue" type="button">계속하기</button>
+                <button id="options-exit" class="options-danger-btn" type="button">게임종료</button>
+              </div>
+            </section>
+          </div>
         </div>
       </section>
     </div>

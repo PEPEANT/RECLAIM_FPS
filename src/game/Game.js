@@ -27,6 +27,8 @@ const CENTER_AD_AUDIO_NEAR_DISTANCE = 4;
 const CENTER_AD_AUDIO_FAR_DISTANCE = 108;
 const CENTER_AD_AUDIO_DUCK_MULTIPLIER = 0.42;
 const CENTER_AD_AUDIO_DUCK_MS = 240;
+const CENTER_AD_SYNC_INTERVAL_MS = 1200;
+const CENTER_AD_SYNC_MAX_DRIFT_SEC = 0.85;
 const PLAYER_HEIGHT = 1.75;
 const DEFAULT_FOV = 75;
 const AIM_FOV = 48;
@@ -84,6 +86,10 @@ const CENTER_AD_VOLUME_STORAGE_KEY = "reclaim_center_ad_volume";
 const DEFAULT_CENTER_AD_VOLUME_SCALE = 1;
 const EFFECTS_VOLUME_STORAGE_KEY = "reclaim_effects_volume";
 const DEFAULT_EFFECTS_VOLUME_SCALE = 1;
+const MOBILE_LOOK_SENSITIVITY_STORAGE_KEY = "reclaim_mobile_look_sensitivity";
+const DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE = 1;
+const MOBILE_LOOK_SENSITIVITY_MIN_SCALE = 0.4;
+const MOBILE_LOOK_SENSITIVITY_MAX_SCALE = 2.2;
 const SKY_BASE_COLOR = 0x8ccfff;
 
 function readStoredCenterAdVolumeScale() {
@@ -121,6 +127,29 @@ function readStoredEffectsVolumeScale() {
     return THREE.MathUtils.clamp(raw, 0, 1);
   } catch {
     return DEFAULT_EFFECTS_VOLUME_SCALE;
+  }
+}
+
+function readStoredMobileLookSensitivityScale() {
+  if (typeof window === "undefined") {
+    return DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE;
+  }
+  try {
+    const stored = window.localStorage.getItem(MOBILE_LOOK_SENSITIVITY_STORAGE_KEY);
+    if (stored === null || stored.trim() === "") {
+      return DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE;
+    }
+    const raw = Number(stored);
+    if (!Number.isFinite(raw)) {
+      return DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE;
+    }
+    return THREE.MathUtils.clamp(
+      raw,
+      MOBILE_LOOK_SENSITIVITY_MIN_SCALE,
+      MOBILE_LOOK_SENSITIVITY_MAX_SCALE
+    );
+  } catch {
+    return DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE;
   }
 }
 
@@ -167,7 +196,7 @@ function isLikelyTouchDevice() {
     ua.includes("ipod") ||
     ua.includes("mobile");
 
-  return coarse && (touchPoints > 0 || uaMobile);
+  return touchPoints > 0 || coarse || uaMobile;
 }
 
 function getNowMs() {
@@ -332,7 +361,9 @@ export class Game {
     this.mobileAimBtn = document.getElementById("mobile-aim");
     this.mobileJumpBtn = document.getElementById("mobile-jump");
     this.mobileReloadBtn = document.getElementById("mobile-reload");
+    this.mobileTabBtn = document.getElementById("mobile-tab");
     this.mobileOptionsBtn = document.getElementById("mobile-options");
+    this.mobileLookSensitivityScale = readStoredMobileLookSensitivityScale();
     this.mobileState = {
       moveForward: 0,
       moveStrafe: 0,
@@ -358,6 +389,10 @@ export class Game {
     this.optionsSfxMuteBtn = document.getElementById("options-sfx-mute");
     this.optionsSfxVolumeEl = document.getElementById("options-sfx-volume");
     this.optionsSfxValueEl = document.getElementById("options-sfx-value");
+    this.optionsMobileLookEl = document.getElementById("options-mobile-look");
+    this.optionsMobileLookValueEl = document.getElementById("options-mobile-look-value");
+    this.optionsNavButtons = Array.from(document.querySelectorAll(".options-nav-btn"));
+    this._optionsNavBound = false;
     this.mpStatusEl = document.getElementById("mp-status");
     this.mpCreateBtn = document.getElementById("mp-create");
     this.mpJoinBtn = document.getElementById("mp-join");
@@ -466,6 +501,9 @@ export class Game {
     this.centerAdVideoEl = null;
     this.centerAdVideoTexture = null;
     this.centerAdVideoIndex = 0;
+    this.centerAdPlayingIndex = -1;
+    this.centerAdPhase = "idle";
+    this.centerAdRestUntil = 0;
     this.centerAdRestTimer = null;
     this.centerAdActive = false;
     this.centerAdSessionNonce = 0;
@@ -474,6 +512,7 @@ export class Game {
     this.centerAdDuckedUntil = 0;
     this.centerAdVolumeScale = readStoredCenterAdVolumeScale();
     this.centerAdVolumeBeforeMute = Math.max(0.1, this.centerAdVolumeScale);
+    this.centerAdLastSyncSentAt = 0;
     this.optionsMenuOpen = false;
 
     this._initialized = false;
@@ -850,19 +889,25 @@ export class Game {
     setText("mp-start", "온라인 시작");
     setText("mp-refresh", "새로고침");
     setText("mobile-mode-place", "설치");
-    setText("mobile-mode-dig", "파괴");
+    setText("mobile-mode-dig", "삽");
     setText("mobile-mode-gun", "총");
     setText("mobile-aim", "조준");
     setText("mobile-jump", "점프");
     setText("mobile-reload", "장전");
+    setText("mobile-tab", "탭");
     setText("mobile-options", "옵션");
     setText("flag-interact-btn", "깃발 탈취");
     setText("chat-toggle-btn", "채팅");
     setText("options-title", "옵션");
+    const subtitle = document.querySelector(".options-subtitle");
+    if (subtitle) {
+      subtitle.textContent = "왼쪽에서 항목을 고르고 오른쪽에서 값을 조절하세요.";
+    }
     setText("options-bgm-label", "배경음 볼륨");
     setText("options-bgm-mute", "배경음 끄기");
     setText("options-sfx-label", "효과음 볼륨");
     setText("options-sfx-mute", "효과음 끄기");
+    setText("options-mobile-look-label", "모바일 감도");
     setText("options-continue", "계속하기");
     setText("options-exit", "게임종료");
     setHtml("mp-team-alpha", '블루팀 <span id="mp-team-alpha-count" class="team-count">0</span>');
@@ -877,6 +922,10 @@ export class Game {
     this.optionsSfxMuteBtn = document.getElementById("options-sfx-mute");
     this.optionsSfxVolumeEl = document.getElementById("options-sfx-volume");
     this.optionsSfxValueEl = document.getElementById("options-sfx-value");
+    this.optionsMobileLookEl = document.getElementById("options-mobile-look");
+    this.optionsMobileLookValueEl = document.getElementById("options-mobile-look-value");
+    this.optionsNavButtons = Array.from(document.querySelectorAll(".options-nav-btn"));
+    this.bindOptionsNavButtons();
     this.refreshOptionsAudioUi();
   }
 
@@ -911,9 +960,52 @@ export class Game {
     this.refreshOptionsAudioUi();
   }
 
+  setMobileLookSensitivityScale(nextValue, { persist = true } = {}) {
+    const raw = Number(nextValue);
+    const value = Number.isFinite(raw)
+      ? THREE.MathUtils.clamp(
+          raw,
+          MOBILE_LOOK_SENSITIVITY_MIN_SCALE,
+          MOBILE_LOOK_SENSITIVITY_MAX_SCALE
+        )
+      : this.mobileLookSensitivityScale;
+    this.mobileLookSensitivityScale = value;
+    if (persist && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(MOBILE_LOOK_SENSITIVITY_STORAGE_KEY, value.toFixed(3));
+      } catch {}
+    }
+    this.refreshOptionsAudioUi();
+  }
+
+  bindOptionsNavButtons() {
+    if (this._optionsNavBound || !Array.isArray(this.optionsNavButtons)) {
+      return;
+    }
+    this._optionsNavBound = true;
+
+    for (const button of this.optionsNavButtons) {
+      button?.addEventListener("click", () => {
+        const targetId = String(button?.dataset?.target ?? "");
+        if (!targetId) {
+          return;
+        }
+        for (const entry of this.optionsNavButtons) {
+          entry?.classList.toggle("is-active", entry === button);
+        }
+        const target = document.getElementById(targetId);
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }
+
   refreshOptionsAudioUi() {
     const bgmPercent = Math.round(THREE.MathUtils.clamp(this.centerAdVolumeScale, 0, 1) * 100);
     const sfxPercent = Math.round(THREE.MathUtils.clamp(this.effectsVolumeScale, 0, 1) * 100);
+    const mobileLookPercent = Math.round(
+      THREE.MathUtils.clamp(this.mobileLookSensitivityScale, 0, MOBILE_LOOK_SENSITIVITY_MAX_SCALE) *
+        100
+    );
     if (this.optionsBgmVolumeEl) {
       this.optionsBgmVolumeEl.value = String(bgmPercent);
     }
@@ -931,6 +1023,12 @@ export class Game {
     }
     if (this.optionsSfxMuteBtn) {
       this.optionsSfxMuteBtn.textContent = sfxPercent <= 0 ? "효과음 켜기" : "효과음 끄기";
+    }
+    if (this.optionsMobileLookEl) {
+      this.optionsMobileLookEl.value = String(mobileLookPercent);
+    }
+    if (this.optionsMobileLookValueEl) {
+      this.optionsMobileLookValueEl.textContent = `${mobileLookPercent}%`;
     }
   }
 
@@ -1314,6 +1412,10 @@ export class Game {
     if (showEvent) {
       this.showOnlineCtfEvent(payload?.event ?? null);
     }
+
+    if (payload?.ad && typeof payload.ad === "object") {
+      this.applyCenterAdSyncPayload(payload.ad);
+    }
   }
 
   syncOnlineFlagMeshes() {
@@ -1597,6 +1699,146 @@ export class Game {
     }
   }
 
+  normalizeCenterAdIndex(value = 0) {
+    const length = CENTER_AD_VIDEO_URLS.length;
+    if (length <= 0) {
+      return 0;
+    }
+    const raw = Math.trunc(Number(value));
+    const normalized = Number.isFinite(raw) ? raw : this.centerAdVideoIndex;
+    return ((normalized % length) + length) % length;
+  }
+
+  isOnlineHost() {
+    if (this.activeMatchMode !== "online") {
+      return false;
+    }
+    const myId = this.getMySocketId();
+    const hostId = String(this.lobbyState.hostId ?? "");
+    return !!myId && !!hostId && myId === hostId;
+  }
+
+  emitCenterAdSync({ force = false } = {}) {
+    if (!this.isOnlineHost()) {
+      return;
+    }
+    const socket = this.chat?.socket;
+    if (!socket?.connected || !this.lobbyState.roomCode) {
+      return;
+    }
+
+    const now = Date.now();
+    if (!force && now - this.centerAdLastSyncSentAt < CENTER_AD_SYNC_INTERVAL_MS) {
+      return;
+    }
+
+    const video = this.centerAdVideoEl;
+    const phase = this.centerAdPhase;
+    const index =
+      phase === "play" && this.centerAdPlayingIndex >= 0
+        ? this.centerAdPlayingIndex
+        : this.centerAdVideoIndex;
+    const payload = {
+      phase,
+      index: this.normalizeCenterAdIndex(index),
+      time: 0,
+      restUntil: phase === "rest" ? Math.max(now, Math.trunc(this.centerAdRestUntil || 0)) : 0
+    };
+
+    if (
+      phase === "play" &&
+      video &&
+      !video.paused &&
+      video.readyState >= 1 &&
+      Number.isFinite(video.currentTime)
+    ) {
+      payload.time = Math.max(0, Number(video.currentTime));
+    }
+
+    socket.emit("ad:sync", payload);
+    this.centerAdLastSyncSentAt = now;
+  }
+
+  applyCenterAdSyncPayload(payload = {}) {
+    if (this.activeMatchMode !== "online" || this.isOnlineHost()) {
+      return;
+    }
+
+    const phaseRaw = String(payload.phase ?? "").trim().toLowerCase();
+    const phase =
+      phaseRaw === "play" || phaseRaw === "rest" || phaseRaw === "idle" ? phaseRaw : null;
+    if (!phase) {
+      return;
+    }
+
+    const index = this.normalizeCenterAdIndex(payload.index);
+    const serverNow = Number(payload.serverNow ?? payload.updatedAt ?? Date.now());
+    const lagSec = Number.isFinite(serverNow)
+      ? THREE.MathUtils.clamp((Date.now() - serverNow) / 1000, 0, 8)
+      : 0;
+
+    if (phase === "play") {
+      if (!this.centerAdActive) {
+        this.setCenterAdActive(true);
+      }
+      const baseTime = Number(payload.time);
+      const targetTime = Number.isFinite(baseTime) ? Math.max(0, baseTime + lagSec) : 0;
+      const video = this.centerAdVideoEl;
+      const sameClip =
+        this.centerAdPlayingIndex === index &&
+        video &&
+        !video.paused &&
+        video.readyState >= 1 &&
+        Number.isFinite(video.currentTime);
+      if (sameClip) {
+        const drift = Math.abs(video.currentTime - targetTime);
+        if (drift > CENTER_AD_SYNC_MAX_DRIFT_SEC) {
+          const duration = Number(video.duration);
+          if (Number.isFinite(duration) && duration > 0.1) {
+            video.currentTime = THREE.MathUtils.clamp(targetTime, 0, Math.max(0, duration - 0.06));
+          } else {
+            video.currentTime = Math.max(0, targetTime);
+          }
+        }
+        this.centerAdPhase = "play";
+        this.centerAdRestUntil = 0;
+        this.centerAdVideoIndex = this.normalizeCenterAdIndex(index + 1);
+        return;
+      }
+
+      this.playCenterAdVideoAtIndex(index, this.centerAdSessionNonce, {
+        startTimeSec: targetTime,
+        advancePlaylist: true
+      });
+      return;
+    }
+
+    if (phase === "rest") {
+      if (!this.centerAdActive) {
+        this.setCenterAdActive(true);
+      }
+      const restUntilRaw = Number(payload.restUntil);
+      const restUntil = Number.isFinite(restUntilRaw)
+        ? Math.max(Date.now(), Math.trunc(restUntilRaw))
+        : Date.now() + CENTER_AD_REST_MS;
+
+      this.clearCenterAdRestTimer();
+      this.releaseCenterAdSource();
+      this.centerAdPhase = "rest";
+      this.centerAdPlayingIndex = -1;
+      this.centerAdVideoIndex = index;
+      this.centerAdRestUntil = restUntil;
+      this.scheduleNextCenterAdVideo(Math.max(100, restUntil - Date.now()), this.centerAdSessionNonce);
+      return;
+    }
+
+    this.centerAdPhase = "idle";
+    this.centerAdRestUntil = 0;
+    this.centerAdPlayingIndex = -1;
+    this.clearCenterAdRestTimer();
+    this.releaseCenterAdSource();
+  }
+
   ensureCenterAdVideoElement() {
     if (this.centerAdVideoEl || typeof document === "undefined") {
       return this.centerAdVideoEl;
@@ -1663,6 +1905,7 @@ export class Game {
     this.centerAdVolume = 0;
     this.centerAdTargetVolume = 0;
     this.centerAdDuckedUntil = 0;
+    this.centerAdPlayingIndex = -1;
     this.applyCenterAdTextureToPanels(null);
   }
 
@@ -1670,11 +1913,15 @@ export class Game {
     if (typeof window === "undefined") {
       return;
     }
+    const waitMs = Math.max(0, Math.trunc(restMs));
+    this.centerAdPhase = "rest";
+    this.centerAdRestUntil = Date.now() + waitMs;
+    this.emitCenterAdSync({ force: true });
     this.clearCenterAdRestTimer();
     this.centerAdRestTimer = window.setTimeout(() => {
       this.centerAdRestTimer = null;
       this.playNextCenterAdVideo(sessionNonce);
-    }, Math.max(0, Math.trunc(restMs)));
+    }, waitMs);
   }
 
   handleCenterAdPlaybackEnded({ failed = false } = {}) {
@@ -1695,6 +1942,24 @@ export class Game {
     if (CENTER_AD_VIDEO_URLS.length === 0) {
       return;
     }
+    const nextIndex = this.normalizeCenterAdIndex(this.centerAdVideoIndex);
+    this.playCenterAdVideoAtIndex(nextIndex, sessionNonce, {
+      startTimeSec: 0,
+      advancePlaylist: true
+    });
+  }
+
+  playCenterAdVideoAtIndex(
+    index,
+    sessionNonce,
+    { startTimeSec = 0, advancePlaylist = true } = {}
+  ) {
+    if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
+      return;
+    }
+    if (CENTER_AD_VIDEO_URLS.length === 0) {
+      return;
+    }
 
     const video = this.ensureCenterAdVideoElement();
     if (!video) {
@@ -1707,13 +1972,13 @@ export class Game {
     }
 
     const playlistLength = CENTER_AD_VIDEO_URLS.length;
-    const nextIndex = this.centerAdVideoIndex % playlistLength;
-    const nextUrl = CENTER_AD_VIDEO_URLS[nextIndex];
+    const targetIndex = this.normalizeCenterAdIndex(index);
+    const targetUrl = CENTER_AD_VIDEO_URLS[targetIndex];
     video.preload = "auto";
 
     try {
       video.pause();
-      video.src = nextUrl;
+      video.src = targetUrl;
       video.currentTime = 0;
       video.load();
     } catch {
@@ -1721,17 +1986,39 @@ export class Game {
       return;
     }
 
-    const advancePlaylist = () => {
+    const applyStartTime = () => {
+      if (!Number.isFinite(startTimeSec) || startTimeSec <= 0) {
+        return;
+      }
+      const duration = Number(video.duration);
+      if (Number.isFinite(duration) && duration > 0.08) {
+        video.currentTime = THREE.MathUtils.clamp(startTimeSec, 0, Math.max(0, duration - 0.06));
+      } else {
+        video.currentTime = Math.max(0, startTimeSec);
+      }
+    };
+    video.addEventListener("loadedmetadata", applyStartTime, { once: true });
+    if (video.readyState >= 1) {
+      applyStartTime();
+    }
+
+    const onPlaySuccess = () => {
       if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
         return;
       }
-      this.centerAdVideoIndex = (nextIndex + 1) % playlistLength;
+      this.centerAdPhase = "play";
+      this.centerAdPlayingIndex = targetIndex;
+      this.centerAdRestUntil = 0;
+      if (advancePlaylist) {
+        this.centerAdVideoIndex = (targetIndex + 1) % playlistLength;
+      }
+      this.emitCenterAdSync({ force: true });
     };
 
     const playPromise = video.play?.();
     if (playPromise && typeof playPromise.catch === "function") {
       playPromise.then(() => {
-        advancePlaylist();
+        onPlaySuccess();
       });
       playPromise.catch(() => {
         if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
@@ -1741,7 +2028,8 @@ export class Game {
       });
       return;
     }
-    advancePlaylist();
+
+    onPlaySuccess();
   }
 
   setCenterAdActive(active) {
@@ -1756,10 +2044,14 @@ export class Game {
     this.clearCenterAdRestTimer();
 
     if (!nextActive) {
+      this.centerAdPhase = "idle";
+      this.centerAdRestUntil = 0;
       this.releaseCenterAdSource();
+      this.emitCenterAdSync({ force: true });
       return;
     }
 
+    this.centerAdPhase = "play";
     this.playNextCenterAdVideo(sessionNonce);
   }
 
@@ -2203,6 +2495,10 @@ export class Game {
         !this.isGameOver
     );
     this.tabBoardVisible = show;
+    if (this.mobileTabBtn) {
+      this.mobileTabBtn.classList.toggle("is-active", show);
+      this.mobileTabBtn.setAttribute("aria-pressed", show ? "true" : "false");
+    }
     if (!this.tabScoreboardEl) {
       return;
     }
@@ -3718,6 +4014,9 @@ export class Game {
       this.handlePrimaryActionUp();
       if (this.mobileEnabled) {
         this.isAiming = false;
+        if (this.tabBoardVisible) {
+          this.setTabScoreboardVisible(false);
+        }
       }
       if (this.mobileJoystickKnobEl) {
         this.mobileJoystickKnobEl.style.transform = "translate(-50%, -50%)";
@@ -3805,6 +4104,7 @@ export class Game {
       !this.mobileAimBtn ||
       !this.mobileJumpBtn ||
       !this.mobileReloadBtn ||
+      !this.mobileTabBtn ||
       !this.mobileOptionsBtn
     ) {
       this.updateMobileControlsVisibility();
@@ -3941,6 +4241,9 @@ export class Game {
         this.hud.setStatus("장전 중...", true, 0.55);
       }
     });
+    bindUtilityTap(this.mobileTabBtn, () => {
+      this.setTabScoreboardVisible(!this.tabBoardVisible);
+    });
     bindUtilityTap(this.mobileOptionsBtn, () => {
       if (!this.isRunning || this.isGameOver) {
         return;
@@ -4000,8 +4303,9 @@ export class Game {
 
       const currentAim = this.isAiming || this.rightMouseAiming;
       const lookScale = currentAim ? MOBILE_AIM_LOOK_SCALE : 1;
-      this.yaw -= deltaX * MOBILE_LOOK_SENSITIVITY_X * lookScale;
-      this.pitch -= deltaY * MOBILE_LOOK_SENSITIVITY_Y * lookScale;
+      const sensitivity = this.mobileLookSensitivityScale;
+      this.yaw -= deltaX * MOBILE_LOOK_SENSITIVITY_X * lookScale * sensitivity;
+      this.pitch -= deltaY * MOBILE_LOOK_SENSITIVITY_Y * lookScale * sensitivity;
       this.pitch = THREE.MathUtils.clamp(this.pitch, -1.45, 1.45);
     });
 
@@ -4045,6 +4349,22 @@ export class Game {
 
   bindEvents() {
     window.addEventListener("resize", () => this.onResize());
+    window.addEventListener(
+      "pointerdown",
+      (event) => {
+        const pointerType = String(event?.pointerType ?? "").toLowerCase();
+        if (pointerType !== "touch" && pointerType !== "pen") {
+          return;
+        }
+        if (this.mobileEnabled && this._mobileBound) {
+          return;
+        }
+        this.mobileEnabled = true;
+        this.setupMobileControls();
+        this.updateMobileControlsVisibility();
+      },
+      { passive: true }
+    );
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.isAiming = false;
@@ -4474,6 +4794,14 @@ export class Game {
       const scale = Number.isFinite(percent) ? percent / 100 : this.effectsVolumeScale;
       this.setEffectsVolumeScale(scale, { persist: true });
     });
+    this.optionsMobileLookEl?.addEventListener("input", (event) => {
+      const slider = event.target;
+      const percent = Number(slider?.value);
+      const scale = Number.isFinite(percent)
+        ? percent / 100
+        : this.mobileLookSensitivityScale;
+      this.setMobileLookSensitivityScale(scale, { persist: true });
+    });
   }
 
   onChatFocusChanged(focused) {
@@ -4535,6 +4863,11 @@ export class Game {
     this.optionsMenuOpen = false;
     this.hud.hideGameOver();
     this.isRunning = true;
+    this.mobileEnabled = isLikelyTouchDevice();
+    if (this.mobileEnabled && !this._mobileBound) {
+      this.setupMobileControls();
+    }
+    this.updateMobileControlsVisibility();
     this.chat?.close?.();
     this.requestMobileFullscreen();
     this.sound.unlock();
@@ -4567,6 +4900,9 @@ export class Game {
     this.updateTeamScoreHud();
     this.updateFlagInteractUi();
     this.refreshOnlineStatus();
+    if (this.activeMatchMode === "online") {
+      this.emitCenterAdSync({ force: true });
+    }
   }
 
   schedulePointerLockFallback() {
@@ -5079,6 +5415,9 @@ export class Game {
     this.updateSparks(delta);
     this.updateSky(delta);
     this.updateCenterAdAudio(delta);
+    if (this.activeMatchMode === "online" && this.centerAdActive) {
+      this.emitCenterAdSync();
+    }
     const isChatting = !!this.chat?.isInputFocused;
     const gunMode = this.buildSystem.isGunMode();
     const aiEnabled = this.activeMatchMode !== "online";
@@ -5491,6 +5830,9 @@ export class Game {
     socket.on("ctf:update", (payload) => {
       this.applyOnlineStatePayload(payload, { showEvent: true });
     });
+    socket.on("ad:sync", (payload = {}) => {
+      this.applyCenterAdSyncPayload(payload);
+    });
 
     socket.on("match:end", (payload) => {
       this.handleOnlineMatchEnd(payload);
@@ -5735,6 +6077,7 @@ export class Game {
     }
     if (this.activeMatchMode === "online" && this.isRunning) {
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+      this.emitCenterAdSync({ force: true });
     }
     this.updateTeamScoreHud();
     this.updateFlagInteractUi();

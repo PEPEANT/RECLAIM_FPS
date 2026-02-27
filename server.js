@@ -1,4 +1,6 @@
 ﻿import { createServer } from "http";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { Server } from "socket.io";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "./src/shared/gameModes.js";
 import {
@@ -64,6 +66,16 @@ const BLOCK_TYPE_MIN = 1;
 const BLOCK_TYPE_MAX = 8;
 const DEFAULT_BLOCK_STOCK = 32;
 const MAX_BLOCK_STOCK = 999;
+const ENABLE_PERSISTENT_WORLD_STATE = true;
+const PERSISTENT_WORLD_STATE_VERSION = 1;
+const PERSISTENT_WORLD_SAVE_DEBOUNCE_MS = 700;
+const PERSISTENT_WORLD_MAX_BLOCKS = 300_000;
+const PERSISTENT_WORLD_STATE_PATH = resolve(
+  process.cwd(),
+  "storage",
+  "global-world-state.json"
+);
+const PERSISTENT_WORLD_MAP_ID = "forest_frontline";
 const DEFAULT_TEAM_HOME = Object.freeze({
   alpha: Object.freeze({ x: -35, y: 0, z: 0 }),
   bravo: Object.freeze({ x: 35, y: 0, z: 0 })
@@ -75,6 +87,7 @@ const DEFAULT_TEAM_FLAG_HOME = Object.freeze({
 
 const rooms = new Map();
 let playerCount = 0;
+let persistentWorldSaveTimer = null;
 
 function clonePoint(point = { x: 0, y: 0, z: 0 }) {
   return {
@@ -115,6 +128,220 @@ function cloneTeamFlagsState(flags = null) {
   return {
     alpha: cloneFlagState(source.alpha, DEFAULT_TEAM_FLAG_HOME.alpha),
     bravo: cloneFlagState(source.bravo, DEFAULT_TEAM_FLAG_HOME.bravo)
+  };
+}
+
+function sanitizePersistedBlockEntry(entry = {}) {
+  const action = entry.action === "place" ? "place" : entry.action === "remove" ? "remove" : null;
+  if (!action) {
+    return null;
+  }
+
+  const x = Number(entry.x);
+  const y = Number(entry.y);
+  const z = Number(entry.z);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+
+  const normalized = {
+    action,
+    x: Math.trunc(x),
+    y: Math.trunc(y),
+    z: Math.trunc(z)
+  };
+
+  if (action === "place") {
+    const typeId = normalizeStockTypeId(entry.typeId);
+    if (!typeId) {
+      return null;
+    }
+    normalized.typeId = typeId;
+  }
+
+  return normalized;
+}
+
+function loadPersistentWorldSnapshot() {
+  if (!ENABLE_PERSISTENT_WORLD_STATE) {
+    return null;
+  }
+
+  try {
+    if (!existsSync(PERSISTENT_WORLD_STATE_PATH)) {
+      return null;
+    }
+    const raw = readFileSync(PERSISTENT_WORLD_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const mapId = String(parsed.mapId ?? PERSISTENT_WORLD_MAP_ID);
+    if (mapId !== PERSISTENT_WORLD_MAP_ID) {
+      console.log(
+        `[persist] snapshot mapId mismatch (${mapId}), expected ${PERSISTENT_WORLD_MAP_ID}. ignoring`
+      );
+      return null;
+    }
+
+    const blocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+    const sanitized = [];
+    for (const entry of blocks) {
+      const normalized = sanitizePersistedBlockEntry(entry);
+      if (!normalized) {
+        continue;
+      }
+      sanitized.push(normalized);
+      if (sanitized.length >= PERSISTENT_WORLD_MAX_BLOCKS) {
+        break;
+      }
+    }
+
+    return {
+      version: Number(parsed.version ?? 1),
+      mapId,
+      savedAt: Number(parsed.savedAt ?? 0),
+      roomCode: String(parsed.roomCode ?? DEFAULT_ROOM_CODE),
+      blocks: sanitized
+    };
+  } catch (error) {
+    console.warn("[persist] failed to load world snapshot:", error?.message ?? error);
+    return null;
+  }
+}
+
+function applyPersistentWorldSnapshot(room) {
+  if (!room?.persistent || !ENABLE_PERSISTENT_WORLD_STATE) {
+    return;
+  }
+
+  const snapshot = loadPersistentWorldSnapshot();
+  if (!snapshot || !Array.isArray(snapshot.blocks) || snapshot.blocks.length === 0) {
+    return;
+  }
+
+  const state = getRoomState(room);
+  state.blocks.clear();
+  for (const block of snapshot.blocks) {
+    const key = blockStateKey(block.x, block.y, block.z);
+    if (block.action === "place") {
+      state.blocks.set(key, {
+        action: "place",
+        x: block.x,
+        y: block.y,
+        z: block.z,
+        typeId: block.typeId
+      });
+      continue;
+    }
+
+    state.blocks.set(key, {
+      action: "remove",
+      x: block.x,
+      y: block.y,
+      z: block.z
+    });
+  }
+
+  state.updatedAt = Date.now();
+  console.log(`[persist] loaded ${state.blocks.size} world block changes from disk`);
+}
+
+function savePersistentWorldSnapshot(room) {
+  if (!room?.persistent || !ENABLE_PERSISTENT_WORLD_STATE) {
+    return;
+  }
+
+  try {
+    const blocks = serializeBlocksSnapshot(room).slice(0, PERSISTENT_WORLD_MAX_BLOCKS);
+    const payload = {
+      version: PERSISTENT_WORLD_STATE_VERSION,
+      mapId: PERSISTENT_WORLD_MAP_ID,
+      roomCode: room.code,
+      savedAt: Date.now(),
+      blocks
+    };
+
+    mkdirSync(dirname(PERSISTENT_WORLD_STATE_PATH), { recursive: true });
+    writeFileSync(PERSISTENT_WORLD_STATE_PATH, JSON.stringify(payload), "utf8");
+  } catch (error) {
+    console.warn("[persist] failed to save world snapshot:", error?.message ?? error);
+  }
+}
+
+function schedulePersistentWorldSnapshotSave(room, { immediate = false } = {}) {
+  if (!room?.persistent || !ENABLE_PERSISTENT_WORLD_STATE) {
+    return;
+  }
+
+  if (persistentWorldSaveTimer) {
+    clearTimeout(persistentWorldSaveTimer);
+    persistentWorldSaveTimer = null;
+  }
+
+  if (immediate) {
+    savePersistentWorldSnapshot(room);
+    return;
+  }
+
+  persistentWorldSaveTimer = setTimeout(() => {
+    persistentWorldSaveTimer = null;
+    savePersistentWorldSnapshot(room);
+  }, PERSISTENT_WORLD_SAVE_DEBOUNCE_MS);
+}
+
+function flushPersistentWorldSnapshot() {
+  if (persistentWorldSaveTimer) {
+    clearTimeout(persistentWorldSaveTimer);
+    persistentWorldSaveTimer = null;
+  }
+
+  const room = rooms.get(DEFAULT_ROOM_CODE);
+  if (!room) {
+    return;
+  }
+
+  savePersistentWorldSnapshot(room);
+}
+
+function createDefaultAdState() {
+  return {
+    phase: "idle",
+    index: 0,
+    time: 0,
+    restUntil: 0,
+    updatedAt: Date.now(),
+    byPlayerId: null
+  };
+}
+
+function normalizeAdPhase(rawPhase) {
+  const value = String(rawPhase ?? "").trim().toLowerCase();
+  if (value === "play" || value === "rest" || value === "idle") {
+    return value;
+  }
+  return "idle";
+}
+
+function sanitizeAdState(raw = null, fallback = null) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const base = fallback && typeof fallback === "object" ? fallback : createDefaultAdState();
+
+  const indexRaw = Number(source.index);
+  const timeRaw = Number(source.time);
+  const restUntilRaw = Number(source.restUntil);
+  const updatedAtRaw = Number(source.updatedAt);
+  const byPlayerIdRaw = String(source.byPlayerId ?? "").trim();
+
+  return {
+    phase: normalizeAdPhase(source.phase ?? base.phase),
+    index: Number.isFinite(indexRaw) ? Math.max(0, Math.trunc(indexRaw)) : Math.max(0, Math.trunc(base.index ?? 0)),
+    time: Number.isFinite(timeRaw) ? Math.max(0, timeRaw) : Math.max(0, Number(base.time ?? 0)),
+    restUntil: Number.isFinite(restUntilRaw)
+      ? Math.max(0, Math.trunc(restUntilRaw))
+      : Math.max(0, Math.trunc(base.restUntil ?? 0)),
+    updatedAt: Number.isFinite(updatedAtRaw) ? Math.max(0, Math.trunc(updatedAtRaw)) : Date.now(),
+    byPlayerId: byPlayerIdRaw || (base.byPlayerId ? String(base.byPlayerId) : null)
   };
 }
 
@@ -191,6 +418,7 @@ function createRoomState(players = new Map()) {
     players,
     blocks: new Map(),
     mode: DEFAULT_GAME_MODE,
+    ad: createDefaultAdState(),
     flags: createDefaultTeamFlags(),
     score: { alpha: 0, bravo: 0 },
     captures: { alpha: 0, bravo: 0 },
@@ -239,6 +467,12 @@ function getRoomState(room) {
   }
 
   room.state.mode = normalizeGameMode(room.state.mode);
+
+  if (!room.state.ad || typeof room.state.ad !== "object") {
+    room.state.ad = createDefaultAdState();
+  } else {
+    room.state.ad = sanitizeAdState(room.state.ad, room.state.ad);
+  }
 
   if (!room.state.flags || typeof room.state.flags !== "object") {
     room.state.flags = createDefaultTeamFlags();
@@ -449,10 +683,12 @@ function endRoundAndScheduleRestart(room, { winnerTeam, byPlayerId = null } = {}
 function serializeRoomState(room) {
   const state = getRoomState(room);
   const teamFlags = cloneTeamFlagsState(state.flags);
+  const ad = sanitizeAdState(state.ad, state.ad);
   return {
     mode: normalizeGameMode(state.mode),
     revision: state.revision,
     updatedAt: state.updatedAt,
+    ad,
     targetScore: CTF_WIN_SCORE,
     blockCount: state.blocks.size,
     // Legacy compatibility for older clients/scripts expecting single `flag`.
@@ -525,7 +761,9 @@ function applyBlockUpdateToRoomState(room, update) {
     });
   }
 
-  return touchRoomState(room);
+  const nextState = touchRoomState(room);
+  schedulePersistentWorldSnapshotSave(room);
+  return nextState;
 }
 
 function resolveRemovedBlockType(state, update) {
@@ -716,6 +954,7 @@ function serializeCtfState(room, event = null) {
     mode: state.mode,
     revision: state.revision,
     updatedAt: state.updatedAt,
+    ad: state.ad,
     targetScore: state.targetScore,
     flag: state.flag,
     flags: state.flags,
@@ -759,7 +998,7 @@ function emitCtfUpdate(room, event = null) {
 
 function createPersistentRoom() {
   const players = new Map();
-  return {
+  const room = {
     code: DEFAULT_ROOM_CODE,
     hostId: null,
     players,
@@ -767,6 +1006,8 @@ function createPersistentRoom() {
     persistent: true,
     createdAt: Date.now()
   };
+  applyPersistentWorldSnapshot(room);
+  return room;
 }
 
 function getDefaultRoom() {
@@ -1173,6 +1414,38 @@ io.on("connection", (socket) => {
         emitRoomUpdate(room);
       }
     }
+  });
+
+  socket.on("ad:sync", (payload = {}) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      return;
+    }
+
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
+    if (!player) {
+      return;
+    }
+    if (room.hostId && room.hostId !== socket.id) {
+      return;
+    }
+
+    const updatedAt = Date.now();
+    state.ad = sanitizeAdState(
+      {
+        ...payload,
+        updatedAt,
+        byPlayerId: socket.id
+      },
+      state.ad
+    );
+
+    io.to(room.code).emit("ad:sync", {
+      ...state.ad,
+      serverNow: updatedAt
+    });
   });
 
   socket.on("ctf:interact", (ackFn) => {
@@ -1691,7 +1964,32 @@ httpServer.on("error", (error) => {
   process.exit(1);
 });
 
+process.on("beforeExit", () => {
+  flushPersistentWorldSnapshot();
+});
+
+process.on("SIGINT", () => {
+  flushPersistentWorldSnapshot();
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  flushPersistentWorldSnapshot();
+  process.exit(0);
+});
 httpServer.listen(PORT, () => {
   console.log(`Chat server running on http://localhost:${PORT}`);
   console.log(`Persistent room: ${DEFAULT_ROOM_CODE} (capacity ${MAX_ROOM_PLAYERS})`);
 });
+
+
+
+
+
+
+
+
+
+
+
+

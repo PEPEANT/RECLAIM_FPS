@@ -2,7 +2,11 @@ node_modules
 dist
 .DS_Store
 Thumbs.db
+dev-all.log
 
 
 # Local Netlify folder
 .netlify
+
+# Runtime persisted world state
+storage/
