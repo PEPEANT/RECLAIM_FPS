@@ -317,6 +317,40 @@ function getEnemyTeam(team) {
   return null;
 }
 
+function countPlayersOnTeam(players, team) {
+  let count = 0;
+  for (const player of players.values()) {
+    if (normalizeTeam(player?.team) === team) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function pickBalancedTeam(players) {
+  const alphaCount = countPlayersOnTeam(players, "alpha");
+  const bravoCount = countPlayersOnTeam(players, "bravo");
+  if (alphaCount < bravoCount) {
+    return "alpha";
+  }
+  if (bravoCount < alphaCount) {
+    return "bravo";
+  }
+  return Math.random() < 0.5 ? "alpha" : "bravo";
+}
+
+function ensurePlayerTeamsBalanced(players) {
+  let changed = false;
+  for (const player of players.values()) {
+    if (!player || normalizeTeam(player.team)) {
+      continue;
+    }
+    player.team = pickBalancedTeam(players);
+    changed = true;
+  }
+  return changed;
+}
+
 function distanceXZ(a = null, b = null) {
   if (!a || !b) {
     return Infinity;
@@ -613,14 +647,14 @@ function joinDefaultRoom(socket, nameOverride = null) {
   if (state.players.size >= MAX_ROOM_PLAYERS) {
     return {
       ok: false,
-      error: `GLOBAL room is full (${MAX_ROOM_PLAYERS})`
+      error: `GLOBAL 방이 가득 찼습니다 (${MAX_ROOM_PLAYERS}명)`
     };
   }
 
   state.players.set(socket.id, {
     id: socket.id,
     name,
-    team: null,
+    team: pickBalancedTeam(state.players),
     state: sanitizePlayerState(),
     hp: 100,
     kills: 0,
@@ -853,7 +887,7 @@ io.on("connection", (socket) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
-      ack(ackFn, { ok: false, error: "Not in room" });
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
@@ -886,21 +920,21 @@ io.on("connection", (socket) => {
   socket.on("room:set-team", (payload = {}, ackFn) => {
     const team = payload.team === "alpha" || payload.team === "bravo" ? payload.team : null;
     if (!team) {
-      ack(ackFn, { ok: false, error: "Invalid team" });
+      ack(ackFn, { ok: false, error: "잘못된 팀입니다" });
       return;
     }
 
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
-      ack(ackFn, { ok: false, error: "Not in room" });
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
     const state = getRoomState(room);
     const player = state.players.get(socket.id);
     if (!player) {
-      ack(ackFn, { ok: false, error: "Not in room" });
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
@@ -914,24 +948,14 @@ io.on("connection", (socket) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
-      ack(ackFn, { ok: false, error: "Not in room" });
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
     const state = getRoomState(room);
-    const players = Array.from(state.players.values());
-    const starter = state.players.get(socket.id);
-    const alphaCount = players.filter((player) => player.team === "alpha").length;
-    const bravoCount = players.filter((player) => player.team === "bravo").length;
-
-    if (!starter || !normalizeTeam(starter.team)) {
-      ack(ackFn, { ok: false, error: "Select a team before starting" });
-      return;
-    }
-
-    if (alphaCount <= 0 || bravoCount <= 0) {
-      ack(ackFn, { ok: false, error: "Need at least one ALPHA and one BRAVO player" });
-      return;
+    if (ensurePlayerTeamsBalanced(state.players)) {
+      touchRoomState(room);
+      emitRoomUpdate(room);
     }
 
     io.to(room.code).emit("room:started", { code: room.code, startedAt: Date.now() });

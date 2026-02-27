@@ -40,6 +40,16 @@ function getEnemyTeamId(team) {
   return null;
 }
 
+function formatTeamLabel(team) {
+  if (team === "alpha") {
+    return "알파";
+  }
+  if (team === "bravo") {
+    return "브라보";
+  }
+  return "중립";
+}
+
 function toBlockKey(x, y, z) {
   return `${x}${BLOCK_KEY_SEPARATOR}${y}${BLOCK_KEY_SEPARATOR}${z}`;
 }
@@ -494,7 +504,7 @@ export class Game {
   getOnlineObjectiveText() {
     const myTeam = normalizeTeamId(this.getMyTeam());
     if (!myTeam) {
-      return "Objective: select ALPHA or BRAVO team";
+      return "목표: 알파 또는 브라보 팀을 선택하세요";
     }
 
     const enemyTeam = getEnemyTeamId(myTeam);
@@ -503,16 +513,16 @@ export class Game {
     const enemyFlag = enemyTeam ? this.onlineCtf.flags[enemyTeam] : null;
 
     if (enemyFlag?.carrierId === myId) {
-      return "Objective: return enemy flag to your base";
+      return "목표: 적 깃발을 우리 기지로 운반하세요";
     }
     if (enemyFlag?.carrierId) {
-      return "Objective: escort your flag carrier";
+      return "목표: 우리 팀 깃발 운반자를 엄호하세요";
     }
     if (myFlag?.carrierId && myFlag.carrierId !== myId) {
-      return "Objective: recover your stolen flag";
+      return "목표: 빼앗긴 우리 깃발을 되찾으세요";
     }
 
-    return "Objective: capture enemy flag";
+    return "목표: 적 깃발을 탈취하세요";
   }
 
   showOnlineCtfEvent(event = {}) {
@@ -528,25 +538,25 @@ export class Game {
 
     if (type === "pickup") {
       const text = isMine
-        ? "Flag secured. Return to base."
-        : `${byName} took the flag (${String(byTeam ?? "team").toUpperCase()})`;
+        ? "깃발 확보! 우리 기지로 복귀하세요."
+        : `${byName}님이 깃발을 탈취했습니다 (${formatTeamLabel(byTeam)})`;
       this.hud.setStatus(text, false, 1.1);
       return;
     }
 
     if (type === "capture") {
-      const text = isMine ? "Flag captured +500" : `${byName} captured the flag`;
+      const text = isMine ? "깃발 탈취 성공 +500" : `${byName}님이 깃발 탈취에 성공했습니다`;
       this.hud.setStatus(text, false, 1.3);
       return;
     }
 
     if (type === "reset") {
-      this.hud.setStatus("Flag returned to base", true, 0.9);
+      this.hud.setStatus("깃발이 기지로 복귀했습니다", true, 0.9);
       return;
     }
 
     if (type === "start") {
-      this.hud.setStatus("CTF active. Capture enemy flag.", false, 0.9);
+      this.hud.setStatus("깃발전 시작. 적 깃발을 탈취하세요.", false, 0.9);
     }
   }
 
@@ -1195,7 +1205,7 @@ export class Game {
     canvas.height = 128;
     const ctx = canvas.getContext("2d");
     const safeName = String(name ?? "PLAYER").slice(0, 16);
-    const teamLabel = team === "alpha" ? "ALPHA" : team === "bravo" ? "BRAVO" : "NEUTRAL";
+    const teamLabel = formatTeamLabel(team);
     const displayName = `[${teamLabel}] ${safeName}`;
 
     if (ctx) {
@@ -1670,7 +1680,7 @@ export class Game {
         this.state.health = 100;
         this.state.killStreak = 0;
         this.hud.setKillStreak(0);
-        this.hud.setStatus("You were eliminated. Respawning...", true, 0.9);
+        this.hud.setStatus("사망했습니다. 리스폰합니다...", true, 0.9);
         this.setOnlineSpawnFromLobby();
         this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
       } else {
@@ -1678,7 +1688,7 @@ export class Game {
           ? victimHealth
           : Math.max(0, this.state.health - damage);
         this.state.health = Math.max(0, Math.min(100, nextHealth));
-        this.hud.setStatus(`Damage -${damage}`, true, 0.35);
+        this.hud.setStatus(`피해 -${damage}`, true, 0.35);
       }
     }
   }
@@ -2544,10 +2554,6 @@ export class Game {
   start(options = {}) {
     const mode = options.mode ?? this.menuMode;
     this.activeMatchMode = mode === "online" ? "online" : "single";
-    if (this.activeMatchMode === "online" && !this.getMyTeam()) {
-      this.hud.setStatus("Select ALPHA or BRAVO before starting", true, 1);
-      return;
-    }
     this.resetState();
     this.hud.showStartOverlay(false);
     this.hud.showPauseOverlay(false);
@@ -2560,14 +2566,14 @@ export class Game {
     this.tryPointerLock();
 
     if (!this.pointerLockSupported) {
-      this.hud.setStatus("Pointer lock unavailable: free-look mode enabled", true, 1.2);
+      this.hud.setStatus("포인터락을 사용할 수 없어 자유 시점 모드로 전환합니다", true, 1.2);
     }
 
-    this.addChatMessage("Operation started. Survive and score points.", "info");
-    this.addChatMessage("Objective: capture flags and hold the center point.", "info");
-    this.addChatMessage("Controls: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
+    this.addChatMessage("작전 시작. 생존하며 점수를 확보하세요.", "info");
+    this.addChatMessage("목표: 적 깃발 탈취 및 중앙 거점 유지.", "info");
+    this.addChatMessage("조작: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
-      this.hud.setStatus("Online match: AI disabled", false, 0.9);
+      this.hud.setStatus("온라인 매치 시작: AI 비활성화", false, 0.9);
       if (this.latestRoomSnapshot) {
         this.applyRoomSnapshot(this.latestRoomSnapshot);
       } else {
@@ -2607,7 +2613,7 @@ export class Game {
       this.allowUnlockedLook = true;
       this.mouseLookEnabled = true;
       this.hud.showPauseOverlay(false);
-      this.hud.setStatus("Pointer lock fallback enabled", true, 1);
+      this.hud.setStatus("포인터락 대체 모드를 활성화했습니다", true, 1);
       this.syncCursorVisibility();
     }, POINTER_LOCK_FALLBACK_MS);
   }
@@ -2693,7 +2699,7 @@ export class Game {
         const now = this.clock.getElapsedTime();
         if (now - this.lastDryFireAt > 0.22) {
           this.lastDryFireAt = now;
-          this.hud.setStatus("No ammo", true, 0.55);
+          this.hud.setStatus("탄약 없음", true, 0.55);
           this.sound.play("dry", { rateJitter: 0.08 });
         }
       }
@@ -2709,7 +2715,7 @@ export class Game {
 
     if (this.activeMatchMode === "online") {
       if (!this.getMyTeam()) {
-        this.hud.setStatus("Select a team before attacking", true, 0.7);
+        this.hud.setStatus("공격 전에 팀을 먼저 선택하세요", true, 0.7);
         if (blockHit?.point) {
           this.spawnHitSpark(blockHit.point);
         }
@@ -3292,19 +3298,15 @@ export class Game {
       if (!code || this.lobbyState.roomCode !== code) {
         return;
       }
-      if (!this.getMyTeam()) {
-        this.hud.setStatus("Select a team before joining the match", true, 1.1);
-        return;
-      }
-      this.hud.setStatus(`Online match started (${code})`, false, 1);
+      this.hud.setStatus(`온라인 매치 시작 (${code})`, false, 1);
       this.start({ mode: "online" });
     });
 
     socket.on("room:error", (message) => {
-      const text = String(message ?? "Lobby error");
+      const text = String(message ?? "로비 오류");
       this.hud.setStatus(text, true, 1.2);
       if (this.mpStatusEl) {
-        this.mpStatusEl.textContent = `????????椰???????????? ${text}`;
+        this.mpStatusEl.textContent = `로비 오류: ${text}`;
         this.mpStatusEl.dataset.state = "error";
       }
     });
@@ -3362,7 +3364,7 @@ export class Game {
       this._joiningDefaultRoom = false;
       if (!response.ok) {
         this._nextAutoJoinAt = Date.now() + 1800;
-        this.hud.setStatus(response.error ?? "Online room join failed", true, 1);
+        this.hud.setStatus(response.error ?? "온라인 방 참가에 실패했습니다", true, 1);
         this.refreshOnlineStatus();
         return;
       }
@@ -3381,7 +3383,8 @@ export class Game {
     const list = Array.isArray(rooms) ? rooms : [];
     const connected = !!this.chat?.isConnected?.();
     if (!connected) {
-      this.mpRoomListEl.innerHTML = '<div class="mp-empty">????????椰?????????????????????????怨뺤떪????????????????????????袁⑸즴筌?씛彛???돗??????轅붽틓??????..</div>';
+      this.mpRoomListEl.innerHTML =
+        '<div class="mp-empty">서버 연결을 시도 중입니다. 잠시 후 다시 시도해 주세요.</div>';
       return;
     }
 
@@ -3390,7 +3393,7 @@ export class Game {
       list[0] ??
       null;
     if (!globalRoom) {
-      this.mpRoomListEl.innerHTML = '<div class="mp-empty">GLOBAL ?????????????濡ろ뜐筌?????????됰Ŧ????????????????????????猷몄굣???????..</div>';
+      this.mpRoomListEl.innerHTML = '<div class="mp-empty">GLOBAL 방 정보를 불러오지 못했습니다.</div>';
       return;
     }
 
@@ -3398,7 +3401,7 @@ export class Game {
     this.mpRoomListEl.innerHTML =
       `<div class="mp-room-row is-single">` +
       `<div class="mp-room-label">${ONLINE_ROOM_CODE}  ${playerCount}/${ONLINE_MAX_PLAYERS}` +
-      `<span class="mp-room-host">24H OPEN</span>` +
+      `<span class="mp-room-host">24시간 운영</span>` +
       `</div>` +
       `</div>`;
   }
@@ -3414,13 +3417,13 @@ export class Game {
       this.clearRemotePlayers();
       this.mpLobbyEl?.classList.add("hidden");
       if (this.mpRoomTitleEl) {
-        this.mpRoomTitleEl.textContent = "LOBBY";
+        this.mpRoomTitleEl.textContent = "로비";
       }
       if (this.mpRoomSubtitleEl) {
-        this.mpRoomSubtitleEl.textContent = "Not joined";
+        this.mpRoomSubtitleEl.textContent = "미참가 상태";
       }
       if (this.mpPlayerListEl) {
-        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">Waiting for players...</div>';
+        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">플레이어를 기다리는 중...</div>';
       }
       this.mpTeamAlphaBtn?.classList.remove("is-active");
       this.mpTeamBravoBtn?.classList.remove("is-active");
@@ -3463,21 +3466,21 @@ export class Game {
         if (player.id === myId) {
           const selfTag = document.createElement("span");
           selfTag.className = "mp-tag self-tag";
-          selfTag.textContent = "ME";
+          selfTag.textContent = "나";
           line.appendChild(selfTag);
         }
 
         if (player.team) {
           const teamTag = document.createElement("span");
           teamTag.className = `mp-tag team-${String(player.team).toLowerCase()}`;
-          teamTag.textContent = String(player.team).toUpperCase();
+          teamTag.textContent = formatTeamLabel(player.team);
           line.appendChild(teamTag);
         }
 
         if (player.id === this.lobbyState.hostId) {
           const hostTag = document.createElement("span");
           hostTag.className = "mp-tag host-tag";
-          hostTag.textContent = "HOST";
+          hostTag.textContent = "방장";
           line.appendChild(hostTag);
         }
 
@@ -3485,7 +3488,7 @@ export class Game {
       }
 
       if (this.lobbyState.players.length === 0) {
-        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">Waiting for players...</div>';
+        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">플레이어를 기다리는 중...</div>';
       }
     }
 
@@ -3499,7 +3502,7 @@ export class Game {
     }
 
     if (this.mpRoomSubtitleEl) {
-      this.mpRoomSubtitleEl.textContent = `24H GLOBAL ROOM | ${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS}`;
+      this.mpRoomSubtitleEl.textContent = `24시간 GLOBAL 방 | ${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS}`;
     }
 
     this.mpTeamAlphaBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "alpha");
@@ -3546,13 +3549,13 @@ export class Game {
 
     socket.emit("room:leave", (response = {}) => {
       if (!response.ok) {
-        this.hud.setStatus(response.error ?? "Leave failed", true, 1);
+        this.hud.setStatus(response.error ?? "방 나가기에 실패했습니다", true, 1);
         return;
       }
 
       this.setLobbyState(response.room ?? null);
       this.requestRoomList();
-      this.hud.setStatus("Lobby state synced", false, 0.75);
+      this.hud.setStatus("로비 상태를 동기화했습니다", false, 0.75);
     });
   }
 
@@ -3563,52 +3566,39 @@ export class Game {
 
     const socket = this.chat?.socket;
     if (!socket || !socket.connected || !this.lobbyState.roomCode) {
-      this.hud.setStatus("Join room before selecting team", true, 0.8);
+      this.hud.setStatus("팀 선택 전에 먼저 방에 참가해 주세요", true, 0.8);
       return;
     }
 
     socket.emit("room:set-team", { team }, (response = {}) => {
       if (!response.ok) {
-        this.hud.setStatus(response.error ?? "Team select failed", true, 1);
+        this.hud.setStatus(response.error ?? "팀 선택에 실패했습니다", true, 1);
         return;
       }
 
       this.lobbyState.selectedTeam = team;
       this.mpTeamAlphaBtn?.classList.toggle("is-active", team === "alpha");
       this.mpTeamBravoBtn?.classList.toggle("is-active", team === "bravo");
-      this.hud.setStatus(`Team selected: ${team.toUpperCase()}`, false, 0.7);
+      this.hud.setStatus(`팀 선택 완료: ${formatTeamLabel(team)}`, false, 0.7);
     });
   }
 
   startOnlineMatch() {
     const socket = this.chat?.socket;
     if (!socket || !socket.connected) {
-      this.hud.setStatus("Server offline", true, 1);
+      this.hud.setStatus("서버가 오프라인입니다", true, 1);
       return;
     }
 
     if (!this.lobbyState.roomCode) {
       this.joinDefaultRoom({ force: true });
-      this.hud.setStatus("Auto-joining online room", false, 0.8);
-      return;
-    }
-
-    const myTeam = this.getMyTeam();
-    if (!myTeam) {
-      this.hud.setStatus("Select ALPHA or BRAVO before match start", true, 1.05);
-      return;
-    }
-
-    const alphaCount = this.lobbyState.players.filter((player) => player.team === "alpha").length;
-    const bravoCount = this.lobbyState.players.filter((player) => player.team === "bravo").length;
-    if (alphaCount <= 0 || bravoCount <= 0) {
-      this.hud.setStatus("Need at least one ALPHA and one BRAVO player", true, 1.05);
+      this.hud.setStatus("온라인 방에 자동 참가 중입니다", false, 0.8);
       return;
     }
 
     socket.emit("room:start", (response = {}) => {
       if (!response.ok) {
-        this.hud.setStatus(response.error ?? "Online start failed", true, 1);
+        this.hud.setStatus(response.error ?? "온라인 매치 시작에 실패했습니다", true, 1);
       }
     });
   }
@@ -3616,7 +3606,7 @@ export class Game {
   async copyCurrentRoomCode() {
     const code = this.lobbyState.roomCode;
     if (!code) {
-      this.hud.setStatus("No room code to copy", true, 0.9);
+      this.hud.setStatus("복사할 방 코드가 없습니다", true, 0.9);
       return;
     }
 
@@ -3631,9 +3621,9 @@ export class Game {
         document.execCommand("copy");
         document.body.removeChild(temp);
       }
-      this.hud.setStatus(`Room code copied: ${code}`, false, 0.8);
+      this.hud.setStatus(`방 코드 복사 완료: ${code}`, false, 0.8);
     } catch {
-      this.hud.setStatus("Copy failed", true, 0.9);
+      this.hud.setStatus("복사에 실패했습니다", true, 0.9);
     }
   }
 
@@ -3658,13 +3648,13 @@ export class Game {
     if (this.mpStartBtn) {
       this.mpStartBtn.disabled = !canStart;
       if (!connected && connecting) {
-        this.mpStartBtn.textContent = "Server connecting...";
+        this.mpStartBtn.textContent = "서버 연결 중...";
       } else if (!connected) {
-        this.mpStartBtn.textContent = "Server offline";
+        this.mpStartBtn.textContent = "서버 오프라인";
       } else if (!inRoom) {
-        this.mpStartBtn.textContent = "Auto-joining room...";
+        this.mpStartBtn.textContent = "방 자동 참가 중...";
       } else {
-        this.mpStartBtn.textContent = "Start online match";
+        this.mpStartBtn.textContent = "온라인 매치 시작";
       }
     }
     if (this.mpLeaveBtn) {
@@ -3693,34 +3683,34 @@ export class Game {
     }
 
     if (!this.chat) {
-      this.mpStatusEl.textContent = "Server: chat module missing";
+      this.mpStatusEl.textContent = "서버: 채팅 모듈 없음";
       this.mpStatusEl.dataset.state = "offline";
       this.updateLobbyControls();
       return;
     }
 
     if (this.chat.isConnecting()) {
-      this.mpStatusEl.textContent = "Server: connecting (waking up)...";
+      this.mpStatusEl.textContent = "서버: 연결 중 (기동 대기)...";
       this.mpStatusEl.dataset.state = "offline";
       this.updateLobbyControls();
       return;
     }
 
     if (!this.chat.isConnected()) {
-      this.mpStatusEl.textContent = "Server: offline";
+      this.mpStatusEl.textContent = "서버: 오프라인";
       this.mpStatusEl.dataset.state = "offline";
       this.updateLobbyControls();
       return;
     }
 
     if (this.lobbyState.roomCode) {
-      this.mpStatusEl.textContent = `Server: online | ${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;
+      this.mpStatusEl.textContent = `서버: 온라인 | ${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;
       this.mpStatusEl.dataset.state = "online";
       this.updateLobbyControls();
       return;
     }
 
-    this.mpStatusEl.textContent = "Server: online | auto-joining room...";
+    this.mpStatusEl.textContent = "서버: 온라인 | 방 자동 참가 중...";
     this.mpStatusEl.dataset.state = "online";
     this.joinDefaultRoom();
     this.updateLobbyControls();
