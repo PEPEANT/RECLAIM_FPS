@@ -5,6 +5,8 @@ import { HUD } from "./HUD.js";
 import { VoxelWorld } from "./build/VoxelWorld.js";
 import { BuildSystem } from "./build/BuildSystem.js";
 import { SoundSystem } from "./audio/SoundSystem.js";
+import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../shared/gameModes.js";
+import { CTF_PICKUP_RADIUS, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
 
 const PLAYER_HEIGHT = 1.75;
 const DEFAULT_FOV = 75;
@@ -23,10 +25,17 @@ const ONLINE_MAX_PLAYERS = 50;
 const REMOTE_SYNC_INTERVAL = 1 / 12;
 const REMOTE_NAME_TAG_DISTANCE = 72;
 const MAX_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME = 96;
+const MIN_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME = 12;
 const MAX_PENDING_REMOTE_BLOCK_RETRIES = 120;
+const PLAYER_STEP_UP_HEIGHT = 0.62;
+const PLAYER_STEP_UP_SPEED = 10;
+const PLAYER_GROUND_SNAP_DOWN = 0.14;
+const BUCKET_OPTIMIZE_INTERVAL = 1.2;
+const PERF_REPORT_INTERVAL_MS = 4000;
+const PERF_SLOW_FRAME_MS = 24;
+const CTF_INTERACT_COOLDOWN_MS = 260;
 const PVP_HIT_SCORE = 10;
 const PVP_KILL_SCORE = 100;
-const PVP_RESPAWN_MS = 5000;
 const BLOCK_KEY_SEPARATOR = "|";
 
 function normalizeTeamId(team) {
@@ -73,6 +82,34 @@ function isLikelyTouchDevice() {
     ua.includes("mobile");
 
   return coarse && (touchPoints > 0 || uaMobile);
+}
+
+function getNowMs() {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function isPerfDebugEnabled() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("perf") === "1") {
+      return true;
+    }
+  } catch {
+    // no-op: fallback to localStorage flag
+  }
+
+  try {
+    return window.localStorage?.getItem("reclaim_perf_debug") === "1";
+  } catch {
+    return false;
+  }
 }
 
 export class Game {
@@ -245,6 +282,10 @@ export class Game {
     this.tabBravoListEl = document.getElementById("tab-bravo-list");
     this.tabAlphaCountEl = document.getElementById("tab-alpha-count");
     this.tabBravoCountEl = document.getElementById("tab-bravo-count");
+    this.ctfScoreboardEl = document.getElementById("ctf-scoreboard");
+    this.ctfScoreAlphaEl = document.getElementById("ctf-score-alpha");
+    this.ctfScoreBravoEl = document.getElementById("ctf-score-bravo");
+    this.flagInteractBtnEl = document.getElementById("flag-interact-btn");
     this.lastAppliedFov = DEFAULT_FOV;
     this._lobbySocketBound = false;
     this._joiningDefaultRoom = false;
@@ -273,6 +314,7 @@ export class Game {
       bravoBase: new THREE.Vector3(),
       alphaFlagHome: new THREE.Vector3(),
       bravoFlagHome: new THREE.Vector3(),
+      centerFlagHome: new THREE.Vector3(),
       playerHasEnemyFlag: false,
       controlPoint: new THREE.Vector3(),
       controlRadius: 6.4,
@@ -284,31 +326,39 @@ export class Game {
     };
     this.alphaFlag = null;
     this.bravoFlag = null;
+    this.onlineCenterFlag = null;
+    this.onlineCenterFlagCloth = null;
+    this.onlineCenterFlagPulse = 0;
     this.controlBeacon = null;
     this.controlRing = null;
     this.controlCore = null;
     this.objectiveMarkers = [];
     this.onlineCtf = {
+      mode: DEFAULT_GAME_MODE,
       revision: 0,
-      flags: {
-        alpha: {
-          home: new THREE.Vector3(),
-          at: new THREE.Vector3(),
-          carrierId: null
-        },
-        bravo: {
-          home: new THREE.Vector3(),
-          at: new THREE.Vector3(),
-          carrierId: null
-        }
+      flag: {
+        home: new THREE.Vector3(),
+        at: new THREE.Vector3(),
+        carrierId: null
       },
       score: { alpha: 0, bravo: 0 },
       captures: { alpha: 0, bravo: 0 }
     };
+    this.flagInteractVisible = false;
+    this.flagInteractCooldownUntil = 0;
+    this.scoreHudState = { show: null, alpha: null, bravo: null };
 
     this._initialized = false;
     this.mapId = "forest_frontline";
-    this._bucketOptimizeCooldown = 0;
+    this._bucketOptimizeCooldown = BUCKET_OPTIMIZE_INTERVAL;
+    this.perfDebugEnabled = isPerfDebugEnabled();
+    this.perfStats = {
+      frameCount: 0,
+      totalMs: 0,
+      slowFrames: 0,
+      worstMs: 0,
+      lastReportAt: getNowMs()
+    };
     this.isRespawning = false;
     this.respawnEndAt = 0;
     this.respawnLastSecond = -1;
@@ -446,6 +496,13 @@ export class Game {
     if (this.bravoFlag) {
       this.scene.remove(this.bravoFlag);
     }
+    if (this.onlineCenterFlag) {
+      this.scene.remove(this.onlineCenterFlag);
+    }
+    this.alphaFlag = null;
+    this.bravoFlag = null;
+    this.onlineCenterFlag = null;
+    this.onlineCenterFlagCloth = null;
 
     const arena = this.voxelWorld.getArenaMeta?.() ?? {
       alphaBase: { x: -42, z: 0 },
@@ -464,6 +521,7 @@ export class Game {
     this.objective.alphaFlagHome.set(arena.alphaFlag.x, alphaY, arena.alphaFlag.z);
     this.objective.bravoFlagHome.set(arena.bravoFlag.x, bravoY, arena.bravoFlag.z);
     this.objective.controlPoint.set(arena.mid.x, midY, arena.mid.z);
+    this.objective.centerFlagHome.set(arena.mid.x, midY, arena.mid.z);
     this.objective.playerHasEnemyFlag = false;
     this.objective.controlProgress = 0;
     this.objective.controlOwner = "neutral";
@@ -473,39 +531,46 @@ export class Game {
     this.state.controlPercent = 0;
     this.state.controlOwner = "neutral";
 
-    this.alphaFlag = this.createFlagMesh(0x6fbeff, 0xb7e9ff);
-    this.alphaFlag.position.copy(this.objective.alphaFlagHome);
-    this.scene.add(this.alphaFlag);
+    if (this.activeMatchMode !== "online") {
+      this.alphaFlag = this.createFlagMesh(0x6fbeff, 0xb7e9ff);
+      this.alphaFlag.position.copy(this.objective.alphaFlagHome);
+      this.scene.add(this.alphaFlag);
 
-    this.bravoFlag = this.createFlagMesh(0xff7d6a, 0xffc8ba);
-    this.bravoFlag.position.copy(this.objective.bravoFlagHome);
-    this.scene.add(this.bravoFlag);
+      this.bravoFlag = this.createFlagMesh(0xff7d6a, 0xffc8ba);
+      this.bravoFlag.position.copy(this.objective.bravoFlagHome);
+      this.scene.add(this.bravoFlag);
+    }
 
-    const centerBeacon = this.createBaseMarker(this.objective.controlPoint, 0x8ecfff);
+    const centerFlagMesh = this.createFlagMesh(0xdde6f4, 0x4bd965);
+    centerFlagMesh.position.copy(this.objective.centerFlagHome);
+    this.onlineCenterFlag = centerFlagMesh;
+    this.onlineCenterFlagCloth = centerFlagMesh.userData?.cloth ?? null;
+    this.scene.add(centerFlagMesh);
+
     const controlBeacon = this.createControlBeacon(this.objective.controlPoint);
     this.controlBeacon = controlBeacon;
     this.controlRing = controlBeacon.userData.ring ?? null;
     this.controlCore = controlBeacon.userData.core ?? null;
-    this.objectiveMarkers.push(centerBeacon, controlBeacon);
-    this.scene.add(centerBeacon, controlBeacon);
+    this.objectiveMarkers.push(controlBeacon);
+    this.scene.add(controlBeacon);
     this.applyControlVisual(0);
     this.resetOnlineCtfFromArena();
     this.state.objectiveText = this.getObjectiveText();
+    this.updateTeamScoreHud();
   }
 
   resetOnlineCtfFromArena() {
+    this.onlineCtf.mode = DEFAULT_GAME_MODE;
     this.onlineCtf.revision = 0;
-    this.onlineCtf.flags.alpha.home.copy(this.objective.alphaFlagHome);
-    this.onlineCtf.flags.alpha.at.copy(this.objective.alphaFlagHome);
-    this.onlineCtf.flags.alpha.carrierId = null;
-    this.onlineCtf.flags.bravo.home.copy(this.objective.bravoFlagHome);
-    this.onlineCtf.flags.bravo.at.copy(this.objective.bravoFlagHome);
-    this.onlineCtf.flags.bravo.carrierId = null;
+    this.onlineCtf.flag.home.copy(this.objective.centerFlagHome);
+    this.onlineCtf.flag.at.copy(this.objective.centerFlagHome);
+    this.onlineCtf.flag.carrierId = null;
     this.onlineCtf.score.alpha = 0;
     this.onlineCtf.score.bravo = 0;
     this.onlineCtf.captures.alpha = 0;
     this.onlineCtf.captures.bravo = 0;
     this.syncOnlineFlagMeshes();
+    this.updateTeamScoreHud();
   }
 
   getPlayerNameById(id) {
@@ -517,28 +582,41 @@ export class Game {
     return String(player?.name ?? "PLAYER");
   }
 
+  getPlayerTeamById(id) {
+    const key = String(id ?? "");
+    if (!key) {
+      return null;
+    }
+    const player = this.lobbyState.players.find((entry) => String(entry?.id ?? "") === key);
+    return normalizeTeamId(player?.team);
+  }
+
   getOnlineObjectiveText() {
+    const mode = normalizeGameMode(this.onlineCtf.mode);
+    if (mode === GAME_MODE.ELIMINATION) {
+      return "목표: 적 팀을 제압하세요";
+    }
+
     const myTeam = normalizeTeamId(this.getMyTeam());
     if (!myTeam) {
       return "목표: ALPHA 또는 BRAVO 팀을 먼저 선택하세요";
     }
 
-    const enemyTeam = getEnemyTeamId(myTeam);
     const myId = this.getMySocketId();
-    const myFlag = this.onlineCtf.flags[myTeam];
-    const enemyFlag = enemyTeam ? this.onlineCtf.flags[enemyTeam] : null;
+    const flag = this.onlineCtf.flag;
 
-    if (enemyFlag?.carrierId === myId) {
-      return "목표: 탈취한 깃발을 우리 거점으로 운반하세요";
+    if (flag?.carrierId === myId) {
+      return "목표: 중앙 깃발을 아군 거점으로 운반하세요";
     }
-    if (enemyFlag?.carrierId) {
-      return "목표: 아군 깃발 운반자를 엄호하세요";
-    }
-    if (myFlag?.carrierId && myFlag.carrierId !== myId) {
-      return "목표: 적 깃발 탈취를 막고 아군 깃발을 지키세요";
+    if (flag?.carrierId) {
+      const carrierTeam = this.getPlayerTeamById(flag.carrierId);
+      if (carrierTeam && carrierTeam === myTeam) {
+        return "목표: 아군 깃발 운반자를 엄호하세요";
+      }
+      return "목표: 적 깃발 운반자를 저지하세요";
     }
 
-    return "목표: 적 깃발을 탈취하세요";
+    return "목표: 중앙 깃발 근처에서 F키(모바일 버튼)로 탈취하세요";
   }
 
   showOnlineCtfEvent(event = {}) {
@@ -554,15 +632,15 @@ export class Game {
 
     if (type === "pickup") {
       const text = isMine
-        ? "깃발 탈취 성공! 우리 거점으로 복귀하세요"
-        : `${byName}이(가) 깃발을 탈취했습니다 (${formatTeamLabel(byTeam)})`;
+        ? "중앙 깃발 탈취 성공! 아군 거점으로 복귀하세요"
+        : `${byName}이(가) 중앙 깃발을 탈취했습니다 (${formatTeamLabel(byTeam)})`;
       this.hud.setStatus(text, false, 1.1);
       this.chat?.addSystemMessage(text, "system");
       return;
     }
 
     if (type === "capture") {
-      const text = isMine ? "깃발 점수 획득 +500" : `${byName}이(가) 깃발 점수 획득`;
+      const text = isMine ? "깃발 점수 +1 획득" : `${byName}이(가) 깃발 점수 +1 획득`;
       this.hud.setStatus(text, false, 1.3);
       this.chat?.addSystemMessage(text, "system");
       return;
@@ -583,6 +661,8 @@ export class Game {
   }
 
   applyOnlineStatePayload(payload = {}, { showEvent = false } = {}) {
+    this.onlineCtf.mode = normalizeGameMode(payload?.mode ?? this.onlineCtf.mode ?? DEFAULT_GAME_MODE);
+
     const revision = Number(payload.revision);
     if (Number.isFinite(revision)) {
       this.onlineCtf.revision = Math.max(this.onlineCtf.revision, Math.trunc(revision));
@@ -593,34 +673,32 @@ export class Game {
       return Number.isFinite(num) ? num : fallback;
     };
 
-    for (const team of ["alpha", "bravo"]) {
-      const flagPayload = payload?.flags?.[team] ?? null;
-      const target = this.onlineCtf.flags[team];
-      const homeFallback = team === "alpha" ? this.objective.alphaFlagHome : this.objective.bravoFlagHome;
+    const flagPayload = payload?.flag ?? payload?.flags?.alpha ?? null;
+    const target = this.onlineCtf.flag;
+    const homeFallback = this.objective.centerFlagHome;
 
-      if (flagPayload?.home) {
-        target.home.set(
-          readCoord(flagPayload.home.x, homeFallback.x),
-          readCoord(flagPayload.home.y, homeFallback.y),
-          readCoord(flagPayload.home.z, homeFallback.z)
-        );
-      } else {
-        target.home.copy(homeFallback);
-      }
-
-      if (flagPayload?.at) {
-        target.at.set(
-          readCoord(flagPayload.at.x, target.home.x),
-          readCoord(flagPayload.at.y, target.home.y),
-          readCoord(flagPayload.at.z, target.home.z)
-        );
-      } else {
-        target.at.copy(target.home);
-      }
-
-      const carrierId = String(flagPayload?.carrierId ?? "").trim();
-      target.carrierId = carrierId || null;
+    if (flagPayload?.home) {
+      target.home.set(
+        readCoord(flagPayload.home.x, homeFallback.x),
+        readCoord(flagPayload.home.y, homeFallback.y),
+        readCoord(flagPayload.home.z, homeFallback.z)
+      );
+    } else {
+      target.home.copy(homeFallback);
     }
+
+    if (flagPayload?.at) {
+      target.at.set(
+        readCoord(flagPayload.at.x, target.home.x),
+        readCoord(flagPayload.at.y, target.home.y),
+        readCoord(flagPayload.at.z, target.home.z)
+      );
+    } else {
+      target.at.copy(target.home);
+    }
+
+    const carrierId = String(flagPayload?.carrierId ?? "").trim();
+    target.carrierId = carrierId || null;
 
     const scoreAlpha = Number(payload?.score?.alpha);
     const scoreBravo = Number(payload?.score?.bravo);
@@ -649,6 +727,10 @@ export class Game {
     }
 
     this.syncOnlineFlagMeshes();
+    this.updateTeamScoreHud();
+    if (this.tabBoardVisible) {
+      this.renderTabScoreboard();
+    }
 
     if (showEvent) {
       this.showOnlineCtfEvent(payload?.event ?? null);
@@ -656,44 +738,47 @@ export class Game {
   }
 
   syncOnlineFlagMeshes() {
-    if (!this.alphaFlag || !this.bravoFlag) {
+    if (!this.onlineCenterFlag) {
       return;
     }
 
+    if (this.activeMatchMode !== "online") {
+      this.onlineCenterFlag.visible = false;
+      return;
+    }
+
+    if (this.alphaFlag) {
+      this.alphaFlag.visible = false;
+    }
+    if (this.bravoFlag) {
+      this.bravoFlag.visible = false;
+    }
+
     const myId = this.getMySocketId();
-    const applyFlag = (team, mesh) => {
-      const flag = this.onlineCtf.flags[team];
-      if (!flag) {
-        return;
-      }
+    const flag = this.onlineCtf.flag;
+    if (!flag.carrierId) {
+      this.onlineCenterFlag.visible = true;
+      this.onlineCenterFlag.position.copy(flag.at);
+      return;
+    }
 
-      if (!flag.carrierId) {
-        mesh.visible = true;
-        mesh.position.copy(flag.at);
-        return;
-      }
+    if (flag.carrierId === myId) {
+      this.onlineCenterFlag.visible = false;
+      return;
+    }
 
-      if (flag.carrierId === myId) {
-        mesh.visible = false;
-        return;
-      }
+    const carrier = this.remotePlayers.get(flag.carrierId);
+    if (!carrier) {
+      this.onlineCenterFlag.visible = false;
+      return;
+    }
 
-      const carrier = this.remotePlayers.get(flag.carrierId);
-      if (!carrier) {
-        mesh.visible = false;
-        return;
-      }
-
-      mesh.visible = true;
-      mesh.position.set(
-        carrier.group.position.x,
-        carrier.group.position.y + PLAYER_HEIGHT + 0.58,
-        carrier.group.position.z
-      );
-    };
-
-    applyFlag("alpha", this.alphaFlag);
-    applyFlag("bravo", this.bravoFlag);
+    this.onlineCenterFlag.visible = true;
+    this.onlineCenterFlag.position.set(
+      carrier.group.position.x,
+      carrier.group.position.y + PLAYER_HEIGHT + 0.58,
+      carrier.group.position.z
+    );
   }
 
   applyRoomSnapshot(payload = {}) {
@@ -811,41 +896,42 @@ export class Game {
     const group = new THREE.Group();
 
     const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.06, 0.06, 2.8, 12),
+      new THREE.CylinderGeometry(0.07, 0.07, 3.8, 12),
       new THREE.MeshStandardMaterial({
         color: poleColor,
         roughness: 0.35,
         metalness: 0.58
       })
     );
-    pole.position.y = 1.4;
+    pole.position.y = 1.9;
     pole.castShadow = true;
 
     const cloth = new THREE.Mesh(
-      new THREE.BoxGeometry(0.54, 0.86, 0.05),
+      new THREE.BoxGeometry(0.9, 0.52, 0.05),
       new THREE.MeshStandardMaterial({
         color: flagColor,
         emissive: flagColor,
-        emissiveIntensity: 0.15,
+        emissiveIntensity: 0.16,
         roughness: 0.48,
         metalness: 0.1
       })
     );
-    cloth.position.set(0.34, 2.0, 0);
+    cloth.position.set(0.5, 3.05, 0);
     cloth.castShadow = true;
 
     const tip = new THREE.Mesh(
-      new THREE.SphereGeometry(0.08, 10, 10),
+      new THREE.SphereGeometry(0.1, 10, 10),
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
         emissive: 0xaad9ff,
         emissiveIntensity: 0.22
       })
     );
-    tip.position.y = 2.84;
+    tip.position.y = 3.84;
     tip.castShadow = true;
 
     group.add(pole, cloth, tip);
+    group.userData.cloth = cloth;
     return group;
   }
 
@@ -979,13 +1065,28 @@ export class Game {
   }
 
   updateObjectives(delta) {
-    if (!this.isRunning || this.isGameOver || !this.bravoFlag) {
+    if (!this.isRunning || this.isGameOver) {
       return;
     }
 
     if (this.activeMatchMode === "online") {
+      if (this.onlineCenterFlagCloth) {
+        this.onlineCenterFlagPulse += delta * 4.1;
+        this.onlineCenterFlagCloth.rotation.y = Math.sin(this.onlineCenterFlagPulse) * 0.17;
+      }
       this.state.objectiveText = this.getOnlineObjectiveText();
       this.syncOnlineFlagMeshes();
+      this.updateFlagInteractUi();
+      return;
+    }
+
+    if (this.flagInteractVisible) {
+      this.flagInteractVisible = false;
+      this.flagInteractBtnEl?.classList.remove("show");
+      this.flagInteractBtnEl?.setAttribute("aria-hidden", "true");
+    }
+
+    if (!this.bravoFlag) {
       return;
     }
 
@@ -1242,16 +1343,35 @@ export class Game {
     const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
     const myId = this.getMySocketId();
     const teamOrder = ["alpha", "bravo"];
+    const teamScore = this.onlineCtf?.score ?? { alpha: 0, bravo: 0 };
 
     for (const team of teamOrder) {
       const listEl = team === "alpha" ? this.tabAlphaListEl : this.tabBravoListEl;
       const countEl = team === "alpha" ? this.tabAlphaCountEl : this.tabBravoCountEl;
+      const scoreValue = Number(teamScore?.[team] ?? 0);
       const teamPlayers = players
         .filter((player) => normalizeTeamId(player?.team) === team)
-        .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")));
+        .sort((a, b) => {
+          const capturesA = Number(a?.captures ?? 0);
+          const capturesB = Number(b?.captures ?? 0);
+          if (capturesA !== capturesB) {
+            return capturesB - capturesA;
+          }
+          const killsA = Number(a?.kills ?? 0);
+          const killsB = Number(b?.kills ?? 0);
+          if (killsA !== killsB) {
+            return killsB - killsA;
+          }
+          const deathsA = Number(a?.deaths ?? 0);
+          const deathsB = Number(b?.deaths ?? 0);
+          if (deathsA !== deathsB) {
+            return deathsA - deathsB;
+          }
+          return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+        });
 
       if (countEl) {
-        countEl.textContent = String(teamPlayers.length);
+        countEl.textContent = `${Number.isFinite(scoreValue) ? Math.trunc(scoreValue) : 0}점 · ${teamPlayers.length}명`;
       }
 
       listEl.innerHTML = "";
@@ -1277,15 +1397,118 @@ export class Game {
 
         const meta = document.createElement("span");
         meta.className = "tab-player-meta";
+        const kills = Math.max(0, Math.trunc(Number(player?.kills ?? 0)));
+        const deaths = Math.max(0, Math.trunc(Number(player?.deaths ?? 0)));
+        const captures = Math.max(0, Math.trunc(Number(player?.captures ?? 0)));
         meta.textContent =
           String(player?.id ?? "") === myId
-            ? `${formatTeamLabel(team)} | YOU`
-            : `${formatTeamLabel(team)}`;
+            ? `K ${kills} / D ${deaths} / C ${captures} | YOU`
+            : `K ${kills} / D ${deaths} / C ${captures}`;
         row.appendChild(meta);
 
         listEl.appendChild(row);
       }
     }
+  }
+
+  updateTeamScoreHud() {
+    if (!this.ctfScoreboardEl || !this.ctfScoreAlphaEl || !this.ctfScoreBravoEl) {
+      return;
+    }
+
+    const show = this.activeMatchMode === "online" && this.isRunning && !this.isGameOver;
+    if (this.scoreHudState.show !== show) {
+      this.ctfScoreboardEl.classList.toggle("show", show);
+      this.ctfScoreboardEl.setAttribute("aria-hidden", show ? "false" : "true");
+      this.scoreHudState.show = show;
+    }
+    if (!show) {
+      return;
+    }
+
+    const alpha = Math.max(0, Math.trunc(Number(this.onlineCtf?.score?.alpha ?? 0)));
+    const bravo = Math.max(0, Math.trunc(Number(this.onlineCtf?.score?.bravo ?? 0)));
+    if (this.scoreHudState.alpha !== alpha) {
+      this.ctfScoreAlphaEl.textContent = String(alpha);
+      this.scoreHudState.alpha = alpha;
+    }
+    if (this.scoreHudState.bravo !== bravo) {
+      this.ctfScoreBravoEl.textContent = String(bravo);
+      this.scoreHudState.bravo = bravo;
+    }
+  }
+
+  canLocalPickupCenterFlag() {
+    if (
+      this.activeMatchMode !== "online" ||
+      !this.isRunning ||
+      this.isGameOver ||
+      this.isRespawning
+    ) {
+      return false;
+    }
+
+    const myTeam = normalizeTeamId(this.getMyTeam());
+    if (!myTeam) {
+      return false;
+    }
+
+    const flag = this.onlineCtf.flag;
+    if (!flag || flag.carrierId) {
+      return false;
+    }
+
+    return this.distanceXZ(this.playerPosition, flag.at) <= CTF_PICKUP_RADIUS;
+  }
+
+  updateFlagInteractUi() {
+    if (!this.flagInteractBtnEl) {
+      return;
+    }
+
+    const show = this.mobileEnabled && this.canLocalPickupCenterFlag();
+    if (show === this.flagInteractVisible) {
+      return;
+    }
+
+    this.flagInteractVisible = show;
+    this.flagInteractBtnEl.classList.toggle("show", show);
+    this.flagInteractBtnEl.setAttribute("aria-hidden", show ? "false" : "true");
+  }
+
+  requestCenterFlagInteract({ source = "key" } = {}) {
+    if (this.activeMatchMode !== "online" || !this.isRunning || this.isGameOver) {
+      return;
+    }
+
+    if (Date.now() < this.flagInteractCooldownUntil) {
+      return;
+    }
+
+    if (!this.canLocalPickupCenterFlag()) {
+      if (source === "key") {
+        this.hud.setStatus("중앙 깃발 근처에서 상호작용하세요.", true, 0.45);
+      }
+      return;
+    }
+
+    const socket = this.chat?.socket;
+    if (!socket?.connected || !this.lobbyState.roomCode) {
+      this.hud.setStatus("서버 연결 상태를 확인하세요.", true, 0.6);
+      return;
+    }
+
+    this.flagInteractCooldownUntil = Date.now() + CTF_INTERACT_COOLDOWN_MS;
+    socket.emit("ctf:interact", (response = {}) => {
+      if (!response.ok) {
+        const errorText = String(response.error ?? "깃발 상호작용에 실패했습니다.");
+        this.hud.setStatus(errorText, true, 0.8);
+        return;
+      }
+      if (response.alreadyCarrying) {
+        this.hud.setStatus("이미 깃발을 운반 중입니다.", false, 0.6);
+      }
+    });
   }
 
   beginRespawnCountdown(respawnAtRaw = null) {
@@ -1824,10 +2047,24 @@ export class Game {
     const myId = this.getMySocketId();
     const teamScore = payload?.teamScore ?? null;
     const teamCaptures = payload?.teamCaptures ?? null;
+    let lobbyChanged = false;
 
     if (!myId) {
       return;
     }
+
+    const updateLobbyPlayer = (playerId, updater) => {
+      const id = String(playerId ?? "").trim();
+      if (!id) {
+        return;
+      }
+      const player = this.lobbyState.players.find((entry) => String(entry?.id ?? "") === id);
+      if (!player) {
+        return;
+      }
+      updater(player);
+      lobbyChanged = true;
+    };
 
     if (teamScore) {
       const alpha = Number(teamScore.alpha);
@@ -1850,6 +2087,35 @@ export class Game {
         this.onlineCtf.captures.bravo = Math.trunc(bravo);
       }
     }
+
+    const attackerKills = Number(payload.attackerKills);
+    if (Number.isFinite(attackerKills)) {
+      updateLobbyPlayer(attackerId, (player) => {
+        player.kills = Math.max(0, Math.trunc(attackerKills));
+      });
+    }
+
+    const victimDeaths = Number(payload.victimDeaths);
+    if (Number.isFinite(victimDeaths)) {
+      updateLobbyPlayer(victimId, (player) => {
+        player.deaths = Math.max(0, Math.trunc(victimDeaths));
+      });
+    }
+
+    updateLobbyPlayer(victimId, (player) => {
+      if (killed) {
+        player.hp = 0;
+        player.respawnAt = Number.isFinite(respawnAt) ? Math.max(0, Math.trunc(respawnAt)) : 0;
+        return;
+      }
+
+      if (Number.isFinite(victimHealth)) {
+        const nextHp = Math.max(0, Math.min(100, Math.trunc(victimHealth)));
+        const currentHp = Number.isFinite(player.hp) ? Math.trunc(player.hp) : nextHp;
+        player.hp = Math.min(currentHp, nextHp);
+      }
+      player.respawnAt = 0;
+    });
 
     if (attackerId === myId) {
       if (killed) {
@@ -1888,6 +2154,10 @@ export class Game {
         this.state.health = Math.min(this.state.health, clampedServerHealth);
         this.hud.setStatus(`피해 -${damage}`, true, 0.35);
       }
+    }
+
+    if (lobbyChanged && this.tabBoardVisible) {
+      this.renderTabScoreboard();
     }
   }
 
@@ -1999,7 +2269,31 @@ export class Game {
     });
   }
 
-  processPendingRemoteBlocks() {
+  getRemotePlacementBudget(delta) {
+    const frameMs = Math.max(1, Number(delta) * 1000);
+    let budget = MAX_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME;
+
+    if (frameMs >= 28) {
+      budget = 12;
+    } else if (frameMs >= 22) {
+      budget = 20;
+    } else if (frameMs >= 17) {
+      budget = 32;
+    } else {
+      budget = 48;
+    }
+
+    if (this.pendingRemoteBlocks.size > 300 && frameMs < 20) {
+      budget += 14;
+    }
+
+    return Math.max(
+      MIN_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME,
+      Math.min(MAX_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME, Math.trunc(budget))
+    );
+  }
+
+  processPendingRemoteBlocks(delta = 1 / 60) {
     if (this.pendingRemoteBlocks.size === 0 || this.activeMatchMode !== "online") {
       return;
     }
@@ -2013,12 +2307,13 @@ export class Game {
     }
 
     const placementBatch = [];
+    const placementBudget = this.getRemotePlacementBudget(delta);
     for (const [key, update] of this.pendingRemoteBlocks.entries()) {
       if (update.action !== "place") {
         continue;
       }
       placementBatch.push([key, update]);
-      if (placementBatch.length >= MAX_PENDING_REMOTE_BLOCK_PLACEMENTS_PER_FRAME) {
+      if (placementBatch.length >= placementBudget) {
         break;
       }
     }
@@ -2325,6 +2620,17 @@ export class Game {
       }
     });
 
+    if (this.flagInteractBtnEl) {
+      this.flagInteractBtnEl.addEventListener("pointerdown", (event) => {
+        if (!acceptPointer(event)) {
+          return;
+        }
+        event.preventDefault();
+        this.sound.unlock();
+        this.requestCenterFlagInteract({ source: "mobile" });
+      });
+    }
+
     this.renderer.domElement.addEventListener("pointerdown", (event) => {
       if (
         !acceptPointer(event) ||
@@ -2403,6 +2709,7 @@ export class Game {
       "KeyA",
       "KeyS",
       "KeyD",
+      "KeyF",
       "KeyQ",
       "ArrowUp",
       "ArrowDown",
@@ -2492,6 +2799,10 @@ export class Game {
       if (event.code === "Space" && this.onGround && this.isRunning && !this.isGameOver) {
         this.verticalVelocity = JUMP_FORCE;
         this.onGround = false;
+      }
+
+      if (event.code === "KeyF") {
+        this.requestCenterFlagInteract({ source: "key" });
       }
 
       if (event.code === "ArrowRight") {
@@ -2843,6 +3154,8 @@ export class Game {
       this.state.objectiveText = this.getOnlineObjectiveText();
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     }
+    this.updateTeamScoreHud();
+    this.updateFlagInteractUi();
     this.refreshOnlineStatus();
   }
 
@@ -2886,6 +3199,11 @@ export class Game {
     this.keys.clear();
     this.remoteSyncClock = 0;
     this.pendingRemoteBlocks.clear();
+    this.perfStats.frameCount = 0;
+    this.perfStats.totalMs = 0;
+    this.perfStats.slowFrames = 0;
+    this.perfStats.worstMs = 0;
+    this.perfStats.lastReportAt = getNowMs();
     this.mobileState.lookPointerId = null;
     this.mobileState.stickPointerId = null;
     this.mobileState.aimPointerId = null;
@@ -2895,6 +3213,12 @@ export class Game {
     this.respawnEndAt = 0;
     this.respawnLastSecond = -1;
     this.setTabScoreboardVisible(false);
+    this.flagInteractVisible = false;
+    this.flagInteractBtnEl?.classList.remove("show");
+    this.flagInteractBtnEl?.setAttribute("aria-hidden", "true");
+    this.scoreHudState.show = null;
+    this.scoreHudState.alpha = null;
+    this.scoreHudState.bravo = null;
     this.weapon.reset();
     this.enemyManager.reset();
     this.playerPosition.set(0, PLAYER_HEIGHT, 0);
@@ -2942,6 +3266,7 @@ export class Game {
     this.camera.position.copy(this.playerPosition);
     this.camera.rotation.set(0, 0, 0);
     this.syncCursorVisibility();
+    this.updateTeamScoreHud();
 
     this.hud.update(0, { ...this.state, ...this.weapon.getState() });
     if (this.weaponFlashLight) {
@@ -3127,14 +3452,44 @@ export class Game {
     }
 
     const surfaceY = this.voxelWorld.getSurfaceYAt(this.playerPosition.x, this.playerPosition.z);
-    const floorY = (surfaceY ?? 0) + PLAYER_HEIGHT;
-    if (this.playerPosition.y <= floorY + 0.04) {
+    if (!Number.isFinite(surfaceY)) {
+      this.onGround = false;
+      return;
+    }
+
+    const floorY = surfaceY + PLAYER_HEIGHT;
+    const toFloor = floorY - this.playerPosition.y;
+
+    // Avoid full-block instant snap-up that causes visible camera hitching.
+    if (toFloor > 0) {
+      if (toFloor <= PLAYER_STEP_UP_HEIGHT && this.verticalVelocity <= 0.01) {
+        const lift = Math.min(toFloor, PLAYER_STEP_UP_SPEED * delta);
+        const liftedY = this.playerPosition.y + lift;
+        if (!this.isPlayerCollidingAt(this.playerPosition.x, liftedY, this.playerPosition.z)) {
+          this.playerPosition.y = liftedY;
+        }
+        if (floorY - this.playerPosition.y <= 0.02) {
+          this.playerPosition.y = floorY;
+          this.verticalVelocity = 0;
+          this.onGround = true;
+        } else {
+          this.onGround = false;
+        }
+      } else {
+        this.onGround = false;
+      }
+      return;
+    }
+
+    const fallDistance = this.playerPosition.y - floorY;
+    if (fallDistance <= PLAYER_GROUND_SNAP_DOWN && this.verticalVelocity <= 0) {
       this.playerPosition.y = floorY;
       this.verticalVelocity = 0;
       this.onGround = true;
-    } else {
-      this.onGround = false;
+      return;
     }
+
+    this.onGround = false;
   }
 
   updateCamera(delta) {
@@ -3229,9 +3584,14 @@ export class Game {
   tick(delta) {
     this._bucketOptimizeCooldown -= delta;
     if (this._bucketOptimizeCooldown <= 0) {
-      this._bucketOptimizeCooldown = 1.2;
-      this.voxelWorld.optimizeBucketRendering();
+      this._bucketOptimizeCooldown = BUCKET_OPTIMIZE_INTERVAL;
+      if (this.voxelWorld.bucketOptimizeDirty) {
+        this.voxelWorld.optimizeBucketRendering();
+      }
     }
+
+    this.updateTeamScoreHud();
+    this.updateFlagInteractUi();
 
     this.updateSparks(delta);
     const isChatting = !!this.chat?.isInputFocused;
@@ -3244,7 +3604,7 @@ export class Game {
 
     if (this.activeMatchMode === "online") {
       this.updateRemotePlayers(delta);
-      this.processPendingRemoteBlocks();
+      this.processPendingRemoteBlocks(delta);
       this.emitLocalPlayerSync(delta);
     }
 
@@ -3340,8 +3700,43 @@ export class Game {
     });
   }
 
+  trackFrameTiming(delta) {
+    if (!this.perfDebugEnabled) {
+      return;
+    }
+
+    const frameMs = Math.max(0, delta * 1000);
+    const stats = this.perfStats;
+    stats.frameCount += 1;
+    stats.totalMs += frameMs;
+    if (frameMs >= PERF_SLOW_FRAME_MS) {
+      stats.slowFrames += 1;
+    }
+    stats.worstMs = Math.max(stats.worstMs, frameMs);
+
+    const now = getNowMs();
+    if (now - stats.lastReportAt < PERF_REPORT_INTERVAL_MS) {
+      return;
+    }
+
+    const avgMs = stats.frameCount > 0 ? stats.totalMs / stats.frameCount : 0;
+    if (stats.slowFrames > 0 || stats.worstMs >= PERF_SLOW_FRAME_MS) {
+      console.warn(
+        `[perf] avg=${avgMs.toFixed(2)}ms slow=${stats.slowFrames}/${stats.frameCount} ` +
+          `worst=${stats.worstMs.toFixed(2)}ms pendingBlocks=${this.pendingRemoteBlocks.size}`
+      );
+    }
+
+    stats.frameCount = 0;
+    stats.totalMs = 0;
+    stats.slowFrames = 0;
+    stats.worstMs = 0;
+    stats.lastReportAt = now;
+  }
+
   loop() {
     const delta = Math.min(this.clock.getDelta(), 0.05);
+    this.trackFrameTiming(delta);
     this.tick(delta);
     this.voxelWorld.flushDirtyBounds();
     this.renderer.render(this.scene, this.camera);
@@ -3728,6 +4123,8 @@ export class Game {
         this.mpTeamBravoCountEl.textContent = "0";
       }
       this.refreshOnlineStatus();
+      this.updateTeamScoreHud();
+      this.updateFlagInteractUi();
       return;
     }
 
@@ -3811,6 +4208,8 @@ export class Game {
     if (this.activeMatchMode === "online" && this.isRunning) {
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     }
+    this.updateTeamScoreHud();
+    this.updateFlagInteractUi();
     this.refreshOnlineStatus();
   }
 

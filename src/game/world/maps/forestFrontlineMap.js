@@ -94,8 +94,8 @@ function buildFlagFortress(
     builder.fillRect(tx - 1, tx + 1, 1, 7, tz - 1, tz + 1, accentType);
   }
 
-  builder.fillRect(centerX - 1, centerX + 1, 1, 2, centerZ - 1, centerZ + 1, accentType);
-  builder.fillRect(centerX, centerX, 3, 3, centerZ, centerZ, wallType);
+  // Keep spawn base platforms low so only the center objective reads as a flag monument.
+  builder.fillRect(centerX - 2, centerX + 2, 1, 1, centerZ - 2, centerZ + 2, accentType);
 
   if (gateDirection === "east") {
     builder.fillRect(maxX + 1, maxX + 7, -1, 0, centerZ - 2, centerZ + 2, floorType);

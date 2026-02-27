@@ -25,6 +25,7 @@ export class VoxelWorld {
     this._losDirection = new THREE.Vector3();
     this._losPoint = new THREE.Vector3();
     this.dirtyBoundsBuckets = new Set();
+    this.bucketOptimizeDirty = true;
   }
 
   clear() {
@@ -40,6 +41,7 @@ export class VoxelWorld {
     this.buckets.clear();
     this.raycastTargets.length = 0;
     this.dirtyBoundsBuckets.clear();
+    this.bucketOptimizeDirty = true;
   }
 
   key(x, y, z) {
@@ -133,7 +135,11 @@ export class VoxelWorld {
     this.dirtyBoundsBuckets.clear();
   }
 
-  optimizeBucketRendering() {
+  optimizeBucketRendering(force = false) {
+    if (!force && !this.bucketOptimizeDirty) {
+      return false;
+    }
+
     for (const bucket of this.buckets.values()) {
       if (!bucket?.mesh) {
         continue;
@@ -143,6 +149,9 @@ export class VoxelWorld {
       bucket.mesh.castShadow = !heavyBucket;
       bucket.mesh.receiveShadow = true;
     }
+
+    this.bucketOptimizeDirty = false;
+    return true;
   }
 
   getBucketCapacity(typeId) {
@@ -179,6 +188,7 @@ export class VoxelWorld {
 
     const index = bucket.mesh.count;
     bucket.mesh.count += 1;
+    this.bucketOptimizeDirty = true;
 
     this.tmpMatrix.makeTranslation(x + 0.5, y + 0.5, z + 0.5);
     bucket.mesh.setMatrixAt(index, this.tmpMatrix);
@@ -235,6 +245,7 @@ export class VoxelWorld {
     bucket.keys.pop();
     bucket.indexByKey.delete(key);
     bucket.mesh.count = lastIndex;
+    this.bucketOptimizeDirty = true;
     bucket.mesh.instanceMatrix.needsUpdate = true;
     this.markBucketBoundsDirty(bucket);
     this.blockMap.delete(key);

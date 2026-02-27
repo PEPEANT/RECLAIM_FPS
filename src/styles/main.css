@@ -211,9 +211,65 @@ canvas {
   min-height: 1em;
 }
 
+#ctf-scoreboard {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-6px);
+  z-index: 25;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 221, 232, 0.3);
+  background:
+    linear-gradient(140deg, rgba(10, 25, 42, 0.86), rgba(8, 19, 31, 0.92)),
+    rgba(7, 20, 33, 0.86);
+  box-shadow:
+    inset 0 0 0 1px rgba(210, 247, 255, 0.08),
+    0 10px 24px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+#ctf-scoreboard.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.ctf-team {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  font-weight: 800;
+}
+
+.ctf-team strong {
+  font-size: 1.02rem;
+  line-height: 1;
+}
+
+.ctf-team-alpha {
+  color: #8fd0ff;
+}
+
+.ctf-team-bravo {
+  color: #ffb7ac;
+}
+
+.ctf-divider {
+  color: rgba(224, 246, 255, 0.72);
+  font-weight: 900;
+}
+
 #tab-scoreboard {
   position: fixed;
-  top: 86px;
+  top: 64px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 26;
@@ -334,7 +390,7 @@ canvas {
 #chat-panel {
   position: fixed;
   left: 14px;
-  bottom: 104px;
+  bottom: 130px;
   width: 270px;
   z-index: 20;
   pointer-events: none; /* Container: click-through */
@@ -354,6 +410,37 @@ canvas {
   opacity: 0.86;
   transition: opacity 120ms ease, transform 120ms ease;
   transform: translateY(0);
+}
+
+#flag-interact-btn {
+  position: fixed;
+  left: 50%;
+  bottom: calc(132px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%) translateY(6px);
+  z-index: 28;
+  border: 1px solid rgba(157, 238, 194, 0.42);
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-family: inherit;
+  font-weight: 800;
+  font-size: 0.79rem;
+  letter-spacing: 0.06em;
+  color: #dcfff0;
+  background:
+    linear-gradient(145deg, rgba(20, 60, 46, 0.92), rgba(15, 37, 48, 0.92)),
+    rgba(10, 26, 36, 0.92);
+  box-shadow:
+    inset 0 0 0 1px rgba(204, 255, 230, 0.14),
+    0 10px 22px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+#flag-interact-btn.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
 }
 
 #chat-panel:hover,
@@ -1613,6 +1700,27 @@ kbd {
 }
 
 @media (max-width: 760px) {
+  #ctf-scoreboard {
+    top: 10px;
+    gap: 8px;
+    padding: 5px 10px;
+  }
+
+  .ctf-team {
+    font-size: 0.67rem;
+    gap: 4px;
+  }
+
+  .ctf-team strong {
+    font-size: 0.92rem;
+  }
+
+  #tab-scoreboard {
+    top: 54px;
+    min-width: min(760px, calc(100vw - 20px));
+    max-width: min(760px, calc(100vw - 20px));
+  }
+
   #hud {
     top: 10px;
     left: 10px;
@@ -1628,7 +1736,13 @@ kbd {
   #chat-panel {
     width: min(184px, 52vw);
     left: max(10px, env(safe-area-inset-left, 0px));
-    bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(176px + env(safe-area-inset-bottom, 0px));
+  }
+
+  #flag-interact-btn {
+    bottom: calc(186px + env(safe-area-inset-bottom, 0px));
+    padding: 9px 14px;
+    font-size: 0.72rem;
   }
 
   #build-hud {
@@ -1711,6 +1825,14 @@ kbd {
 }
 
 @media (max-height: 500px) and (orientation: landscape) {
+  #ctf-scoreboard {
+    top: 8px;
+  }
+
+  #tab-scoreboard {
+    top: 50px;
+  }
+
   #mobile-joystick {
     width: 94px;
     height: 94px;
@@ -1748,7 +1870,11 @@ kbd {
   }
 
   #chat-panel {
-    bottom: calc(114px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(136px + env(safe-area-inset-bottom, 0px));
     max-height: 42vh;
+  }
+
+  #flag-interact-btn {
+    bottom: calc(146px + env(safe-area-inset-bottom, 0px));
   }
 }

@@ -245,6 +245,9 @@ async function scenarioCombatAndCtfInteraction(url) {
     ]);
     assert(joinA?.ok === true && joinB?.ok === true, "전투 시나리오 join 실패");
 
+    const startAck = await emitAck(a, "room:start");
+    assert(startAck?.ok === true, "전투 시나리오 room:start 실패");
+
     const teamA = await emitAck(a, "room:set-team", { team: "alpha" });
     const teamB = await emitAck(b, "room:set-team", { team: "bravo" });
     assert(teamA?.ok === true && teamB?.ok === true, "전투 시나리오 팀 배정 실패");
@@ -297,9 +300,12 @@ async function scenarioCombatAndCtfInteraction(url) {
     const bBack = await emitAck(b, "room:set-team", { team: "bravo" });
     assert(bBack?.ok === true, "적 팀 복귀 실패");
 
-    a.emit("player:sync", { x: 42, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    a.emit("player:sync", { x: 0, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    await sleep(80);
+    const pickupAck = await emitAck(a, "ctf:interact");
+    assert(pickupAck?.ok === true, "ctf:interact 실패");
     await waitFor(() => sawPickup, 4500);
-    a.emit("player:sync", { x: -42, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    a.emit("player:sync", { x: -35, y: 1.75, z: 0, yaw: 0, pitch: 0 });
     await waitFor(() => sawCapture, 4500);
   } finally {
     a.disconnect();

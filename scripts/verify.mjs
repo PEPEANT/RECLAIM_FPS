@@ -99,6 +99,8 @@ async function checkSyntax() {
     "src/game/build/BuildSystem.js",
     "src/game/build/BlockPalette.js",
     "src/game/build/VoxelWorld.js",
+    "src/shared/gameModes.js",
+    "src/shared/matchConfig.js",
     "server.js"
   ];
 
@@ -303,9 +305,12 @@ async function checkSocketServer() {
       `stock did not recover after remove: ${JSON.stringify(stockRemoveAck)}`
     );
 
-    c1.emit("player:sync", { x: 42, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    c1.emit("player:sync", { x: 0, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    await sleep(80);
+    const pickupAck = await emitWithAck(c1, "ctf:interact");
+    assert(pickupAck?.ok === true, `ctf:interact failed: ${JSON.stringify(pickupAck)}`);
     await waitFor(() => ctfPickupSeen, 4000);
-    c1.emit("player:sync", { x: -42, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    c1.emit("player:sync", { x: -35, y: 1.75, z: 0, yaw: 0, pitch: 0 });
     await waitFor(() => ctfCaptureSeen, 4000);
 
     const left = await emitWithAck(c2, "room:leave");
