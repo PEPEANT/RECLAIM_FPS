@@ -220,8 +220,9 @@ export class Chat {
 
     if (this.toggleBtnEl) {
       this.toggleBtnEl.classList.toggle("show", canCollapse);
-      this.toggleBtnEl.textContent = nextCollapsed ? "채팅 열기" : "채팅 닫기";
+      this.toggleBtnEl.textContent = nextCollapsed ? "채팅" : "X";
       this.toggleBtnEl.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+      this.toggleBtnEl.setAttribute("aria-label", nextCollapsed ? "채팅 열기" : "채팅 닫기");
       this.toggleBtnEl.setAttribute("aria-hidden", canCollapse ? "false" : "true");
     }
 
@@ -245,7 +246,7 @@ export class Chat {
       return;
     }
     if (this.mobileUiEnabled) {
-      this.applyMobileCollapsedState(false, { focusInput: true });
+      this.applyMobileCollapsedState(false, { focusInput: false });
       return;
     }
     this.inputEl.focus();
@@ -323,3 +324,4 @@ export class Chat {
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 }
+

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { io } from "socket.io-client";
+import { CTF_WIN_SCORE } from "../src/shared/matchConfig.js";
 
 const HOST = "127.0.0.1";
 const START_PORT = 3301;
@@ -311,7 +312,7 @@ async function scenarioCombatAndCtfInteraction(url) {
     const bBack = await emitAck(b, "room:set-team", { team: "bravo" });
     assert(bBack?.ok === true, "적 팀 복귀 실패");
 
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < CTF_WIN_SCORE; i += 1) {
       a.emit("player:sync", { x: 44, y: 1.75, z: 0, yaw: 0, pitch: 0 });
       await sleep(80);
       const pickupAck = await emitAck(a, "ctf:interact");

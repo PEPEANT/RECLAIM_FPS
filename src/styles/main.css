@@ -635,14 +635,16 @@ canvas {
 }
 
 #chat-toggle-btn {
-  position: fixed;
-  left: max(10px, env(safe-area-inset-left, 0px));
-  bottom: calc(110px + env(safe-area-inset-bottom, 0px));
+  position: absolute;
+  top: -30px;
+  right: 0;
   z-index: 29;
   display: none;
   border: 1px solid rgba(148, 221, 232, 0.3);
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 4px 10px;
+  min-width: 30px;
+  height: 24px;
   font-family: inherit;
   font-size: 0.68rem;
   font-weight: 700;
@@ -1787,6 +1789,9 @@ kbd {
 #pause-overlay {
   align-items: center;
   justify-items: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .options-panel {
@@ -1802,6 +1807,8 @@ kbd {
     inset 0 0 0 1px rgba(255, 255, 255, 0.06),
     0 18px 42px rgba(0, 0, 0, 0.46);
   padding: 18px;
+  max-height: calc(100dvh - 28px);
+  overflow-y: auto;
 }
 
 .options-panel h2 {
@@ -1903,11 +1910,14 @@ kbd {
     align-items: stretch;
     justify-items: stretch;
     padding: 0;
+    overflow-y: auto;
   }
 
   .options-panel {
     width: 100vw;
     min-height: 100dvh;
+    max-height: none;
+    overflow-y: visible;
     border-radius: 0;
     border: 0;
     padding:
@@ -1963,10 +1973,12 @@ kbd {
   }
 
   #chat-toggle-btn {
-    left: max(10px, env(safe-area-inset-left, 0px));
-    bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+    top: -30px;
+    right: 0;
+    left: auto;
+    bottom: auto;
     font-size: 0.65rem;
-    padding: 6px 9px;
+    padding: 4px 9px;
   }
 
   #flag-interact-btn {
@@ -2140,7 +2152,7 @@ kbd {
   }
 
   #chat-toggle-btn {
-    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+    top: -28px;
   }
 
   #flag-interact-btn {

@@ -80,9 +80,10 @@ const VOID_DEATH_Y = -36;
 const VOID_FATAL_DAMAGE = 999;
 const HAZARD_EMIT_COOLDOWN_MS = 320;
 const CENTER_AD_VOLUME_STORAGE_KEY = "reclaim_center_ad_volume";
-const DEFAULT_CENTER_AD_VOLUME_SCALE = 0.7;
+const DEFAULT_CENTER_AD_VOLUME_SCALE = 1;
 const EFFECTS_VOLUME_STORAGE_KEY = "reclaim_effects_volume";
-const DEFAULT_EFFECTS_VOLUME_SCALE = 0.92;
+const DEFAULT_EFFECTS_VOLUME_SCALE = 1;
+const SKY_BASE_COLOR = 0x8ccfff;
 
 function readStoredCenterAdVolumeScale() {
   if (typeof window === "undefined") {
@@ -195,8 +196,8 @@ export class Game {
     this.chat = options.chat ?? null;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x87c9ff);
-    this.scene.fog = new THREE.Fog(0x9ed2ff, 90, 420);
+    this.scene.background = new THREE.Color(SKY_BASE_COLOR);
+    this.scene.fog = new THREE.Fog(SKY_BASE_COLOR, 90, 420);
 
     this.camera = new THREE.PerspectiveCamera(
       DEFAULT_FOV,
@@ -620,12 +621,12 @@ export class Game {
     this.skyCloudTexture = this.createSkyCloudTexture();
 
     const skyMaterial = new THREE.MeshBasicMaterial({
-      color: 0x86cbff,
+      color: SKY_BASE_COLOR,
       side: THREE.BackSide,
       fog: false,
       depthWrite: false
     });
-    const sky = new THREE.Mesh(new THREE.SphereGeometry(640, 40, 28), skyMaterial);
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(460, 40, 28), skyMaterial);
     sky.frustumCulled = false;
     sky.renderOrder = -10;
     this.skyDome = sky;
@@ -845,7 +846,7 @@ export class Game {
     setText("mobile-jump", "점프");
     setText("mobile-reload", "장전");
     setText("flag-interact-btn", "깃발 탈취");
-    setText("chat-toggle-btn", "채팅 열기");
+    setText("chat-toggle-btn", "채팅");
     setText("options-title", "옵션");
     setText("options-bgm-label", "배경음 볼륨");
     setText("options-bgm-mute", "배경음 끄기");
@@ -1748,7 +1749,6 @@ export class Game {
       return;
     }
 
-    this.centerAdVideoIndex = 0;
     this.playNextCenterAdVideo(sessionNonce);
   }
 
@@ -3689,14 +3689,12 @@ export class Game {
     }
 
     this.syncMobileUtilityButtons();
-    const mobileChatOpen = Boolean(this.chat?.isMobileInputOpen?.());
     const visible =
       this.mobileEnabled &&
       this.isRunning &&
       !this.isGameOver &&
       !this.chat?.isInputFocused &&
-      !this.optionsMenuOpen &&
-      !mobileChatOpen;
+      !this.optionsMenuOpen;
     this.mobileControlsEl.classList.toggle("is-active", visible);
 
     if (!visible) {
