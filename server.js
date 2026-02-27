@@ -84,6 +84,14 @@ const DEFAULT_TEAM_FLAG_HOME = Object.freeze({
   alpha: Object.freeze({ x: -44, y: 0, z: 0 }),
   bravo: Object.freeze({ x: 44, y: 0, z: 0 })
 });
+const SPAWN_PROTECT_RADIUS = 13;
+const SPAWN_PROTECT_RADIUS_SQ = SPAWN_PROTECT_RADIUS * SPAWN_PROTECT_RADIUS;
+const SPAWN_PROTECT_MIN_Y = -8;
+const SPAWN_PROTECT_MAX_Y = 8;
+const SPAWN_PROTECT_CENTERS = Object.freeze([
+  Object.freeze({ x: DEFAULT_TEAM_HOME.alpha.x, z: DEFAULT_TEAM_HOME.alpha.z }),
+  Object.freeze({ x: DEFAULT_TEAM_HOME.bravo.x, z: DEFAULT_TEAM_HOME.bravo.z })
+]);
 
 const rooms = new Map();
 let playerCount = 0;
@@ -554,10 +562,29 @@ function getSpawnStateForTeam(team) {
   const normalized = normalizeTeam(team);
   const home = normalized ? DEFAULT_TEAM_HOME[normalized] : { x: 0, y: 0, z: 0 };
   const yaw = normalized === "alpha" ? -Math.PI * 0.5 : normalized === "bravo" ? Math.PI * 0.5 : 0;
+  const spawnOffsets = [
+    [0, 0],
+    [2.5, 0],
+    [-2.5, 0],
+    [0, 2.5],
+    [0, -2.5],
+    [4.1, 1.9],
+    [4.1, -1.9],
+    [-4.1, 1.9],
+    [-4.1, -1.9],
+    [5.6, 0],
+    [-5.6, 0],
+    [0, 5.6],
+    [0, -5.6]
+  ];
+  const randomOffset = spawnOffsets[Math.floor(Math.random() * spawnOffsets.length)] ?? [0, 0];
+  const jitterX = (Math.random() - 0.5) * 0.35;
+  const jitterZ = (Math.random() - 0.5) * 0.35;
+
   return sanitizePlayerState({
-    x: home.x,
+    x: home.x + randomOffset[0] + jitterX,
     y: 1.75,
-    z: home.z,
+    z: home.z + randomOffset[1] + jitterZ,
     yaw,
     pitch: 0
   });
@@ -618,6 +645,10 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null }
   state.round.winnerTeam = null;
   state.round.restartAt = 0;
   state.round.startedAt = Math.max(0, Math.trunc(Number(startedAt) || Date.now()));
+  if (state.blocks instanceof Map && state.blocks.size > 0) {
+    state.blocks.clear();
+    schedulePersistentWorldSnapshotSave(room);
+  }
 
   for (const player of state.players.values()) {
     player.kills = 0;
@@ -939,6 +970,54 @@ function distanceXZ(a = null, b = null) {
   return Math.hypot(dx, dz);
 }
 
+function isSpawnProtectedBlockCoord(x, y, z) {
+  const cx = Number(x);
+  const cy = Number(y);
+  const cz = Number(z);
+  if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz)) {
+    return false;
+  }
+  if (cy < SPAWN_PROTECT_MIN_Y || cy > SPAWN_PROTECT_MAX_Y) {
+    return false;
+  }
+
+  for (const center of SPAWN_PROTECT_CENTERS) {
+    const dx = cx - center.x;
+    const dz = cz - center.z;
+    if (dx * dx + dz * dz <= SPAWN_PROTECT_RADIUS_SQ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function pruneSpawnProtectedBlockChanges(room) {
+  if (!room) {
+    return false;
+  }
+  const state = getRoomState(room);
+  if (!(state.blocks instanceof Map) || state.blocks.size === 0) {
+    return false;
+  }
+
+  let changed = false;
+  for (const [key, entry] of state.blocks.entries()) {
+    if (!entry) {
+      continue;
+    }
+    if (isSpawnProtectedBlockCoord(entry.x, entry.y, entry.z)) {
+      state.blocks.delete(key);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    touchRoomState(room);
+    schedulePersistentWorldSnapshotSave(room);
+  }
+  return changed;
+}
+
 function serializeBlocksSnapshot(room) {
   const state = getRoomState(room);
   return Array.from(state.blocks.values()).map((entry) => {
@@ -1015,6 +1094,7 @@ function createPersistentRoom() {
     createdAt: Date.now()
   };
   applyPersistentWorldSnapshot(room);
+  pruneSpawnProtectedBlockChanges(room);
   return room;
 }
 
@@ -1407,7 +1487,22 @@ io.on("connection", (socket) => {
     }
 
     socket.data.playerName = safeName;
-    io.emit("chat:message", { name: safeName, text: safeText });
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    const state = room ? getRoomState(room) : null;
+    const player = state?.players instanceof Map ? state.players.get(socket.id) : null;
+    const team = normalizeTeam(player?.team);
+    const payload = {
+      id: socket.id,
+      name: safeName,
+      text: safeText,
+      team
+    };
+    if (room) {
+      io.to(room.code).emit("chat:message", payload);
+    } else {
+      socket.emit("chat:message", payload);
+    }
   });
 
   socket.on("player:sync", (payload = {}) => {
@@ -1606,6 +1701,15 @@ io.on("connection", (socket) => {
     const sanitized = sanitizeBlockPayload(payload);
     if (!sanitized) {
       ack(ackFn, { ok: false, error: "잘못된 블록 업데이트", stock: serializeBlockStock(playerStock) });
+      return;
+    }
+    if (isSpawnProtectedBlockCoord(sanitized.x, sanitized.y, sanitized.z)) {
+      ack(ackFn, {
+        ok: false,
+        error: "스폰 보호 구역은 수정할 수 없습니다",
+        roomStateRevision: state.revision,
+        stock: serializeBlockStock(playerStock)
+      });
       return;
     }
 

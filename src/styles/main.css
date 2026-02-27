@@ -474,6 +474,20 @@ canvas {
   color: #8ecfff;
 }
 
+.chat-msg.player.ally .chat-name,
+.chat-msg.player.team-alpha .chat-name {
+  color: #7fb7ff;
+}
+
+.chat-msg.player.enemy .chat-name,
+.chat-msg.player.team-bravo .chat-name {
+  color: #ff8f8f;
+}
+
+.chat-msg.player.self .chat-name {
+  color: #9fffd7;
+}
+
 .chat-msg.system {
   color: rgba(148, 221, 232, 0.55);
   font-size: 0.72rem;

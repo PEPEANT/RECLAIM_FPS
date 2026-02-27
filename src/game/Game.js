@@ -57,6 +57,14 @@ const PLAYER_GROUND_SNAP_DOWN = 0.14;
 const BUCKET_OPTIMIZE_INTERVAL = 1.2;
 const PERF_REPORT_INTERVAL_MS = 4000;
 const PERF_SLOW_FRAME_MS = 24;
+const RENDER_PIXEL_RATIO_CAP = 1.25;
+const RENDER_PIXEL_RATIO_LOW_CAP = 1.0;
+const SHADOW_MAP_SIZE_DEFAULT = 1024;
+const SHADOW_MAP_SIZE_LOW = 512;
+const SHADOW_CAMERA_EXTENT_DEFAULT = 120;
+const SHADOW_CAMERA_EXTENT_LOW = 72;
+const ADAPTIVE_QUALITY_LOW_FPS_MS = 34;
+const ADAPTIVE_QUALITY_STRIKE_LIMIT = 2;
 const CTF_INTERACT_COOLDOWN_MS = 260;
 const MOBILE_SPRINT_THRESHOLD = 0.94;
 const FLAG_CARRIER_SPEED_MULTIPLIER = 0.9;
@@ -84,6 +92,25 @@ const FALL_DAMAGE_MAX = 96;
 const VOID_DEATH_Y = -36;
 const VOID_FATAL_DAMAGE = 999;
 const HAZARD_EMIT_COOLDOWN_MS = 320;
+const ONLINE_TEAM_SPAWN_OFFSETS = Object.freeze([
+  [0, 0],
+  [2.4, 0],
+  [-2.4, 0],
+  [0, 2.4],
+  [0, -2.4],
+  [3.8, 1.8],
+  [3.8, -1.8],
+  [-3.8, 1.8],
+  [-3.8, -1.8],
+  [5.3, 0],
+  [-5.3, 0],
+  [0, 5.3],
+  [0, -5.3],
+  [6.4, 2.6],
+  [-6.4, 2.6],
+  [6.4, -2.6],
+  [-6.4, -2.6]
+]);
 const CENTER_AD_VOLUME_STORAGE_KEY = "reclaim_center_ad_volume";
 const DEFAULT_CENTER_AD_VOLUME_SCALE = 1;
 const EFFECTS_VOLUME_STORAGE_KEY = "reclaim_effects_volume";
@@ -246,14 +273,18 @@ export class Game {
       500
     );
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance"
+    });
+    this.pixelRatioCap = RENDER_PIXEL_RATIO_CAP;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.06;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     this.textureLoader = new THREE.TextureLoader();
     this.graphics = this.loadGraphics();
@@ -518,6 +549,7 @@ export class Game {
     this.centerAdVolumeBeforeMute = Math.max(0.1, this.centerAdVolumeScale);
     this.centerAdLastSyncSentAt = 0;
     this.centerAdLastAppliedSyncAt = 0;
+    this.centerAdLagCompSec = 0;
     this.centerAdFailureCounts = new Map();
     this.centerAdPlaybackPrimed = false;
     this.centerAdWatchdogNextAt = 0;
@@ -537,6 +569,8 @@ export class Game {
       worstMs: 0,
       lastReportAt: getNowMs()
     };
+    this.lowFpsStrikes = 0;
+    this.lowSpecModeApplied = false;
     this.isRespawning = false;
     this.respawnEndAt = 0;
     this.respawnLastSecond = -1;
@@ -568,6 +602,9 @@ export class Game {
 
     if (this.chat?.setFocusChangeHandler) {
       this.chat.setFocusChangeHandler((focused) => this.onChatFocusChanged(focused));
+    }
+    if (this.chat?.setTeamResolver) {
+      this.chat.setTeamResolver(() => this.getMyTeam());
     }
     this.setupLobbySocket();
     this.refreshOnlineStatus();
@@ -615,13 +652,14 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xfff5d3, 1.28);
     sun.position.set(58, 68, 32);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -240;
-    sun.shadow.camera.right = 240;
-    sun.shadow.camera.top = 240;
-    sun.shadow.camera.bottom = -240;
+    sun.shadow.mapSize.set(SHADOW_MAP_SIZE_DEFAULT, SHADOW_MAP_SIZE_DEFAULT);
+    sun.shadow.camera.left = -SHADOW_CAMERA_EXTENT_DEFAULT;
+    sun.shadow.camera.right = SHADOW_CAMERA_EXTENT_DEFAULT;
+    sun.shadow.camera.top = SHADOW_CAMERA_EXTENT_DEFAULT;
+    sun.shadow.camera.bottom = -SHADOW_CAMERA_EXTENT_DEFAULT;
     sun.shadow.bias = -0.00026;
     sun.shadow.normalBias = 0.018;
+    this.sunLight = sun;
     this.scene.add(sun);
 
     const fill = new THREE.DirectionalLight(0x8bc8ff, 0.42);
@@ -1800,9 +1838,11 @@ export class Game {
 
     const index = this.normalizeCenterAdIndex(payload.index);
     const serverNow = Number(payload.serverNow ?? payload.updatedAt ?? Date.now());
-    const lagSec = Number.isFinite(serverNow)
-      ? THREE.MathUtils.clamp((Date.now() - serverNow) / 1000, 0, 8)
+    const lagRawSec = Number.isFinite(serverNow)
+      ? THREE.MathUtils.clamp((Date.now() - serverNow) / 1000, 0, 1.6)
       : 0;
+    this.centerAdLagCompSec = THREE.MathUtils.lerp(this.centerAdLagCompSec, lagRawSec, 0.22);
+    const lagSec = THREE.MathUtils.clamp(this.centerAdLagCompSec, 0, 1.2);
 
     if (phase === "play") {
       if (!this.centerAdActive) {
@@ -1861,7 +1901,9 @@ export class Game {
       this.centerAdPlayingIndex = -1;
       this.centerAdVideoIndex = index;
       this.centerAdRestUntil = restUntil;
-      this.scheduleNextCenterAdVideo(Math.max(100, restUntil - Date.now()), this.centerAdSessionNonce);
+      if (this.activeMatchMode !== "online" || this.isOnlineHost()) {
+        this.scheduleNextCenterAdVideo(Math.max(100, restUntil - Date.now()), this.centerAdSessionNonce);
+      }
       return;
     }
 
@@ -1880,7 +1922,7 @@ export class Game {
     const video = document.createElement("video");
     video.preload = "metadata";
     video.loop = false;
-    video.muted = false;
+    video.muted = true;
     video.playsInline = true;
     video.crossOrigin = "anonymous";
     video.disablePictureInPicture = true;
@@ -2025,6 +2067,9 @@ export class Game {
     this.centerAdWatchdogNextAt = now + CENTER_AD_WATCHDOG_INTERVAL_MS;
 
     if (this.centerAdPhase === "rest") {
+      if (this.activeMatchMode === "online" && !this.isOnlineHost()) {
+        return;
+      }
       const waitMs = Math.max(0, Math.trunc(this.centerAdRestUntil - now));
       if (this.centerAdRestTimer === null && waitMs <= 0) {
         this.playNextCenterAdVideo(this.centerAdSessionNonce);
@@ -2068,6 +2113,14 @@ export class Game {
 
   handleCenterAdPlaybackEnded({ failed = false } = {}) {
     if (!this.centerAdActive) {
+      return;
+    }
+
+    if (this.activeMatchMode === "online" && !this.isOnlineHost()) {
+      this.clearCenterAdRestTimer();
+      this.centerAdPhase = "rest";
+      this.centerAdPlayingIndex = -1;
+      this.releaseCenterAdSource();
       return;
     }
 
@@ -2117,6 +2170,7 @@ export class Game {
     const targetIndex = this.normalizeCenterAdIndex(index);
     const targetUrl = CENTER_AD_VIDEO_URLS[targetIndex];
     video.preload = "auto";
+    video.muted = true;
 
     try {
       video.pause();
@@ -2155,6 +2209,9 @@ export class Game {
       this.centerAdFailureCounts.set(targetIndex, 0);
       if (advancePlaylist) {
         this.centerAdVideoIndex = (targetIndex + 1) % playlistLength;
+      }
+      if (video.muted && this.centerAdPlaybackPrimed && this.centerAdVolumeScale > 0.001) {
+        video.muted = false;
       }
       this.emitCenterAdSync({ force: true });
     };
@@ -3576,8 +3633,6 @@ export class Game {
     for (const ch of String(myId || "offline")) {
       seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
     }
-    const angle = ((seed % 360) * Math.PI) / 180;
-    const ring = 2.8 + ((seed >> 8) % 5) * 0.55;
 
     let anchorX = 0;
     let anchorZ = 0;
@@ -3599,12 +3654,14 @@ export class Game {
     }
 
     let spawnPoint = null;
-    const ringVariants = [ring, ring + 0.65, ring + 1.3];
-    for (const ringValue of ringVariants) {
-      for (let i = 0; i < 10; i += 1) {
-        const tryAngle = angle + i * (Math.PI / 5);
-        const tryX = anchorX + Math.cos(tryAngle) * ringValue;
-        const tryZ = anchorZ + Math.sin(tryAngle) * ringValue;
+    const randomStart = Math.floor(Math.random() * ONLINE_TEAM_SPAWN_OFFSETS.length);
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (let i = 0; i < ONLINE_TEAM_SPAWN_OFFSETS.length; i += 1) {
+        const [offsetX, offsetZ] =
+          ONLINE_TEAM_SPAWN_OFFSETS[(randomStart + i) % ONLINE_TEAM_SPAWN_OFFSETS.length];
+        const jitter = pass === 0 ? 0.22 : 0;
+        const tryX = anchorX + offsetX + (Math.random() - 0.5) * jitter;
+        const tryZ = anchorZ + offsetZ + (Math.random() - 0.5) * jitter;
         spawnPoint = this.findSafeSpawnPlacement(tryX, tryZ);
         if (spawnPoint) {
           break;
@@ -3650,7 +3707,15 @@ export class Game {
       [0.35, 0.35],
       [0.35, -0.35],
       [-0.35, 0.35],
-      [-0.35, -0.35]
+      [-0.35, -0.35],
+      [1.2, 0],
+      [-1.2, 0],
+      [0, 1.2],
+      [0, -1.2],
+      [2.2, 0],
+      [-2.2, 0],
+      [0, 2.2],
+      [0, -2.2]
     ];
     const surfaceY = this.voxelWorld.getSurfaceYAt(originX, originZ);
     const baseY = Number.isFinite(preferredY)
@@ -5181,6 +5246,7 @@ export class Game {
     this.perfStats.slowFrames = 0;
     this.perfStats.worstMs = 0;
     this.perfStats.lastReportAt = getNowMs();
+    this.lowFpsStrikes = 0;
     this.mobileState.lookPointerId = null;
     this.mobileState.stickPointerId = null;
     this.mobileState.aimPointerId = null;
@@ -5756,11 +5822,29 @@ export class Game {
     });
   }
 
-  trackFrameTiming(delta) {
-    if (!this.perfDebugEnabled) {
+  applyLowSpecMode() {
+    if (this.lowSpecModeApplied) {
       return;
     }
+    this.lowSpecModeApplied = true;
+    this.pixelRatioCap = RENDER_PIXEL_RATIO_LOW_CAP;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
 
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    if (this.sunLight?.shadow) {
+      this.sunLight.shadow.mapSize.set(SHADOW_MAP_SIZE_LOW, SHADOW_MAP_SIZE_LOW);
+      this.sunLight.shadow.camera.left = -SHADOW_CAMERA_EXTENT_LOW;
+      this.sunLight.shadow.camera.right = SHADOW_CAMERA_EXTENT_LOW;
+      this.sunLight.shadow.camera.top = SHADOW_CAMERA_EXTENT_LOW;
+      this.sunLight.shadow.camera.bottom = -SHADOW_CAMERA_EXTENT_LOW;
+      this.sunLight.shadow.camera.updateProjectionMatrix();
+      this.sunLight.shadow.needsUpdate = true;
+    }
+
+    this.hud.setStatus("저사양 최적화 모드를 자동 적용했습니다.", false, 1.1);
+  }
+
+  trackFrameTiming(delta) {
     const frameMs = Math.max(0, delta * 1000);
     const stats = this.perfStats;
     stats.frameCount += 1;
@@ -5776,7 +5860,19 @@ export class Game {
     }
 
     const avgMs = stats.frameCount > 0 ? stats.totalMs / stats.frameCount : 0;
-    if (stats.slowFrames > 0 || stats.worstMs >= PERF_SLOW_FRAME_MS) {
+    if (!this.lowSpecModeApplied && this.isRunning) {
+      if (avgMs >= ADAPTIVE_QUALITY_LOW_FPS_MS) {
+        this.lowFpsStrikes += 1;
+        if (this.lowFpsStrikes >= ADAPTIVE_QUALITY_STRIKE_LIMIT) {
+          this.applyLowSpecMode();
+          this.lowFpsStrikes = 0;
+        }
+      } else {
+        this.lowFpsStrikes = 0;
+      }
+    }
+
+    if (this.perfDebugEnabled && (stats.slowFrames > 0 || stats.worstMs >= PERF_SLOW_FRAME_MS)) {
       console.warn(
         `[perf] avg=${avgMs.toFixed(2)}ms slow=${stats.slowFrames}/${stats.frameCount} ` +
           `worst=${stats.worstMs.toFixed(2)}ms pendingBlocks=${this.pendingRemoteBlocks.size}`
@@ -5811,6 +5907,7 @@ export class Game {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.lastAppliedFov = this.camera.fov;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.updateMobileControlsVisibility();
   }

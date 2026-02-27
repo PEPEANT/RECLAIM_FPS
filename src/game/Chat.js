@@ -50,6 +50,7 @@ export class Chat {
     this._mobileUiBound = false;
     this.mobileUiEnabled = false;
     this.mobileCollapsed = false;
+    this.teamResolver = null;
 
     this.panelEl = document.getElementById("chat-panel");
     this.messagesEl = document.getElementById("chat-messages");
@@ -70,6 +71,10 @@ export class Chat {
 
   setFocusChangeHandler(handler) {
     this.focusChangeHandler = typeof handler === "function" ? handler : null;
+  }
+
+  setTeamResolver(resolver) {
+    this.teamResolver = typeof resolver === "function" ? resolver : null;
   }
 
   setPlayerName(rawName) {
@@ -121,8 +126,11 @@ export class Chat {
 
     this.socket.on("disconnect", () => {});
 
-    this.socket.on("chat:message", ({ name, text }) => {
-      this.append(name, text, "player");
+    this.socket.on("chat:message", ({ id, name, text, team }) => {
+      this.append(name, text, "player", {
+        senderId: id ?? null,
+        team: team === "alpha" || team === "bravo" ? team : null
+      });
     });
 
     this.socket.on("chat:system", () => {});
@@ -297,7 +305,7 @@ export class Chat {
     this.messagesEl.innerHTML = "";
   }
 
-  append(name, text, type) {
+  append(name, text, type, meta = {}) {
     if (!this.enabled) {
       return;
     }
@@ -306,6 +314,21 @@ export class Chat {
     el.className = `chat-msg ${type}`;
 
     if (type === "player") {
+      const msgTeam = meta?.team === "alpha" || meta?.team === "bravo" ? meta.team : null;
+      const myTeamRaw = this.teamResolver?.();
+      const myTeam = myTeamRaw === "alpha" || myTeamRaw === "bravo" ? myTeamRaw : null;
+      if (msgTeam && myTeam) {
+        el.classList.add(msgTeam === myTeam ? "ally" : "enemy");
+      } else if (msgTeam) {
+        el.classList.add(`team-${msgTeam}`);
+      }
+
+      const mySocketId = String(this.socket?.id ?? "");
+      const senderId = String(meta?.senderId ?? "");
+      if (mySocketId && senderId && mySocketId === senderId) {
+        el.classList.add("self");
+      }
+
       const nameSpan = document.createElement("span");
       nameSpan.className = "chat-name";
       nameSpan.textContent = `${name}: `;
