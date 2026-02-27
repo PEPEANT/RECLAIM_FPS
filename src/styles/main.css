@@ -924,6 +924,33 @@ canvas {
   display: block;
 }
 
+#mobile-options {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top, 0px));
+  right: max(10px, env(safe-area-inset-right, 0px));
+  z-index: 27;
+  min-width: 54px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(184, 221, 246, 0.66);
+  background:
+    linear-gradient(140deg, rgba(48, 79, 111, 0.9), rgba(21, 38, 57, 0.94)),
+    rgba(11, 26, 42, 0.92);
+  color: #e8f7ff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  pointer-events: auto;
+  touch-action: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 6px 14px rgba(0, 0, 0, 0.34);
+}
+
+#mobile-options:active {
+  transform: scale(0.97);
+}
+
 #mobile-joystick {
   position: absolute;
   left: max(16px, env(safe-area-inset-left, 0px));
@@ -1998,6 +2025,14 @@ kbd {
     height: 118px;
   }
 
+  #mobile-options {
+    top: max(8px, env(safe-area-inset-top, 0px));
+    right: max(8px, env(safe-area-inset-right, 0px));
+    min-width: 50px;
+    height: 28px;
+    font-size: 0.64rem;
+  }
+
   #mobile-joystick-knob {
     width: 52px;
     height: 52px;
@@ -2113,6 +2148,14 @@ kbd {
     width: 94px;
     height: 94px;
     bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  }
+
+  #mobile-options {
+    top: max(6px, env(safe-area-inset-top, 0px));
+    right: max(8px, env(safe-area-inset-right, 0px));
+    min-width: 46px;
+    height: 26px;
+    font-size: 0.6rem;
   }
 
   #mobile-joystick-knob {

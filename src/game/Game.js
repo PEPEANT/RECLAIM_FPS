@@ -323,6 +323,7 @@ export class Game {
     this.mobileAimBtn = document.getElementById("mobile-aim");
     this.mobileJumpBtn = document.getElementById("mobile-jump");
     this.mobileReloadBtn = document.getElementById("mobile-reload");
+    this.mobileOptionsBtn = document.getElementById("mobile-options");
     this.mobileState = {
       moveForward: 0,
       moveStrafe: 0,
@@ -845,6 +846,7 @@ export class Game {
     setText("mobile-aim", "조준");
     setText("mobile-jump", "점프");
     setText("mobile-reload", "장전");
+    setText("mobile-options", "옵션");
     setText("flag-interact-btn", "깃발 탈취");
     setText("chat-toggle-btn", "채팅");
     setText("options-title", "옵션");
@@ -3793,14 +3795,25 @@ export class Game {
       !this.mobileModeGunBtn ||
       !this.mobileAimBtn ||
       !this.mobileJumpBtn ||
-      !this.mobileReloadBtn
+      !this.mobileReloadBtn ||
+      !this.mobileOptionsBtn
     ) {
       this.updateMobileControlsVisibility();
       return;
     }
 
     this._mobileBound = true;
-    const acceptPointer = (event) => event.pointerType === "touch" || event.pointerType === "pen";
+    const acceptPointer = (event) => {
+      if (!event) {
+        return false;
+      }
+      const pointerType = String(event.pointerType ?? "").toLowerCase();
+      if (pointerType === "touch" || pointerType === "pen") {
+        return true;
+      }
+      // Some mobile browsers/webviews may report touch as "mouse" or empty.
+      return this.mobileEnabled && (pointerType === "mouse" || pointerType.length === 0);
+    };
 
     this.mobileJoystickEl.addEventListener("pointerdown", (event) => {
       if (!acceptPointer(event)) {
@@ -3935,6 +3948,12 @@ export class Game {
         this.hud.setStatus("장전 중...", true, 0.55);
       }
     });
+    bindUtilityTap(this.mobileOptionsBtn, () => {
+      if (!this.isRunning || this.isGameOver) {
+        return;
+      }
+      this.openOptionsMenu();
+    });
 
     if (this.flagInteractBtnEl) {
       this.flagInteractBtnEl.addEventListener("pointerdown", (event) => {
@@ -4005,6 +4024,30 @@ export class Game {
 
     this.syncMobileUtilityButtons();
     this.updateMobileControlsVisibility();
+  }
+
+  requestMobileFullscreen() {
+    if (!this.mobileEnabled || typeof document === "undefined") {
+      return;
+    }
+    const doc = document;
+    if (doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement) {
+      return;
+    }
+    const target = doc.documentElement;
+    const request =
+      target.requestFullscreen ||
+      target.webkitRequestFullscreen ||
+      target.msRequestFullscreen;
+    if (typeof request !== "function") {
+      return;
+    }
+    try {
+      const maybePromise = request.call(target);
+      if (maybePromise && typeof maybePromise.catch === "function") {
+        maybePromise.catch(() => {});
+      }
+    } catch {}
   }
 
   bindEvents() {
@@ -4499,6 +4542,9 @@ export class Game {
     this.optionsMenuOpen = false;
     this.hud.hideGameOver();
     this.isRunning = true;
+    this.chat?.close?.();
+    this.requestMobileFullscreen();
+    this.sound.unlock();
     this.setCenterAdActive(true);
     this.isGameOver = false;
     this.mouseLookEnabled = this.allowUnlockedLook;
