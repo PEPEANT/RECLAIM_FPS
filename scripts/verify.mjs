@@ -321,7 +321,7 @@ async function checkSocketServer() {
       `stock did not recover after remove: ${JSON.stringify(stockRemoveAck)}`
     );
 
-    c1.emit("player:sync", { x: 0, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    c1.emit("player:sync", { x: 44, y: 1.75, z: 0, yaw: 0, pitch: 0 });
     await sleep(80);
     const pickupAck = await emitWithAck(c1, "ctf:interact");
     assert(pickupAck?.ok === true, `ctf:interact failed: ${JSON.stringify(pickupAck)}`);

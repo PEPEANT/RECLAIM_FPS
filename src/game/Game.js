@@ -10,18 +10,23 @@ import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE, PVP_RESPAWN_MS } from "../shared/matc
 
 const CENTER_AD_IMAGE_URL = new URL("../../PNG/AD.41415786.1.png", import.meta.url).href;
 const CENTER_AD_VIDEO_URLS = [
+  new URL("../../MP4/YTDown0.mp4", import.meta.url).href,
   new URL("../../MP4/YTDown1.mp4", import.meta.url).href,
   new URL("../../MP4/YTDown2.mp4", import.meta.url).href,
   new URL("../../MP4/YTDown3.mp4", import.meta.url).href,
   new URL("../../MP4/YTDown4.mp4", import.meta.url).href,
-  new URL("../../MP4/YTDown5.mp4", import.meta.url).href
+  new URL("../../MP4/YTDown5.mp4", import.meta.url).href,
+  new URL("../../MP4/YTDown6.mp4", import.meta.url).href,
+  new URL("../../MP4/YTDown7.mp4", import.meta.url).href
 ];
 const CENTER_AD_REST_MS = 60_000;
 const CENTER_AD_RETRY_MS = 4_000;
-const CENTER_AD_AUDIO_MAX_GAIN = 0.42;
-const CENTER_AD_AUDIO_MIN_GAIN = 0.05;
+const CENTER_AD_AUDIO_MAX_GAIN = 0.26;
+const CENTER_AD_AUDIO_MIN_GAIN = 0;
 const CENTER_AD_AUDIO_NEAR_DISTANCE = 4;
-const CENTER_AD_AUDIO_FAR_DISTANCE = 94;
+const CENTER_AD_AUDIO_FAR_DISTANCE = 108;
+const CENTER_AD_AUDIO_DUCK_MULTIPLIER = 0.42;
+const CENTER_AD_AUDIO_DUCK_MS = 240;
 const PLAYER_HEIGHT = 1.75;
 const DEFAULT_FOV = 75;
 const AIM_FOV = 48;
@@ -74,6 +79,40 @@ const FALL_DAMAGE_MAX = 96;
 const VOID_DEATH_Y = -36;
 const VOID_FATAL_DAMAGE = 999;
 const HAZARD_EMIT_COOLDOWN_MS = 320;
+const CENTER_AD_VOLUME_STORAGE_KEY = "reclaim_center_ad_volume";
+const DEFAULT_CENTER_AD_VOLUME_SCALE = 0.7;
+const EFFECTS_VOLUME_STORAGE_KEY = "reclaim_effects_volume";
+const DEFAULT_EFFECTS_VOLUME_SCALE = 0.92;
+
+function readStoredCenterAdVolumeScale() {
+  if (typeof window === "undefined") {
+    return DEFAULT_CENTER_AD_VOLUME_SCALE;
+  }
+  try {
+    const raw = Number(window.localStorage.getItem(CENTER_AD_VOLUME_STORAGE_KEY));
+    if (!Number.isFinite(raw)) {
+      return DEFAULT_CENTER_AD_VOLUME_SCALE;
+    }
+    return THREE.MathUtils.clamp(raw, 0, 1);
+  } catch {
+    return DEFAULT_CENTER_AD_VOLUME_SCALE;
+  }
+}
+
+function readStoredEffectsVolumeScale() {
+  if (typeof window === "undefined") {
+    return DEFAULT_EFFECTS_VOLUME_SCALE;
+  }
+  try {
+    const raw = Number(window.localStorage.getItem(EFFECTS_VOLUME_STORAGE_KEY));
+    if (!Number.isFinite(raw)) {
+      return DEFAULT_EFFECTS_VOLUME_SCALE;
+    }
+    return THREE.MathUtils.clamp(raw, 0, 1);
+  } catch {
+    return DEFAULT_EFFECTS_VOLUME_SCALE;
+  }
+}
 
 function normalizeTeamId(team) {
   return team === "alpha" || team === "bravo" ? team : null;
@@ -178,6 +217,9 @@ export class Game {
     this.textureLoader = new THREE.TextureLoader();
     this.graphics = this.loadGraphics();
     this.sound = new SoundSystem();
+    this.effectsVolumeScale = readStoredEffectsVolumeScale();
+    this.effectsVolumeBeforeMute = Math.max(0.1, this.effectsVolumeScale);
+    this.sound.setEffectsVolumeScale(this.effectsVolumeScale);
 
     this.hud = new HUD();
     this.voxelWorld = new VoxelWorld(this.scene, this.textureLoader);
@@ -297,6 +339,14 @@ export class Game {
 
     this.startButton = document.getElementById("start-button");
     this.restartButton = document.getElementById("restart-button");
+    this.optionsContinueBtn = document.getElementById("options-continue");
+    this.optionsExitBtn = document.getElementById("options-exit");
+    this.optionsBgmMuteBtn = document.getElementById("options-bgm-mute");
+    this.optionsBgmVolumeEl = document.getElementById("options-bgm-volume");
+    this.optionsBgmValueEl = document.getElementById("options-bgm-value");
+    this.optionsSfxMuteBtn = document.getElementById("options-sfx-mute");
+    this.optionsSfxVolumeEl = document.getElementById("options-sfx-volume");
+    this.optionsSfxValueEl = document.getElementById("options-sfx-value");
     this.mpStatusEl = document.getElementById("mp-status");
     this.mpCreateBtn = document.getElementById("mp-create");
     this.mpJoinBtn = document.getElementById("mp-join");
@@ -376,10 +426,17 @@ export class Game {
     this.onlineCtf = {
       mode: DEFAULT_GAME_MODE,
       revision: 0,
-      flag: {
-        home: new THREE.Vector3(),
-        at: new THREE.Vector3(),
-        carrierId: null
+      flags: {
+        alpha: {
+          home: new THREE.Vector3(),
+          at: new THREE.Vector3(),
+          carrierId: null
+        },
+        bravo: {
+          home: new THREE.Vector3(),
+          at: new THREE.Vector3(),
+          carrierId: null
+        }
       },
       score: { alpha: 0, bravo: 0 },
       captures: { alpha: 0, bravo: 0 }
@@ -393,6 +450,7 @@ export class Game {
     this.flagInteractCooldownUntil = 0;
     this.scoreHudState = { show: null, alpha: null, bravo: null };
     this.pvpImmuneHintUntil = 0;
+    this.flagShootBlockedHintUntil = 0;
     this.centerAdPanels = [];
     this.centerAdVideoEl = null;
     this.centerAdVideoTexture = null;
@@ -402,9 +460,16 @@ export class Game {
     this.centerAdSessionNonce = 0;
     this.centerAdVolume = 0;
     this.centerAdTargetVolume = 0;
+    this.centerAdDuckedUntil = 0;
+    this.centerAdVolumeScale = readStoredCenterAdVolumeScale();
+    this.centerAdVolumeBeforeMute = Math.max(0.1, this.centerAdVolumeScale);
+    this.optionsMenuOpen = false;
 
     this._initialized = false;
     this.mapId = "forest_frontline";
+    this.skyDome = null;
+    this.skyCloudSprites = [];
+    this.skyCloudTexture = null;
     this._bucketOptimizeCooldown = BUCKET_OPTIMIZE_INTERVAL;
     this.perfDebugEnabled = isPerfDebugEnabled();
     this.perfStats = {
@@ -477,7 +542,6 @@ export class Game {
       concreteMap: configureColorTexture("/assets/graphics/world/textures/concrete.svg", 1.4, 1.4),
       metalMap: configureColorTexture("/assets/graphics/world/textures/metal.svg", 1.2, 1.2),
       enemyMap: configureColorTexture("/assets/graphics/world/textures/metal.svg", 1, 1),
-      skyMap: configureColorTexture("/assets/graphics/world/sky/sky.svg", 1, 1),
       muzzleFlashMap: configureSpriteTexture("/assets/graphics/world/sprites/muzzleflash.svg"),
       sparkMap: configureSpriteTexture("/assets/graphics/world/sprites/spark.svg"),
       centerAdMap: configureSpriteTexture(CENTER_AD_IMAGE_URL)
@@ -510,35 +574,120 @@ export class Game {
     this.setupObjectives();
   }
 
-  setupSky() {
-    const skyMaterial = new THREE.MeshBasicMaterial({
-      map: this.graphics.skyMap,
-      color: 0xb7deff,
-      side: THREE.BackSide
-    });
-    const sky = new THREE.Mesh(new THREE.SphereGeometry(620, 32, 18), skyMaterial);
-    this.scene.add(sky);
+  createSkyCloudTexture() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 128;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < 6; i += 1) {
+        const cx = 34 + Math.random() * (canvas.width - 68);
+        const cy = 30 + Math.random() * (canvas.height - 44);
+        const rx = 30 + Math.random() * 44;
+        const ry = 14 + Math.random() * 20;
+        const grad = ctx.createRadialGradient(cx, cy, ry * 0.1, cx, cy, rx);
+        grad.addColorStop(0, "rgba(255, 255, 255, 0.88)");
+        grad.addColorStop(0.72, "rgba(255, 255, 255, 0.46)");
+        grad.addColorStop(1, "rgba(255, 255, 255, 0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
 
-    const cloudMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.12,
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    return texture;
+  }
+
+  setupSky() {
+    if (this.skyDome) {
+      this.removeSceneObject(this.skyDome, { dispose: true });
+      this.skyDome = null;
+    }
+
+    for (const cloud of this.skyCloudSprites) {
+      this.removeSceneObject(cloud, { dispose: true });
+    }
+    this.skyCloudSprites.length = 0;
+    this.skyCloudTexture?.dispose?.();
+    this.skyCloudTexture = this.createSkyCloudTexture();
+
+    const skyMaterial = new THREE.MeshBasicMaterial({
+      color: 0x86cbff,
+      side: THREE.BackSide,
+      fog: false,
       depthWrite: false
     });
-    for (let i = 0; i < 22; i += 1) {
-      const radius = 120 + Math.random() * 210;
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(640, 40, 28), skyMaterial);
+    sky.frustumCulled = false;
+    sky.renderOrder = -10;
+    this.skyDome = sky;
+    this.scene.add(sky);
+
+    for (let i = 0; i < 40; i += 1) {
+      const radius = 90 + Math.random() * 240;
       const theta = Math.random() * Math.PI * 2;
-      const phi = Math.random() * Math.PI * 0.16;
-      const x = radius * Math.sin(phi) * Math.cos(theta);
-      const y = radius * Math.cos(phi) + 92;
-      const z = radius * Math.sin(phi) * Math.sin(theta);
-      const cloud = new THREE.Mesh(
-        new THREE.SphereGeometry(10 + Math.random() * 14, 10, 7),
-        cloudMaterial
-      );
+      const x = this.playerPosition.x + Math.cos(theta) * radius;
+      const z = this.playerPosition.z + Math.sin(theta) * radius;
+      const y = 84 + Math.random() * 58;
+      const width = 20 + Math.random() * 40;
+      const height = width * (0.34 + Math.random() * 0.22);
+
+      const cloudMaterial = new THREE.SpriteMaterial({
+        map: this.skyCloudTexture,
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.42 + Math.random() * 0.2,
+        depthWrite: false,
+        fog: false
+      });
+      const cloud = new THREE.Sprite(cloudMaterial);
       cloud.position.set(x, y, z);
-      cloud.scale.set(1.6 + Math.random() * 2.2, 0.52 + Math.random() * 0.28, 1.2 + Math.random());
+      cloud.scale.set(width, height, 1);
+      cloud.userData = {
+        driftX: (Math.random() * 2 - 1) * 0.8,
+        driftZ: (Math.random() * 2 - 1) * 0.8
+      };
+      this.skyCloudSprites.push(cloud);
       this.scene.add(cloud);
+    }
+  }
+
+  updateSky(delta) {
+    if (this.skyDome) {
+      this.skyDome.position.copy(this.playerPosition);
+    }
+    if (!this.skyCloudSprites.length) {
+      return;
+    }
+
+    const centerX = this.playerPosition.x;
+    const centerZ = this.playerPosition.z;
+    const maxRadius = 360;
+    for (const cloud of this.skyCloudSprites) {
+      const driftX = Number(cloud.userData?.driftX) || 0;
+      const driftZ = Number(cloud.userData?.driftZ) || 0;
+      cloud.position.x += driftX * delta;
+      cloud.position.z += driftZ * delta;
+
+      const dx = cloud.position.x - centerX;
+      const dz = cloud.position.z - centerZ;
+      if (dx * dx + dz * dz <= maxRadius * maxRadius) {
+        continue;
+      }
+
+      const respawnAngle = Math.random() * Math.PI * 2;
+      const respawnRadius = 100 + Math.random() * 220;
+      cloud.position.x = centerX + Math.cos(respawnAngle) * respawnRadius;
+      cloud.position.z = centerZ + Math.sin(respawnAngle) * respawnRadius;
+      cloud.position.y = 84 + Math.random() * 58;
     }
   }
 
@@ -625,6 +774,7 @@ export class Game {
 
     const centerFlagMesh = this.createFlagMesh(0xdde6f4, 0x4bd965);
     centerFlagMesh.position.copy(this.objective.centerFlagHome);
+    centerFlagMesh.visible = false;
     this.onlineCenterFlag = centerFlagMesh;
     this.onlineCenterFlagCloth = centerFlagMesh.userData?.cloth ?? null;
     this.scene.add(centerFlagMesh);
@@ -650,9 +800,12 @@ export class Game {
   resetOnlineCtfFromArena() {
     this.onlineCtf.mode = DEFAULT_GAME_MODE;
     this.onlineCtf.revision = 0;
-    this.onlineCtf.flag.home.copy(this.objective.centerFlagHome);
-    this.onlineCtf.flag.at.copy(this.objective.centerFlagHome);
-    this.onlineCtf.flag.carrierId = null;
+    this.onlineCtf.flags.alpha.home.copy(this.objective.alphaFlagHome);
+    this.onlineCtf.flags.alpha.at.copy(this.objective.alphaFlagHome);
+    this.onlineCtf.flags.alpha.carrierId = null;
+    this.onlineCtf.flags.bravo.home.copy(this.objective.bravoFlagHome);
+    this.onlineCtf.flags.bravo.at.copy(this.objective.bravoFlagHome);
+    this.onlineCtf.flags.bravo.carrierId = null;
     this.onlineCtf.score.alpha = 0;
     this.onlineCtf.score.bravo = 0;
     this.onlineCtf.captures.alpha = 0;
@@ -693,10 +846,187 @@ export class Game {
     setText("mobile-reload", "장전");
     setText("flag-interact-btn", "깃발 탈취");
     setText("chat-toggle-btn", "채팅 열기");
+    setText("options-title", "옵션");
+    setText("options-bgm-label", "배경음 볼륨");
+    setText("options-bgm-mute", "배경음 끄기");
+    setText("options-sfx-label", "효과음 볼륨");
+    setText("options-sfx-mute", "효과음 끄기");
+    setText("options-continue", "계속하기");
+    setText("options-exit", "게임종료");
     setHtml("mp-team-alpha", '블루팀 <span id="mp-team-alpha-count" class="team-count">0</span>');
     setHtml("mp-team-bravo", '레드팀 <span id="mp-team-bravo-count" class="team-count">0</span>');
     this.mpTeamAlphaCountEl = document.getElementById("mp-team-alpha-count");
     this.mpTeamBravoCountEl = document.getElementById("mp-team-bravo-count");
+    this.optionsContinueBtn = document.getElementById("options-continue");
+    this.optionsExitBtn = document.getElementById("options-exit");
+    this.optionsBgmMuteBtn = document.getElementById("options-bgm-mute");
+    this.optionsBgmVolumeEl = document.getElementById("options-bgm-volume");
+    this.optionsBgmValueEl = document.getElementById("options-bgm-value");
+    this.optionsSfxMuteBtn = document.getElementById("options-sfx-mute");
+    this.optionsSfxVolumeEl = document.getElementById("options-sfx-volume");
+    this.optionsSfxValueEl = document.getElementById("options-sfx-value");
+    this.refreshOptionsAudioUi();
+  }
+
+  setCenterAdVolumeScale(nextValue, { persist = true } = {}) {
+    const raw = Number(nextValue);
+    const value = Number.isFinite(raw) ? THREE.MathUtils.clamp(raw, 0, 1) : this.centerAdVolumeScale;
+    this.centerAdVolumeScale = value;
+    if (value > 0.001) {
+      this.centerAdVolumeBeforeMute = value;
+    }
+    if (persist && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(CENTER_AD_VOLUME_STORAGE_KEY, value.toFixed(3));
+      } catch {}
+    }
+    this.refreshOptionsAudioUi();
+  }
+
+  setEffectsVolumeScale(nextValue, { persist = true } = {}) {
+    const raw = Number(nextValue);
+    const value = Number.isFinite(raw) ? THREE.MathUtils.clamp(raw, 0, 1) : this.effectsVolumeScale;
+    this.effectsVolumeScale = value;
+    if (value > 0.001) {
+      this.effectsVolumeBeforeMute = value;
+    }
+    this.sound.setEffectsVolumeScale(value);
+    if (persist && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(EFFECTS_VOLUME_STORAGE_KEY, value.toFixed(3));
+      } catch {}
+    }
+    this.refreshOptionsAudioUi();
+  }
+
+  refreshOptionsAudioUi() {
+    const bgmPercent = Math.round(THREE.MathUtils.clamp(this.centerAdVolumeScale, 0, 1) * 100);
+    const sfxPercent = Math.round(THREE.MathUtils.clamp(this.effectsVolumeScale, 0, 1) * 100);
+    if (this.optionsBgmVolumeEl) {
+      this.optionsBgmVolumeEl.value = String(bgmPercent);
+    }
+    if (this.optionsBgmValueEl) {
+      this.optionsBgmValueEl.textContent = `${bgmPercent}%`;
+    }
+    if (this.optionsBgmMuteBtn) {
+      this.optionsBgmMuteBtn.textContent = bgmPercent <= 0 ? "배경음 켜기" : "배경음 끄기";
+    }
+    if (this.optionsSfxVolumeEl) {
+      this.optionsSfxVolumeEl.value = String(sfxPercent);
+    }
+    if (this.optionsSfxValueEl) {
+      this.optionsSfxValueEl.textContent = `${sfxPercent}%`;
+    }
+    if (this.optionsSfxMuteBtn) {
+      this.optionsSfxMuteBtn.textContent = sfxPercent <= 0 ? "효과음 켜기" : "효과음 끄기";
+    }
+  }
+
+  toggleCenterAdMute() {
+    if (this.centerAdVolumeScale <= 0.001) {
+      this.setCenterAdVolumeScale(Math.max(0.1, this.centerAdVolumeBeforeMute));
+      return;
+    }
+    this.centerAdVolumeBeforeMute = Math.max(0.1, this.centerAdVolumeScale);
+    this.setCenterAdVolumeScale(0);
+  }
+
+  toggleEffectsMute() {
+    if (this.effectsVolumeScale <= 0.001) {
+      this.setEffectsVolumeScale(Math.max(0.1, this.effectsVolumeBeforeMute));
+      return;
+    }
+    this.effectsVolumeBeforeMute = Math.max(0.1, this.effectsVolumeScale);
+    this.setEffectsVolumeScale(0);
+  }
+
+  openOptionsMenu() {
+    if (!this.isRunning || this.isGameOver) {
+      return;
+    }
+    if (this.optionsMenuOpen) {
+      this.hud.showPauseOverlay(true);
+      this.syncCursorVisibility();
+      return;
+    }
+    this.optionsMenuOpen = true;
+    this.keys.clear();
+    this.isAiming = false;
+    this.rightMouseAiming = false;
+    this.handlePrimaryActionUp();
+    this.resetMobileStick();
+    this.mobileState.lookPointerId = null;
+    this.mobileState.aimPointerId = null;
+    this.mobileState.firePointerId = null;
+    this.chat?.close?.();
+    this.mouseLookEnabled = false;
+    this.hud.showPauseOverlay(true);
+    this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "false");
+    if (
+      this.pointerLockSupported &&
+      document.pointerLockElement === this.renderer.domElement
+    ) {
+      document.exitPointerLock();
+    }
+    this.refreshOptionsAudioUi();
+    this.syncCursorVisibility();
+  }
+
+  closeOptionsMenu({ resume = true } = {}) {
+    if (!this.optionsMenuOpen) {
+      return;
+    }
+    this.optionsMenuOpen = false;
+    this.hud.showPauseOverlay(false);
+    this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "true");
+
+    if (!this.isRunning || this.isGameOver) {
+      this.syncCursorVisibility();
+      return;
+    }
+    if (this.chat?.isInputFocused) {
+      this.syncCursorVisibility();
+      return;
+    }
+
+    if (this.mobileEnabled || this.allowUnlockedLook) {
+      this.mouseLookEnabled = true;
+      this.syncCursorVisibility();
+      return;
+    }
+
+    this.mouseLookEnabled = false;
+    this.syncCursorVisibility();
+    if (resume) {
+      this.tryPointerLock();
+    }
+  }
+
+  exitToStartMenu() {
+    this.optionsMenuOpen = false;
+    this.hud.showPauseOverlay(false);
+    this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "true");
+    this.isRunning = false;
+    this.isGameOver = false;
+    this.keys.clear();
+    this.isAiming = false;
+    this.rightMouseAiming = false;
+    this.handlePrimaryActionUp();
+    this.resetMobileStick();
+    this.chat?.close?.();
+    this.setRespawnBanner("", false);
+    this.setTabScoreboardVisible(false);
+    this.setCenterAdActive(false);
+    this.mouseLookEnabled = false;
+    this.hud.hideGameOver();
+    this.hud.showStartOverlay(true);
+    if (
+      this.pointerLockSupported &&
+      document.pointerLockElement === this.renderer.domElement
+    ) {
+      document.exitPointerLock();
+    }
+    this.syncCursorVisibility();
   }
 
   setOnlineRoundState({
@@ -792,22 +1122,33 @@ export class Game {
     if (!myTeam) {
       return "목표: 블루팀 또는 레드팀을 먼저 선택하세요";
     }
+    const enemyTeam = getEnemyTeamId(myTeam);
+    if (!enemyTeam) {
+      return "목표: 팀 정보를 확인할 수 없습니다";
+    }
 
     const myId = this.getMySocketId();
-    const flag = this.onlineCtf.flag;
+    const flags = this.onlineCtf.flags ?? {};
+    const myFlag = flags[myTeam];
+    const enemyFlag = flags[enemyTeam];
 
-    if (flag?.carrierId === myId) {
-      return "목표: 중앙 깃발을 아군 거점으로 운반하세요";
+    if (enemyFlag?.carrierId === myId) {
+      return "목표: 적 기지 깃발을 아군 거점으로 운반하세요";
     }
-    if (flag?.carrierId) {
-      const carrierTeam = this.getPlayerTeamById(flag.carrierId);
+    if (enemyFlag?.carrierId) {
+      const carrierTeam = this.getPlayerTeamById(enemyFlag.carrierId);
       if (carrierTeam && carrierTeam === myTeam) {
         return "목표: 아군 깃발 운반자를 엄호하세요";
       }
-      return "목표: 적 깃발 운반자를 저지하세요";
+    }
+    if (myFlag?.carrierId) {
+      const carrierTeam = this.getPlayerTeamById(myFlag.carrierId);
+      if (!carrierTeam || carrierTeam !== myTeam) {
+        return "목표: 아군 깃발을 탈취한 적을 저지하세요";
+      }
     }
 
-    return `목표: 중앙 깃발 탈취 (승리 조건 ${this.onlineTargetScore}점)`;
+    return `목표: 적 기지 깃발 탈취 (승리 조건 ${this.onlineTargetScore}점)`;
   }
 
   showOnlineCtfEvent(event = {}) {
@@ -819,12 +1160,14 @@ export class Game {
     const byPlayerId = String(event.byPlayerId ?? "");
     const byName = this.getPlayerNameById(byPlayerId);
     const byTeam = normalizeTeamId(event.byTeam);
+    const flagTeam = normalizeTeamId(event.flagTeam);
     const isMine = byPlayerId && byPlayerId === this.getMySocketId();
 
     if (type === "pickup") {
+      const flagLabel = formatTeamLabel(flagTeam);
       const text = isMine
-        ? "중앙 깃발 탈취 성공! 아군 거점으로 복귀하세요"
-        : `${byName}이(가) 중앙 깃발을 탈취했습니다 (${formatTeamLabel(byTeam)})`;
+        ? "적 깃발 탈취 성공! 아군 거점으로 복귀하세요"
+        : `${byName}이(가) ${flagLabel} 깃발을 탈취했습니다 (${formatTeamLabel(byTeam)})`;
       this.hud.setStatus(text, false, 1.1);
       this.chat?.addSystemMessage(text, "system");
       return;
@@ -845,7 +1188,7 @@ export class Game {
     }
 
     if (type === "start") {
-      const text = "깃발전 시작: 적 깃발을 탈취하세요";
+      const text = "깃발전 시작: 적 기지 깃발을 탈취하세요";
       this.hud.setStatus(text, false, 0.9);
       this.chat?.addSystemMessage(text, "system");
       return;
@@ -875,32 +1218,45 @@ export class Game {
       return Number.isFinite(num) ? num : fallback;
     };
 
-    const flagPayload = payload?.flag ?? payload?.flags?.alpha ?? null;
-    const target = this.onlineCtf.flag;
-    const homeFallback = this.objective.centerFlagHome;
+    const flagsPayload =
+      payload?.flags && typeof payload.flags === "object" ? payload.flags : null;
+    const legacyCenterFlagPayload =
+      !flagsPayload && payload?.flag && typeof payload.flag === "object" ? payload.flag : null;
+    const readFlagPayload = (team) => {
+      if (flagsPayload) {
+        return flagsPayload[team] ?? null;
+      }
+      return legacyCenterFlagPayload;
+    };
 
-    if (flagPayload?.home) {
-      target.home.set(
-        readCoord(flagPayload.home.x, homeFallback.x),
-        readCoord(flagPayload.home.y, homeFallback.y),
-        readCoord(flagPayload.home.z, homeFallback.z)
-      );
-    } else {
-      target.home.copy(homeFallback);
+    for (const team of ["alpha", "bravo"]) {
+      const target = this.onlineCtf.flags[team];
+      const homeFallback = team === "alpha" ? this.objective.alphaFlagHome : this.objective.bravoFlagHome;
+      const flagPayload = readFlagPayload(team);
+
+      if (flagPayload?.home) {
+        target.home.set(
+          readCoord(flagPayload.home.x, homeFallback.x),
+          readCoord(flagPayload.home.y, homeFallback.y),
+          readCoord(flagPayload.home.z, homeFallback.z)
+        );
+      } else {
+        target.home.copy(homeFallback);
+      }
+
+      if (flagPayload?.at) {
+        target.at.set(
+          readCoord(flagPayload.at.x, target.home.x),
+          readCoord(flagPayload.at.y, target.home.y),
+          readCoord(flagPayload.at.z, target.home.z)
+        );
+      } else {
+        target.at.copy(target.home);
+      }
+
+      const carrierId = String(flagPayload?.carrierId ?? "").trim();
+      target.carrierId = carrierId || null;
     }
-
-    if (flagPayload?.at) {
-      target.at.set(
-        readCoord(flagPayload.at.x, target.home.x),
-        readCoord(flagPayload.at.y, target.home.y),
-        readCoord(flagPayload.at.z, target.home.z)
-      );
-    } else {
-      target.at.copy(target.home);
-    }
-
-    const carrierId = String(flagPayload?.carrierId ?? "").trim();
-    target.carrierId = carrierId || null;
 
     const scoreAlpha = Number(payload?.score?.alpha);
     const scoreBravo = Number(payload?.score?.bravo);
@@ -949,57 +1305,69 @@ export class Game {
   }
 
   syncOnlineFlagMeshes() {
-    if (!this.onlineCenterFlag) {
-      return;
-    }
-
     if (this.activeMatchMode !== "online") {
-      this.onlineCenterFlag.visible = false;
+      if (this.onlineCenterFlag) {
+        this.onlineCenterFlag.visible = false;
+      }
       return;
     }
-
-    if (this.alphaFlag) {
-      this.alphaFlag.visible = true;
-      this.alphaFlag.position.copy(this.objective.alphaFlagHome);
+    if (this.onlineCenterFlag) {
+      this.onlineCenterFlag.visible = false;
     }
-    if (this.bravoFlag) {
-      this.bravoFlag.visible = true;
-      this.bravoFlag.position.copy(this.objective.bravoFlagHome);
+
+    if (normalizeGameMode(this.onlineCtf.mode) !== GAME_MODE.CTF) {
+      if (this.alphaFlag) {
+        this.alphaFlag.visible = false;
+      }
+      if (this.bravoFlag) {
+        this.bravoFlag.visible = false;
+      }
+      return;
     }
 
     const myId = this.getMySocketId();
-    const flag = this.onlineCtf.flag;
-    if (!flag.carrierId) {
-      this.onlineCenterFlag.visible = true;
-      this.onlineCenterFlag.position.copy(flag.at);
-      this.onlineCenterFlag.rotation.set(0, 0, 0);
-      return;
-    }
+    const syncFlagMesh = (team, mesh) => {
+      if (!mesh) {
+        return;
+      }
+      const flag = this.onlineCtf.flags?.[team];
+      if (!flag) {
+        mesh.visible = false;
+        return;
+      }
+      if (!flag.carrierId) {
+        mesh.visible = true;
+        mesh.position.copy(flag.at);
+        mesh.rotation.set(0, 0, 0);
+        return;
+      }
+      if (flag.carrierId === myId) {
+        mesh.visible = false;
+        return;
+      }
+      const carrier = this.remotePlayers.get(flag.carrierId);
+      if (!carrier) {
+        mesh.visible = false;
+        return;
+      }
 
-    if (flag.carrierId === myId) {
-      this.onlineCenterFlag.visible = false;
-      return;
-    }
+      const carrierYaw = Number.isFinite(carrier.yaw) ? carrier.yaw : carrier.group.rotation.y;
+      const backX = Math.sin(carrierYaw) * REMOTE_CARRIER_FLAG_BACK_OFFSET;
+      const backZ = Math.cos(carrierYaw) * REMOTE_CARRIER_FLAG_BACK_OFFSET;
+      const sideX = Math.cos(carrierYaw) * REMOTE_CARRIER_FLAG_SIDE_OFFSET;
+      const sideZ = -Math.sin(carrierYaw) * REMOTE_CARRIER_FLAG_SIDE_OFFSET;
 
-    const carrier = this.remotePlayers.get(flag.carrierId);
-    if (!carrier) {
-      this.onlineCenterFlag.visible = false;
-      return;
-    }
+      mesh.visible = true;
+      mesh.position.set(
+        carrier.group.position.x + backX + sideX,
+        carrier.group.position.y + REMOTE_CARRIER_FLAG_HEIGHT_OFFSET,
+        carrier.group.position.z + backZ + sideZ
+      );
+      mesh.rotation.set(-0.16, carrierYaw - Math.PI * 0.5, 0.14);
+    };
 
-    const carrierYaw = Number.isFinite(carrier.yaw) ? carrier.yaw : carrier.group.rotation.y;
-    const backX = Math.sin(carrierYaw) * REMOTE_CARRIER_FLAG_BACK_OFFSET;
-    const backZ = Math.cos(carrierYaw) * REMOTE_CARRIER_FLAG_BACK_OFFSET;
-    const sideX = Math.cos(carrierYaw) * REMOTE_CARRIER_FLAG_SIDE_OFFSET;
-    const sideZ = -Math.sin(carrierYaw) * REMOTE_CARRIER_FLAG_SIDE_OFFSET;
-
-    this.onlineCenterFlag.visible = true;
-    this.onlineCenterFlag.position.set(
-      carrier.group.position.x + backX + sideX,
-      carrier.group.position.y + REMOTE_CARRIER_FLAG_HEIGHT_OFFSET,
-      carrier.group.position.z + backZ + sideZ
-    );
-    this.onlineCenterFlag.rotation.set(-0.16, carrierYaw - Math.PI * 0.5, 0.14);
+    syncFlagMesh("alpha", this.alphaFlag);
+    syncFlagMesh("bravo", this.bravoFlag);
   }
 
   applyRoomSnapshot(payload = {}) {
@@ -1164,9 +1532,12 @@ export class Game {
     }
 
     const adAspect = 480 / 330;
-    const panelHeight = 1.45;
+    const panelScale = 4;
+    const panelHeight = 1.45 * panelScale;
     const panelWidth = panelHeight * adAspect;
-    const blockFaceOffset = 0.53;
+    const blockFaceOffset = 0.56;
+    const panelBottomOffset = 0.28;
+    const panelCenterY = position.y + panelBottomOffset + panelHeight * 0.5;
 
     const createPanel = (xOffset, yaw) => {
       const panel = new THREE.Mesh(
@@ -1178,7 +1549,7 @@ export class Game {
           metalness: 0.02
         })
       );
-      panel.position.set(position.x + xOffset, position.y + 1.02, position.z);
+      panel.position.set(position.x + xOffset, panelCenterY, position.z);
       panel.rotation.y = yaw;
       panel.castShadow = false;
       panel.receiveShadow = true;
@@ -1279,6 +1650,7 @@ export class Game {
     video.volume = 0;
     this.centerAdVolume = 0;
     this.centerAdTargetVolume = 0;
+    this.centerAdDuckedUntil = 0;
     this.applyCenterAdTextureToPanels(null);
   }
 
@@ -1322,8 +1694,9 @@ export class Game {
       this.applyCenterAdTextureToPanels(texture);
     }
 
-    const nextUrl = CENTER_AD_VIDEO_URLS[this.centerAdVideoIndex % CENTER_AD_VIDEO_URLS.length];
-    this.centerAdVideoIndex = (this.centerAdVideoIndex + 1) % CENTER_AD_VIDEO_URLS.length;
+    const playlistLength = CENTER_AD_VIDEO_URLS.length;
+    const nextIndex = this.centerAdVideoIndex % playlistLength;
+    const nextUrl = CENTER_AD_VIDEO_URLS[nextIndex];
     video.preload = "auto";
 
     try {
@@ -1336,15 +1709,27 @@ export class Game {
       return;
     }
 
+    const advancePlaylist = () => {
+      if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
+        return;
+      }
+      this.centerAdVideoIndex = (nextIndex + 1) % playlistLength;
+    };
+
     const playPromise = video.play?.();
     if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.then(() => {
+        advancePlaylist();
+      });
       playPromise.catch(() => {
         if (!this.centerAdActive || sessionNonce !== this.centerAdSessionNonce) {
           return;
         }
         this.handleCenterAdPlaybackEnded({ failed: true });
       });
+      return;
     }
+    advancePlaylist();
   }
 
   setCenterAdActive(active) {
@@ -1363,7 +1748,17 @@ export class Game {
       return;
     }
 
+    this.centerAdVideoIndex = 0;
     this.playNextCenterAdVideo(sessionNonce);
+  }
+
+  duckCenterAdAudio(durationMs = CENTER_AD_AUDIO_DUCK_MS) {
+    if (!this.centerAdActive) {
+      return;
+    }
+    const now = Date.now();
+    const extendTo = now + Math.max(0, Math.trunc(durationMs));
+    this.centerAdDuckedUntil = Math.max(this.centerAdDuckedUntil, extendTo);
   }
 
   updateCenterAdAudio(delta) {
@@ -1398,7 +1793,11 @@ export class Game {
         CENTER_AD_AUDIO_MIN_GAIN + (CENTER_AD_AUDIO_MAX_GAIN - CENTER_AD_AUDIO_MIN_GAIN) * falloff;
     }
 
-    this.centerAdTargetVolume = target;
+    if (Date.now() < this.centerAdDuckedUntil) {
+      target *= CENTER_AD_AUDIO_DUCK_MULTIPLIER;
+    }
+
+    this.centerAdTargetVolume = target * this.centerAdVolumeScale;
     const blend = THREE.MathUtils.clamp(delta * 4.5, 0, 1);
     this.centerAdVolume = THREE.MathUtils.lerp(this.centerAdVolume, this.centerAdTargetVolume, blend);
     video.volume = THREE.MathUtils.clamp(this.centerAdVolume, 0, 1);
@@ -1916,18 +2315,25 @@ export class Game {
     ) {
       return false;
     }
+    if (normalizeGameMode(this.onlineCtf.mode) !== GAME_MODE.CTF) {
+      return false;
+    }
 
     const myTeam = normalizeTeamId(this.getMyTeam());
     if (!myTeam) {
       return false;
     }
-
-    const flag = this.onlineCtf.flag;
-    if (!flag || flag.carrierId) {
+    const enemyTeam = getEnemyTeamId(myTeam);
+    if (!enemyTeam) {
       return false;
     }
 
-    return this.distanceXZ(this.playerPosition, flag.at) <= CTF_PICKUP_RADIUS;
+    const enemyFlag = this.onlineCtf.flags?.[enemyTeam];
+    if (!enemyFlag || enemyFlag.carrierId) {
+      return false;
+    }
+
+    return this.distanceXZ(this.playerPosition, enemyFlag.at) <= CTF_PICKUP_RADIUS;
   }
 
   isLocalFlagCarrier() {
@@ -1936,7 +2342,14 @@ export class Game {
       if (!myId) {
         return false;
       }
-      return String(this.onlineCtf?.flag?.carrierId ?? "") === myId;
+      const flags = this.onlineCtf?.flags ?? null;
+      if (!flags || typeof flags !== "object") {
+        return false;
+      }
+      return (
+        String(flags.alpha?.carrierId ?? "") === myId ||
+        String(flags.bravo?.carrierId ?? "") === myId
+      );
     }
     return Boolean(this.objective.playerHasEnemyFlag);
   }
@@ -1969,7 +2382,7 @@ export class Game {
       if (source === "key") {
         const text = this.onlineRoundEnded
           ? "라운드 종료: 자동 재시작 대기 중입니다."
-          : "중앙 깃발 근처에서 상호작용하세요.";
+          : "적 기지 깃발 근처에서 상호작용하세요.";
         this.hud.setStatus(text, true, 0.45);
       }
       return;
@@ -3282,6 +3695,7 @@ export class Game {
       this.isRunning &&
       !this.isGameOver &&
       !this.chat?.isInputFocused &&
+      !this.optionsMenuOpen &&
       !mobileChatOpen;
     this.mobileControlsEl.classList.toggle("is-active", visible);
 
@@ -3338,7 +3752,7 @@ export class Game {
   }
 
   handlePrimaryActionDown() {
-    if (!this.isRunning || this.isGameOver || this.chat?.isInputFocused) {
+    if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.chat?.isInputFocused) {
       return;
     }
 
@@ -3485,7 +3899,7 @@ export class Game {
       }
       event.preventDefault();
       this.sound.unlock();
-      if (!this.isRunning || this.isGameOver || this.chat?.isInputFocused) {
+      if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.chat?.isInputFocused) {
         return;
       }
       if (!this.buildSystem.isGunMode()) {
@@ -3651,8 +4065,22 @@ export class Game {
         return;
       }
 
+      if (event.code === "Escape") {
+        event.preventDefault();
+        if (!this.isRunning || this.isGameOver || this.chat?.isInputFocused) {
+          return;
+        }
+        if (this.optionsMenuOpen) {
+          this.closeOptionsMenu({ resume: true });
+        } else {
+          this.openOptionsMenu();
+        }
+        return;
+      }
+
       if (
         this.isRunning &&
+        !this.optionsMenuOpen &&
         this.chat &&
         !this.chat.isInputFocused &&
         (event.code === "KeyT" || event.code === "Enter")
@@ -3726,6 +4154,10 @@ export class Game {
       if (this.chat?.isInputFocused) {
         return;
       }
+      if (this.optionsMenuOpen) {
+        this.keys.delete(event.code);
+        return;
+      }
 
       if (controlKeys.has(event.code)) {
         event.preventDefault();
@@ -3746,22 +4178,35 @@ export class Game {
       }
 
       if (!this.pointerLockSupported) {
-        this.mouseLookEnabled = true;
-        this.hud.showPauseOverlay(false);
+        this.mouseLookEnabled = !this.optionsMenuOpen;
+        if (!this.optionsMenuOpen) {
+          this.hud.showPauseOverlay(false);
+        }
         this.syncCursorVisibility();
         return;
       }
 
       if (!this.isRunning || this.isGameOver) {
         this.mouseLookEnabled = active || this.allowUnlockedLook;
-        this.hud.showPauseOverlay(false);
+        if (!this.optionsMenuOpen) {
+          this.hud.showPauseOverlay(false);
+        }
         this.syncCursorVisibility();
         return;
       }
 
       if (this.chat?.isInputFocused) {
         this.mouseLookEnabled = false;
-        this.hud.showPauseOverlay(false);
+        if (!this.optionsMenuOpen) {
+          this.hud.showPauseOverlay(false);
+        }
+        this.syncCursorVisibility();
+        return;
+      }
+
+      if (this.optionsMenuOpen) {
+        this.mouseLookEnabled = false;
+        this.hud.showPauseOverlay(true);
         this.syncCursorVisibility();
         return;
       }
@@ -3780,26 +4225,22 @@ export class Game {
         return;
       }
 
-      this.mouseLookEnabled = false;
-      this.hud.showPauseOverlay(true);
-      this.syncCursorVisibility();
+      this.openOptionsMenu();
     });
 
     document.addEventListener("pointerlockerror", () => {
-      if (!this.isRunning || this.isGameOver) {
+      if (!this.isRunning || this.isGameOver || this.optionsMenuOpen) {
         return;
       }
-
-      this.mouseLookEnabled = false;
-      this.hud.showPauseOverlay(true);
+      this.openOptionsMenu();
       this.hud.setStatus("\uB9C8\uC6B0\uC2A4\uB97C \uB2E4\uC2DC \uD074\uB9AD\uD574 \uACE0\uC815\uD558\uC138\uC694", true, 1.1);
-      this.syncCursorVisibility();
     });
 
     document.addEventListener("mousemove", (event) => {
       if (
         !this.isRunning ||
         this.isGameOver ||
+        this.optionsMenuOpen ||
         !this.mouseLookEnabled ||
         this.chat?.isInputFocused
       ) {
@@ -3816,7 +4257,7 @@ export class Game {
     document.addEventListener(
       "wheel",
       (event) => {
-        if (this.chat?.isInputFocused || !this.isRunning || this.isGameOver) {
+        if (this.chat?.isInputFocused || !this.isRunning || this.isGameOver || this.optionsMenuOpen) {
           return;
         }
         if (this.buildSystem.handleWheel(event)) {
@@ -3845,7 +4286,7 @@ export class Game {
       }
       event.preventDefault();
 
-      if (!this.isRunning || this.isGameOver) {
+      if (!this.isRunning || this.isGameOver || this.optionsMenuOpen) {
         return;
       }
       this.sound.unlock();
@@ -3975,16 +4416,29 @@ export class Game {
       this.start({ mode: this.activeMatchMode });
     });
 
-    this.hud.pauseOverlayEl?.addEventListener("click", () => {
-      if (this.isRunning && !this.isGameOver) {
-        if (this.allowUnlockedLook) {
-          this.mouseLookEnabled = true;
-          this.hud.showPauseOverlay(false);
-          this.syncCursorVisibility();
-          return;
-        }
-        this.tryPointerLock();
-      }
+    this.optionsContinueBtn?.addEventListener("click", () => {
+      this.closeOptionsMenu({ resume: true });
+    });
+    this.optionsExitBtn?.addEventListener("click", () => {
+      this.exitToStartMenu();
+    });
+    this.optionsBgmMuteBtn?.addEventListener("click", () => {
+      this.toggleCenterAdMute();
+    });
+    this.optionsBgmVolumeEl?.addEventListener("input", (event) => {
+      const slider = event.target;
+      const percent = Number(slider?.value);
+      const scale = Number.isFinite(percent) ? percent / 100 : this.centerAdVolumeScale;
+      this.setCenterAdVolumeScale(scale, { persist: true });
+    });
+    this.optionsSfxMuteBtn?.addEventListener("click", () => {
+      this.toggleEffectsMute();
+    });
+    this.optionsSfxVolumeEl?.addEventListener("input", (event) => {
+      const slider = event.target;
+      const percent = Number(slider?.value);
+      const scale = Number.isFinite(percent) ? percent / 100 : this.effectsVolumeScale;
+      this.setEffectsVolumeScale(scale, { persist: true });
     });
   }
 
@@ -4004,7 +4458,9 @@ export class Game {
       this.mobileState.firePointerId = null;
       this.resetMobileStick();
       this.mouseLookEnabled = false;
-      this.hud.showPauseOverlay(false);
+      if (!this.optionsMenuOpen) {
+        this.hud.showPauseOverlay(false);
+      }
 
       if (
         this.pointerLockSupported &&
@@ -4013,6 +4469,13 @@ export class Game {
         document.exitPointerLock();
       }
 
+      this.syncCursorVisibility();
+      return;
+    }
+
+    if (this.optionsMenuOpen) {
+      this.mouseLookEnabled = false;
+      this.hud.showPauseOverlay(true);
       this.syncCursorVisibility();
       return;
     }
@@ -4034,6 +4497,8 @@ export class Game {
     this.setTabScoreboardVisible(false);
     this.hud.showStartOverlay(false);
     this.hud.showPauseOverlay(false);
+    this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "true");
+    this.optionsMenuOpen = false;
     this.hud.hideGameOver();
     this.isRunning = true;
     this.setCenterAdActive(true);
@@ -4048,7 +4513,7 @@ export class Game {
     }
 
     this.addChatMessage("작전 시작. 생존하면서 목표를 수행하세요.", "info");
-    this.addChatMessage("목표: 적을 제압하고 중앙 깃발을 탈취하세요.", "info");
+    this.addChatMessage("목표: 적 기지 깃발을 탈취해 아군 거점으로 복귀하세요.", "info");
     this.addChatMessage("조작: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
       this.hud.setStatus("온라인 매치 시작: AI 비활성화", false, 0.9);
@@ -4131,6 +4596,9 @@ export class Game {
     this.flagInteractBtnEl?.classList.remove("show");
     this.flagInteractBtnEl?.setAttribute("aria-hidden", "true");
     this.pvpImmuneHintUntil = 0;
+    this.flagShootBlockedHintUntil = 0;
+    this.optionsMenuOpen = false;
+    this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "true");
     this.scoreHudState.show = null;
     this.scoreHudState.alpha = null;
     this.scoreHudState.bravo = null;
@@ -4194,11 +4662,20 @@ export class Game {
     if (
       !this.isRunning ||
       this.isGameOver ||
+      this.optionsMenuOpen ||
       this.isRespawning ||
       (this.activeMatchMode === "online" && this.onlineRoundEnded) ||
       this.chat?.isInputFocused ||
       !this.buildSystem.isGunMode()
     ) {
+      return;
+    }
+    if (this.activeMatchMode === "online" && this.isLocalFlagCarrier()) {
+      const now = Date.now();
+      if (now >= this.flagShootBlockedHintUntil) {
+        this.flagShootBlockedHintUntil = now + 420;
+        this.hud.setStatus("깃발 운반 중에는 사격할 수 없습니다.", true, 0.55);
+      }
       return;
     }
 
@@ -4210,6 +4687,7 @@ export class Game {
           this.lastDryFireAt = now;
           this.hud.setStatus("탄약 없음", true, 0.55);
           this.sound.play("dry", { rateJitter: 0.08 });
+          this.duckCenterAdAudio();
         }
       }
       return;
@@ -4217,6 +4695,7 @@ export class Game {
 
     this.weaponRecoil = 1;
     this.sound.play("shot", { rateJitter: 0.035 });
+    this.duckCenterAdAudio();
     this.hud.pulseCrosshair();
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
     const blockHit = this.voxelWorld.raycast(this.raycaster, 120);
@@ -4288,7 +4767,7 @@ export class Game {
   }
 
   applyMovement(delta) {
-    if (this.activeMatchMode === "online" && this.onlineRoundEnded) {
+    if (this.optionsMenuOpen || (this.activeMatchMode === "online" && this.onlineRoundEnded)) {
       return;
     }
     const wasOnGround = this.onGround;
@@ -4561,6 +5040,7 @@ export class Game {
     this.updateFlagInteractUi();
 
     this.updateSparks(delta);
+    this.updateSky(delta);
     this.updateCenterAdAudio(delta);
     const isChatting = !!this.chat?.isInputFocused;
     const gunMode = this.buildSystem.isGunMode();
@@ -4613,9 +5093,7 @@ export class Game {
     const weapState = this.weapon.getState();
     if (gunMode && !this._wasReloading && weapState.reloading) {
       this.sound.play("reload", { gain: 0.9, rateJitter: 0.03 });
-    }
-    if (gunMode && this._wasReloading && !weapState.reloading) {
-      this.addChatMessage("장전 완료", "info");
+      this.duckCenterAdAudio(180);
     }
     this._wasReloading = gunMode ? weapState.reloading : false;
 
@@ -4726,7 +5204,12 @@ export class Game {
   }
 
   tryPointerLock() {
-    if (!this.pointerLockSupported || this.pointerLocked || this.chat?.isInputFocused) {
+    if (
+      !this.pointerLockSupported ||
+      this.pointerLocked ||
+      this.optionsMenuOpen ||
+      this.chat?.isInputFocused
+    ) {
       return;
     }
 
@@ -4736,9 +5219,8 @@ export class Game {
         if (!this.isRunning || this.isGameOver) {
           return;
         }
-        this.hud.showPauseOverlay(true);
+        this.openOptionsMenu();
         this.hud.setStatus("마우스를 다시 클릭하면 시점 고정이 활성화됩니다", true, 1);
-        this.syncCursorVisibility();
       });
     }
   }
@@ -4754,6 +5236,7 @@ export class Game {
     const hideCursor =
       this.isRunning &&
       !this.isGameOver &&
+      !this.optionsMenuOpen &&
       (this.mouseLookEnabled || this.rightMouseAiming || this.isAiming) &&
       !this.chat?.isInputFocused;
     const cursor = hideCursor ? "none" : "";

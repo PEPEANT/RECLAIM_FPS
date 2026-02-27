@@ -68,10 +68,9 @@ const DEFAULT_TEAM_HOME = Object.freeze({
   alpha: Object.freeze({ x: -35, y: 0, z: 0 }),
   bravo: Object.freeze({ x: 35, y: 0, z: 0 })
 });
-const DEFAULT_CENTER_FLAG_HOME = Object.freeze({
-  x: 0,
-  y: 0,
-  z: 0
+const DEFAULT_TEAM_FLAG_HOME = Object.freeze({
+  alpha: Object.freeze({ x: -44, y: 0, z: 0 }),
+  bravo: Object.freeze({ x: 44, y: 0, z: 0 })
 });
 
 const rooms = new Map();
@@ -85,11 +84,37 @@ function clonePoint(point = { x: 0, y: 0, z: 0 }) {
   };
 }
 
-function createDefaultCenterFlag() {
+function createDefaultFlag(homePoint) {
+  const home = clonePoint(homePoint);
   return {
-    home: clonePoint(DEFAULT_CENTER_FLAG_HOME),
-    at: clonePoint(DEFAULT_CENTER_FLAG_HOME),
+    home,
+    at: clonePoint(home),
     carrierId: null
+  };
+}
+
+function createDefaultTeamFlags() {
+  return {
+    alpha: createDefaultFlag(DEFAULT_TEAM_FLAG_HOME.alpha),
+    bravo: createDefaultFlag(DEFAULT_TEAM_FLAG_HOME.bravo)
+  };
+}
+
+function cloneFlagState(flag = null, fallbackHome = { x: 0, y: 0, z: 0 }) {
+  const source = flag && typeof flag === "object" ? flag : {};
+  const home = clonePoint(source.home ?? fallbackHome);
+  return {
+    home,
+    at: clonePoint(source.at ?? home),
+    carrierId: source.carrierId ? String(source.carrierId) : null
+  };
+}
+
+function cloneTeamFlagsState(flags = null) {
+  const source = flags && typeof flags === "object" ? flags : {};
+  return {
+    alpha: cloneFlagState(source.alpha, DEFAULT_TEAM_FLAG_HOME.alpha),
+    bravo: cloneFlagState(source.bravo, DEFAULT_TEAM_FLAG_HOME.bravo)
   };
 }
 
@@ -166,7 +191,7 @@ function createRoomState(players = new Map()) {
     players,
     blocks: new Map(),
     mode: DEFAULT_GAME_MODE,
-    flag: createDefaultCenterFlag(),
+    flags: createDefaultTeamFlags(),
     score: { alpha: 0, bravo: 0 },
     captures: { alpha: 0, bravo: 0 },
     round: {
@@ -215,16 +240,10 @@ function getRoomState(room) {
 
   room.state.mode = normalizeGameMode(room.state.mode);
 
-  if (!room.state.flag || typeof room.state.flag !== "object") {
-    room.state.flag = createDefaultCenterFlag();
+  if (!room.state.flags || typeof room.state.flags !== "object") {
+    room.state.flags = createDefaultTeamFlags();
   } else {
-    const home = room.state.flag.home && typeof room.state.flag.home === "object"
-      ? room.state.flag.home
-      : DEFAULT_CENTER_FLAG_HOME;
-    const at = room.state.flag.at && typeof room.state.flag.at === "object" ? room.state.flag.at : home;
-    room.state.flag.home = clonePoint(home);
-    room.state.flag.at = clonePoint(at);
-    room.state.flag.carrierId = room.state.flag.carrierId ? String(room.state.flag.carrierId) : null;
+    room.state.flags = cloneTeamFlagsState(room.state.flags);
   }
 
   if (!room.state.score || typeof room.state.score !== "object") {
@@ -351,7 +370,7 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null }
   const state = getRoomState(room);
   clearRoundRestartTimer(state);
   state.mode = DEFAULT_GAME_MODE;
-  state.flag = createDefaultCenterFlag();
+  state.flags = createDefaultTeamFlags();
   state.score.alpha = 0;
   state.score.bravo = 0;
   state.captures.alpha = 0;
@@ -377,8 +396,7 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null }
   io.to(room.code).emit("room:started", { code: room.code, startedAt });
   emitCtfUpdate(room, {
     type: "start",
-    byPlayerId,
-    flagTeam: "center"
+    byPlayerId
   });
   return state;
 }
@@ -428,44 +446,18 @@ function endRoundAndScheduleRestart(room, { winnerTeam, byPlayerId = null } = {}
   return true;
 }
 
-function cloneCenterFlagState(flag = null) {
-  const source = flag && typeof flag === "object" ? flag : {};
-  const home = clonePoint(source.home ?? DEFAULT_CENTER_FLAG_HOME);
-  return {
-    home,
-    at: clonePoint(source.at ?? home),
-    carrierId: source.carrierId ? String(source.carrierId) : null
-  };
-}
-
-function toLegacyTeamFlagsFromCenter(flag) {
-  const snapshot = cloneCenterFlagState(flag);
-  return {
-    alpha: {
-      home: clonePoint(snapshot.home),
-      at: clonePoint(snapshot.at),
-      carrierId: snapshot.carrierId
-    },
-    bravo: {
-      home: clonePoint(snapshot.home),
-      at: clonePoint(snapshot.at),
-      carrierId: snapshot.carrierId
-    }
-  };
-}
-
 function serializeRoomState(room) {
   const state = getRoomState(room);
-  const centerFlag = cloneCenterFlagState(state.flag);
+  const teamFlags = cloneTeamFlagsState(state.flags);
   return {
     mode: normalizeGameMode(state.mode),
     revision: state.revision,
     updatedAt: state.updatedAt,
     targetScore: CTF_WIN_SCORE,
     blockCount: state.blocks.size,
-    flag: centerFlag,
-    // Legacy compatibility for older clients/scripts.
-    flags: toLegacyTeamFlagsFromCenter(centerFlag),
+    // Legacy compatibility for older clients/scripts expecting single `flag`.
+    flag: cloneFlagState(teamFlags.bravo, DEFAULT_TEAM_FLAG_HOME.bravo),
+    flags: teamFlags,
     score: {
       alpha: Number(state.score.alpha ?? 0),
       bravo: Number(state.score.bravo ?? 0)
@@ -485,19 +477,27 @@ function serializeRoomState(room) {
 function resetFlagForPlayer(room, playerId) {
   const id = String(playerId ?? "").trim();
   if (!id) {
-    return false;
+    return null;
   }
 
   const state = getRoomState(room);
-  const flag = state.flag;
-  if (!flag || flag.carrierId !== id) {
-    return false;
+  const flags = state.flags;
+  if (!flags || typeof flags !== "object") {
+    return null;
   }
 
-  flag.carrierId = null;
-  flag.at = clonePoint(flag.home ?? DEFAULT_CENTER_FLAG_HOME);
-  touchRoomState(room);
-  return true;
+  for (const team of ["alpha", "bravo"]) {
+    const flag = flags[team];
+    if (!flag || flag.carrierId !== id) {
+      continue;
+    }
+    flag.carrierId = null;
+    flag.at = clonePoint(flag.home ?? DEFAULT_TEAM_FLAG_HOME[team]);
+    touchRoomState(room);
+    return team;
+  }
+
+  return null;
 }
 
 function blockStateKey(x, y, z) {
@@ -567,10 +567,18 @@ function handleCtfPlayerSync(room, player) {
   if (!team) {
     return null;
   }
+  const enemyTeam = getEnemyTeam(team);
+  if (!enemyTeam) {
+    return null;
+  }
 
   const teamHome = DEFAULT_TEAM_HOME[team] ?? { x: 0, y: 0, z: 0 };
-  const centerFlag = state.flag;
-  if (!centerFlag) {
+  const teamFlags = state.flags;
+  if (!teamFlags || typeof teamFlags !== "object") {
+    return null;
+  }
+  const enemyFlag = teamFlags[enemyTeam];
+  if (!enemyFlag) {
     return null;
   }
 
@@ -578,20 +586,20 @@ function handleCtfPlayerSync(room, player) {
   let changed = false;
   let event = null;
 
-  if (centerFlag.carrierId === player.id) {
-    centerFlag.at = {
-      x: Number(playerPos.x ?? centerFlag.at?.x ?? centerFlag.home?.x ?? DEFAULT_CENTER_FLAG_HOME.x),
-      y: Number(centerFlag.home?.y ?? DEFAULT_CENTER_FLAG_HOME.y),
-      z: Number(playerPos.z ?? centerFlag.at?.z ?? centerFlag.home?.z ?? DEFAULT_CENTER_FLAG_HOME.z)
+  if (enemyFlag.carrierId === player.id) {
+    enemyFlag.at = {
+      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home?.x ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].x),
+      y: Number(enemyFlag.home?.y ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].y),
+      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home?.z ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].z)
     };
     changed = true;
   }
 
-  if (centerFlag.carrierId === player.id) {
+  if (enemyFlag.carrierId === player.id) {
     const nearHome = distanceXZ(playerPos, teamHome) <= CTF_CAPTURE_RADIUS;
     if (nearHome) {
-      centerFlag.carrierId = null;
-      centerFlag.at = clonePoint(centerFlag.home ?? DEFAULT_CENTER_FLAG_HOME);
+      enemyFlag.carrierId = null;
+      enemyFlag.at = clonePoint(enemyFlag.home ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam]);
       state.captures[team] = (Number(state.captures[team]) || 0) + 1;
       state.score[team] = (Number(state.score[team]) || 0) + 1;
       player.captures = (Number(player.captures) || 0) + 1;
@@ -600,7 +608,7 @@ function handleCtfPlayerSync(room, player) {
         type: "capture",
         byPlayerId: player.id,
         byTeam: team,
-        flagTeam: "center",
+        flagTeam: enemyTeam,
         captures: Number(state.captures[team]),
         teamScore: Number(state.score[team])
       };
@@ -617,6 +625,30 @@ function handleCtfPlayerSync(room, player) {
 
 function normalizeTeam(team) {
   return team === "alpha" || team === "bravo" ? team : null;
+}
+
+function getEnemyTeam(team) {
+  if (team === "alpha") {
+    return "bravo";
+  }
+  if (team === "bravo") {
+    return "alpha";
+  }
+  return null;
+}
+
+function findCarriedFlagTeam(flags, playerId) {
+  const id = String(playerId ?? "").trim();
+  if (!id || !flags || typeof flags !== "object") {
+    return null;
+  }
+  for (const team of ["alpha", "bravo"]) {
+    const carrierId = String(flags[team]?.carrierId ?? "").trim();
+    if (carrierId && carrierId === id) {
+      return team;
+    }
+  }
+  return null;
 }
 
 function countPlayersOnTeam(players, team) {
@@ -900,7 +932,7 @@ function pruneRoomPlayers(room) {
   const state = getRoomState(room);
   let changed = false;
   const removedIds = [];
-  let ctfChanged = false;
+  let ctfChangedTeam = null;
 
   for (const socketId of state.players.keys()) {
     if (!io.sockets.sockets.has(socketId)) {
@@ -914,9 +946,9 @@ function pruneRoomPlayers(room) {
 
   if (changed) {
     for (const socketId of removedIds) {
-      const reset = resetFlagForPlayer(room, socketId);
-      if (reset) {
-        ctfChanged = true;
+      const resetTeam = resetFlagForPlayer(room, socketId);
+      if (resetTeam) {
+        ctfChangedTeam = resetTeam;
       }
     }
     touchRoomState(room);
@@ -927,11 +959,11 @@ function pruneRoomPlayers(room) {
       state.round.winnerTeam = null;
       state.round.restartAt = 0;
     }
-    if (ctfChanged) {
+    if (ctfChangedTeam) {
       emitCtfUpdate(room, {
         type: "reset",
         reason: "disconnect",
-        flagTeam: "center"
+        flagTeam: ctfChangedTeam
       });
     }
   }
@@ -964,16 +996,16 @@ function leaveCurrentRoom(socket) {
   clearPlayerRespawnTimer(leavingPlayer);
   state.players.delete(socket.id);
   room.players = state.players;
-  const reset = resetFlagForPlayer(room, socket.id);
+  const resetTeam = resetFlagForPlayer(room, socket.id);
   pruneRoomPlayers(room);
   updateHost(room);
   touchRoomState(room);
-  if (reset) {
+  if (resetTeam) {
     emitCtfUpdate(room, {
       type: "reset",
       reason: "leave",
       byPlayerId: socket.id,
-      flagTeam: "center"
+      flagTeam: resetTeam
     });
   }
 
@@ -1180,30 +1212,36 @@ io.on("connection", (socket) => {
     }
 
     const playerPos = player.state;
-    const flag = state.flag;
-    if (!playerPos || !flag) {
+    const flags = state.flags;
+    if (!playerPos || !flags || typeof flags !== "object") {
       ack(ackFn, { ok: false, error: "깃발 상태를 확인할 수 없습니다" });
       return;
     }
+    const enemyTeam = getEnemyTeam(team);
+    const enemyFlag = enemyTeam ? flags[enemyTeam] : null;
+    if (!enemyTeam || !enemyFlag) {
+      ack(ackFn, { ok: false, error: "적 팀 깃발 상태를 확인할 수 없습니다" });
+      return;
+    }
 
-    if (flag.carrierId) {
-      const carrierId = String(flag.carrierId);
+    if (enemyFlag.carrierId) {
+      const carrierId = String(enemyFlag.carrierId);
       const carrier = state.players.get(carrierId);
       const carrierHp = Number.isFinite(Number(carrier?.hp)) ? Number(carrier.hp) : 100;
       if (!carrier || carrierHp <= 0) {
-        flag.carrierId = null;
-        flag.at = clonePoint(flag.home ?? DEFAULT_CENTER_FLAG_HOME);
+        enemyFlag.carrierId = null;
+        enemyFlag.at = clonePoint(enemyFlag.home ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam]);
         touchRoomState(room);
         emitCtfUpdate(room, {
           type: "reset",
           reason: "invalid_carrier",
-          flagTeam: "center"
+          flagTeam: enemyTeam
         });
       }
     }
 
-    if (flag.carrierId) {
-      if (String(flag.carrierId) === String(player.id)) {
+    if (enemyFlag.carrierId) {
+      if (String(enemyFlag.carrierId) === String(player.id)) {
         ack(ackFn, { ok: true, alreadyCarrying: true });
       } else {
         ack(ackFn, { ok: false, error: "이미 다른 플레이어가 깃발을 운반 중입니다" });
@@ -1211,16 +1249,22 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (distanceXZ(playerPos, flag.at) > CTF_PICKUP_RADIUS) {
-      ack(ackFn, { ok: false, error: "중앙 깃발 근처에서 상호작용해 주세요" });
+    const carriedTeam = findCarriedFlagTeam(flags, player.id);
+    if (carriedTeam) {
+      ack(ackFn, { ok: true, alreadyCarrying: true });
       return;
     }
 
-    flag.carrierId = player.id;
-    flag.at = {
-      x: Number(playerPos.x ?? flag.at?.x ?? flag.home?.x ?? DEFAULT_CENTER_FLAG_HOME.x),
-      y: Number(flag.home?.y ?? DEFAULT_CENTER_FLAG_HOME.y),
-      z: Number(playerPos.z ?? flag.at?.z ?? flag.home?.z ?? DEFAULT_CENTER_FLAG_HOME.z)
+    if (distanceXZ(playerPos, enemyFlag.at) > CTF_PICKUP_RADIUS) {
+      ack(ackFn, { ok: false, error: "적 기지 깃발 근처에서 상호작용해 주세요" });
+      return;
+    }
+
+    enemyFlag.carrierId = player.id;
+    enemyFlag.at = {
+      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home?.x ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].x),
+      y: Number(enemyFlag.home?.y ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].y),
+      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home?.z ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].z)
     };
     touchRoomState(room);
 
@@ -1228,7 +1272,7 @@ io.on("connection", (socket) => {
       type: "pickup",
       byPlayerId: player.id,
       byTeam: team,
-      flagTeam: "center"
+      flagTeam: enemyTeam
     });
     emitRoomUpdate(room);
     ack(ackFn, { ok: true });
@@ -1341,6 +1385,9 @@ io.on("connection", (socket) => {
     if (!shooter) {
       return;
     }
+    if (findCarriedFlagTeam(state.flags, shooter.id)) {
+      return;
+    }
 
     const sanitized = sanitizeShootPayload(payload);
     if (!sanitized) {
@@ -1394,13 +1441,13 @@ io.on("connection", (socket) => {
       target.deaths = (Number(target.deaths) || 0) + 1;
       respawnAt = schedulePlayerRespawn(room, target);
 
-      const reset = resetFlagForPlayer(room, target.id);
-      if (reset) {
+      const resetTeam = resetFlagForPlayer(room, target.id);
+      if (resetTeam) {
         ctfEvent = {
           type: "reset",
           reason: "carrier_eliminated",
           byPlayerId: target.id,
-          flagTeam: "center"
+          flagTeam: resetTeam
         };
       }
     } else {
@@ -1479,13 +1526,13 @@ io.on("connection", (socket) => {
       player.deaths = (Number(player.deaths) || 0) + 1;
       respawnAt = schedulePlayerRespawn(room, player);
 
-      const reset = resetFlagForPlayer(room, player.id);
-      if (reset) {
+      const resetTeam = resetFlagForPlayer(room, player.id);
+      if (resetTeam) {
         ctfEvent = {
           type: "reset",
           reason: "carrier_eliminated",
           byPlayerId: player.id,
-          flagTeam: "center"
+          flagTeam: resetTeam
         };
       }
     } else {

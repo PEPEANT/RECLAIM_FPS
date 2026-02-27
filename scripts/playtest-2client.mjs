@@ -312,11 +312,20 @@ async function scenarioCombatAndCtfInteraction(url) {
     assert(bBack?.ok === true, "적 팀 복귀 실패");
 
     for (let i = 0; i < 3; i += 1) {
-      a.emit("player:sync", { x: 0, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+      a.emit("player:sync", { x: 44, y: 1.75, z: 0, yaw: 0, pitch: 0 });
       await sleep(80);
       const pickupAck = await emitAck(a, "ctf:interact");
       assert(pickupAck?.ok === true, `ctf:interact 실패 (#${i + 1})`);
       await waitFor(() => pickupCount >= i + 1, 4500);
+      if (i === 0) {
+        sawPvpDamage = false;
+        for (let shot = 0; shot < 4; shot += 1) {
+          a.emit("pvp:shoot", { targetId: b.id });
+          await sleep(120);
+        }
+        await sleep(320);
+        assert(sawPvpDamage === false, "깃발 운반 중에도 사격 피해가 적용됨");
+      }
       a.emit("player:sync", { x: -35, y: 1.75, z: 0, yaw: 0, pitch: 0 });
       await waitFor(() => captureCount >= i + 1, 4500);
       await sleep(80);

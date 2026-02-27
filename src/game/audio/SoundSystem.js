@@ -44,6 +44,7 @@ export class SoundSystem {
     this.enabled = typeof Audio !== "undefined";
     this.unlocked = false;
     this.clips = new Map();
+    this.effectsVolumeScale = 1;
 
     if (!this.enabled) {
       return;
@@ -96,6 +97,27 @@ export class SoundSystem {
     }
   }
 
+  setEffectsVolumeScale(nextValue) {
+    const raw = Number(nextValue);
+    const value = Number.isFinite(raw) ? clamp(raw, 0, 1) : this.effectsVolumeScale;
+    const prev = Math.max(0.0001, this.effectsVolumeScale);
+    this.effectsVolumeScale = value;
+
+    const ratio = value / prev;
+    for (const clip of this.clips.values()) {
+      for (const audio of clip.pool) {
+        if (!audio || audio.paused) {
+          continue;
+        }
+        audio.volume = clamp(audio.volume * ratio, 0, 1);
+      }
+    }
+  }
+
+  getEffectsVolumeScale() {
+    return this.effectsVolumeScale;
+  }
+
   play(name, options = {}) {
     if (!this.enabled) {
       return;
@@ -114,7 +136,7 @@ export class SoundSystem {
     const rate = 1 + (Math.random() * 2 - 1) * rateJitter;
 
     safeResetAudio(audio);
-    audio.volume = clamp(clip.baseVolume * gain, 0, 1);
+    audio.volume = clamp(clip.baseVolume * gain * this.effectsVolumeScale, 0, 1);
     audio.playbackRate = clamp(rate, 0.5, 2);
     safePlayAudio(audio);
   }

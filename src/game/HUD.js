@@ -105,6 +105,9 @@ export class HUD {
 
   showPauseOverlay(visible) {
     toggleClass(this.pauseOverlayEl, "show", visible);
+    if (this.pauseOverlayEl) {
+      this.pauseOverlayEl.setAttribute("aria-hidden", visible ? "false" : "true");
+    }
   }
 
   showGameOver(score) {

@@ -1784,6 +1784,88 @@ kbd {
   backdrop-filter: blur(4px);
 }
 
+#pause-overlay {
+  align-items: center;
+  justify-items: center;
+}
+
+.options-panel {
+  width: min(460px, calc(100vw - 28px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+  border-radius: 14px;
+  border: 1px solid rgba(160, 214, 255, 0.2);
+  background: rgba(5, 14, 24, 0.92);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 18px 42px rgba(0, 0, 0, 0.46);
+  padding: 18px;
+}
+
+.options-panel h2 {
+  margin: 0;
+}
+
+.options-subtitle {
+  margin: 0;
+  font-size: 0.84rem;
+  color: rgba(225, 242, 255, 0.82);
+  line-height: 1.45;
+}
+
+.options-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(160, 214, 255, 0.14);
+  background: rgba(7, 20, 34, 0.76);
+  padding: 10px;
+}
+
+.options-volume-label {
+  font-size: 0.76rem;
+  letter-spacing: 0.03em;
+  color: rgba(218, 240, 255, 0.84);
+}
+
+#options-bgm-volume,
+#options-sfx-volume {
+  width: 100%;
+}
+
+.options-volume-value {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: rgba(186, 223, 255, 0.92);
+}
+
+.options-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.options-actions button {
+  flex: 1;
+}
+
+#pause-overlay .options-secondary-btn {
+  border: 1px solid rgba(158, 226, 205, 0.34);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(201, 255, 230, 0.92);
+  background: rgba(22, 72, 54, 0.56);
+}
+
+#pause-overlay .options-danger-btn {
+  background: linear-gradient(140deg, #ff9a9a, #ffd7d7) !important;
+}
+
 .overlay h2 {
   margin: 0;
   letter-spacing: 0.1em;
@@ -1817,6 +1899,24 @@ kbd {
 }
 
 @media (max-width: 760px) {
+  #pause-overlay {
+    align-items: stretch;
+    justify-items: stretch;
+    padding: 0;
+  }
+
+  .options-panel {
+    width: 100vw;
+    min-height: 100dvh;
+    border-radius: 0;
+    border: 0;
+    padding:
+      max(20px, env(safe-area-inset-top, 0px))
+      max(14px, env(safe-area-inset-right, 0px))
+      max(16px, env(safe-area-inset-bottom, 0px))
+      max(14px, env(safe-area-inset-left, 0px));
+  }
+
   #ctf-scoreboard {
     top: 10px;
     gap: 8px;
