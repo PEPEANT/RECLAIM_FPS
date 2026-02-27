@@ -1813,17 +1813,23 @@ export class Game {
       const sameClip =
         this.centerAdPlayingIndex === index &&
         video &&
-        !video.paused &&
-        video.readyState >= 1 &&
         Number.isFinite(video.currentTime);
       if (sameClip) {
-        const drift = Math.abs(video.currentTime - targetTime);
-        if (drift > CENTER_AD_SYNC_MAX_DRIFT_SEC) {
-          const duration = Number(video.duration);
-          if (Number.isFinite(duration) && duration > 0.1) {
-            video.currentTime = THREE.MathUtils.clamp(targetTime, 0, Math.max(0, duration - 0.06));
-          } else {
-            video.currentTime = Math.max(0, targetTime);
+        if (video.readyState >= 1) {
+          const drift = Math.abs(video.currentTime - targetTime);
+          if (drift > CENTER_AD_SYNC_MAX_DRIFT_SEC) {
+            const duration = Number(video.duration);
+            if (Number.isFinite(duration) && duration > 0.1) {
+              video.currentTime = THREE.MathUtils.clamp(targetTime, 0, Math.max(0, duration - 0.06));
+            } else {
+              video.currentTime = Math.max(0, targetTime);
+            }
+          }
+        }
+        if (video.paused && video.readyState >= 2) {
+          const resumePromise = video.play?.();
+          if (resumePromise && typeof resumePromise.catch === "function") {
+            resumePromise.catch(() => {});
           }
         }
         this.centerAdPhase = "play";
