@@ -903,6 +903,19 @@ function normalizeTeam(team) {
   return team === "alpha" || team === "bravo" ? team : null;
 }
 
+function normalizeLobbyPortalId(rawPortalId) {
+  const value = String(rawPortalId ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "alpha" || value === "bravo" || value === "deploy") {
+    return value;
+  }
+  if (value === "start") {
+    return "deploy";
+  }
+  return null;
+}
+
 function getEnemyTeam(team) {
   if (team === "alpha") {
     return "bravo";
@@ -1081,6 +1094,30 @@ function emitCtfUpdate(room, event = null) {
     return;
   }
   io.to(room.code).emit("ctf:update", serializeCtfState(room, event));
+}
+
+function emitLobbyPortalEntered(
+  room,
+  { player = null, portalId = "", action = "", team = null, enteredAt = Date.now() } = {}
+) {
+  if (!room) {
+    return;
+  }
+
+  const normalizedPortalId = normalizeLobbyPortalId(portalId);
+  if (!normalizedPortalId) {
+    return;
+  }
+
+  io.to(room.code).emit("portal:entered", {
+    roomCode: room.code,
+    portalId: normalizedPortalId,
+    action: String(action || normalizedPortalId),
+    playerId: String(player?.id ?? ""),
+    playerName: String(player?.name ?? ""),
+    team: normalizeTeam(team ?? player?.team),
+    enteredAt: Math.max(0, Math.trunc(Number(enteredAt) || Date.now()))
+  });
 }
 
 function createPersistentRoom() {
@@ -1988,6 +2025,99 @@ io.on("connection", (socket) => {
       killed,
       hp: killed ? 0 : player.hp,
       respawnAt
+    });
+  });
+
+  socket.on("portal:enter", (payload = {}, ackFn) => {
+    const portalId = normalizeLobbyPortalId(payload.portalId ?? payload.id);
+    if (!portalId) {
+      ack(ackFn, { ok: false, error: "잘못된 포탈입니다" });
+      return;
+    }
+
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
+      return;
+    }
+
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
+    if (!player) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
+      return;
+    }
+
+    const enteredAt = Date.now();
+    if (portalId === "alpha" || portalId === "bravo") {
+      const changed = normalizeTeam(player.team) !== portalId;
+      player.team = portalId;
+      touchRoomState(room);
+      emitRoomUpdate(room);
+      emitLobbyPortalEntered(room, {
+        player,
+        portalId,
+        action: "team",
+        team: portalId,
+        enteredAt
+      });
+      ack(ackFn, {
+        ok: true,
+        portalId,
+        action: "team",
+        team: portalId,
+        changed,
+        enteredAt
+      });
+      return;
+    }
+
+    if (state.round?.restartTimer) {
+      ack(ackFn, { ok: false, error: "라운드 재시작 대기 중입니다" });
+      return;
+    }
+
+    const team = normalizeTeam(player.team);
+    if (!team) {
+      ack(ackFn, { ok: false, error: "먼저 팀을 선택하세요" });
+      return;
+    }
+
+    const isHost = !room.hostId || room.hostId === socket.id;
+    emitLobbyPortalEntered(room, {
+      player,
+      portalId: "deploy",
+      action: isHost ? "start" : "deploy",
+      team,
+      enteredAt
+    });
+
+    if (!isHost) {
+      ack(ackFn, {
+        ok: true,
+        portalId: "deploy",
+        action: "deploy",
+        team,
+        localStart: true,
+        startedAt: Number(state.round?.startedAt ?? 0),
+        enteredAt
+      });
+      return;
+    }
+
+    const startedAt = Date.now();
+    resetRoomRoundState(room, {
+      startedAt,
+      byPlayerId: socket.id
+    });
+    ack(ackFn, {
+      ok: true,
+      portalId: "deploy",
+      action: "start",
+      team,
+      startedAt,
+      enteredAt
     });
   });
 

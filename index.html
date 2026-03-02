@@ -74,6 +74,7 @@
     <div id="crosshair" aria-hidden="true"></div>
     <div id="hitmarker" aria-hidden="true"></div>
     <div id="damage-overlay" aria-hidden="true"></div>
+    <div id="portal-transition" aria-hidden="true"></div>
     <div id="respawn-banner" aria-hidden="true"></div>
 
     <div id="build-hud" aria-hidden="true">
@@ -209,22 +210,29 @@
             <div class="mp-lobby-head">
               <div class="mp-room-meta">
                 <div id="mp-room-title" class="mp-lobby-title">GLOBAL</div>
-                <div id="mp-room-subtitle" class="mp-room-subtitle">자동 매칭</div>
+                <div id="mp-room-subtitle" class="mp-room-subtitle">3D 포탈 로비</div>
               </div>
             </div>
             <div id="mp-player-list" class="mp-player-list">
               <div class="mp-empty">플레이어를 기다리는 중...</div>
             </div>
-            <div class="mp-team-row">
-              <button id="mp-team-alpha" class="mp-team-btn alpha" type="button">
-                블루팀 <span id="mp-team-alpha-count" class="team-count">0</span>
-              </button>
-              <button id="mp-team-bravo" class="mp-team-btn bravo" type="button">
-                레드팀 <span id="mp-team-bravo-count" class="team-count">0</span>
-              </button>
+            <div class="mp-portal-guide">
+              <div class="mp-portal-guide-row">
+                <span class="portal-dot alpha" aria-hidden="true"></span>
+                <span>BLUE 포탈: 블루팀 선택</span>
+              </div>
+              <div class="mp-portal-guide-row">
+                <span class="portal-dot bravo" aria-hidden="true"></span>
+                <span>RED 포탈: 레드팀 선택</span>
+              </div>
+              <div class="mp-portal-guide-row">
+                <span class="portal-dot deploy" aria-hidden="true"></span>
+                <span>DEPLOY 포탈: 경기 시작/참가</span>
+              </div>
+              <div id="mp-portal-hint" class="mp-portal-hint">먼저 블루/레드 포탈로 팀을 선택하세요.</div>
             </div>
-            <button id="mp-start" class="btn-deploy" type="button" disabled>온라인 시작</button>
           </div>
+          <button id="mp-enter-lobby" class="btn-deploy mp-enter-lobby" type="button">3D 로비 입장</button>
         </div>
 
         <div id="single-panel" class="tab-panel hidden" role="tabpanel">

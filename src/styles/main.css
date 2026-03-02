@@ -759,6 +759,73 @@ canvas {
   opacity: 1;
 }
 
+#portal-transition {
+  --portal-r: 111;
+  --portal-g: 202;
+  --portal-b: 255;
+  position: fixed;
+  inset: 0;
+  opacity: 0;
+  transform: scale(0.82);
+  transform-origin: center;
+  pointer-events: none;
+  z-index: 24;
+  background:
+    radial-gradient(
+      circle at 50% 50%,
+      rgba(var(--portal-r), var(--portal-g), var(--portal-b), 0.42) 0%,
+      rgba(var(--portal-r), var(--portal-g), var(--portal-b), 0.22) 28%,
+      rgba(8, 16, 28, 0) 64%
+    ),
+    radial-gradient(
+      circle at 50% 50%,
+      rgba(255, 255, 255, 0.18) 0%,
+      rgba(255, 255, 255, 0.04) 20%,
+      rgba(255, 255, 255, 0) 45%
+    );
+}
+
+#portal-transition.show {
+  animation: portal-transition-flash 520ms cubic-bezier(0.18, 0.75, 0.2, 1);
+}
+
+#portal-transition.is-alpha {
+  --portal-r: 104;
+  --portal-g: 201;
+  --portal-b: 255;
+}
+
+#portal-transition.is-bravo {
+  --portal-r: 255;
+  --portal-g: 125;
+  --portal-b: 103;
+}
+
+#portal-transition.is-deploy {
+  --portal-r: 108;
+  --portal-g: 245;
+  --portal-b: 198;
+}
+
+@keyframes portal-transition-flash {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  18% {
+    opacity: 0.88;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.44;
+    transform: scale(1.14);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.22);
+  }
+}
+
 #respawn-banner {
   position: fixed;
   left: 50%;
@@ -1876,6 +1943,62 @@ kbd {
 
 #mp-lobby #mp-start {
   width: 100%;
+}
+
+.mp-enter-lobby {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.mp-portal-guide {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 221, 232, 0.14);
+  background: rgba(5, 16, 27, 0.64);
+}
+
+.mp-portal-guide-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.76rem;
+  color: rgba(210, 235, 255, 0.9);
+  letter-spacing: 0.03em;
+}
+
+.portal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 8px currentColor;
+  flex-shrink: 0;
+}
+
+.portal-dot.alpha {
+  color: #6cb3ff;
+  background: #3f8fff;
+}
+
+.portal-dot.bravo {
+  color: #ff8d8d;
+  background: #ff6565;
+}
+
+.portal-dot.deploy {
+  color: #82f7d0;
+  background: #46e7ad;
+}
+
+.mp-portal-hint {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(148, 221, 232, 0.12);
+  font-size: 0.72rem;
+  color: rgba(166, 247, 218, 0.95);
+  letter-spacing: 0.03em;
 }
 
 .overlay-pause,

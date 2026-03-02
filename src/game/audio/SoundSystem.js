@@ -62,6 +62,10 @@ export class SoundSystem {
       "dry",
       buildClipPool("/assets/audio/weapons/gun_reload_lock_or_click_sound.mp3", 3, 0.24)
     );
+    this.clips.set(
+      "portal",
+      buildClipPool("/assets/audio/weapons/gun_reload_lock_or_click_sound.mp3", 4, 0.34)
+    );
   }
 
   unlock() {

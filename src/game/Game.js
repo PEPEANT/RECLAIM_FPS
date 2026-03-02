@@ -120,6 +120,17 @@ const DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE = 1;
 const MOBILE_LOOK_SENSITIVITY_MIN_SCALE = 0.4;
 const MOBILE_LOOK_SENSITIVITY_MAX_SCALE = 2.2;
 const SKY_BASE_COLOR = 0x8ccfff;
+const LOBBY3D_CENTER_X = 0;
+const LOBBY3D_CENTER_Z = -58;
+const LOBBY3D_FLOOR_Y = 18;
+const LOBBY3D_HALF_X = 11;
+const LOBBY3D_HALF_Z = 9;
+const LOBBY3D_WALL_HEIGHT = 5;
+const LOBBY3D_PORTAL_TRIGGER_RADIUS = 1.9;
+const LOBBY3D_PORTAL_COOLDOWN_MS = 700;
+const PORTAL_FX_DURATION_SEC = 0.52;
+const PORTAL_FX_TEAM_FOV_BOOST = 7;
+const PORTAL_FX_DEPLOY_FOV_BOOST = 12;
 
 function readStoredCenterAdVolumeScale() {
   if (typeof window === "undefined") {
@@ -445,6 +456,8 @@ export class Game {
     this.mpTeamBravoBtn = document.getElementById("mp-team-bravo");
     this.mpTeamAlphaCountEl = document.getElementById("mp-team-alpha-count");
     this.mpTeamBravoCountEl = document.getElementById("mp-team-bravo-count");
+    this.mpEnterLobbyBtn = document.getElementById("mp-enter-lobby");
+    this.mpPortalHintEl = document.getElementById("mp-portal-hint");
     this.tabScoreboardEl = document.getElementById("tab-scoreboard");
     this.tabAlphaListEl = document.getElementById("tab-alpha-list");
     this.tabBravoListEl = document.getElementById("tab-bravo-list");
@@ -454,6 +467,7 @@ export class Game {
     this.ctfScoreAlphaEl = document.getElementById("ctf-score-alpha");
     this.ctfScoreBravoEl = document.getElementById("ctf-score-bravo");
     this.flagInteractBtnEl = document.getElementById("flag-interact-btn");
+    this.portalTransitionEl = document.getElementById("portal-transition");
     this.respawnBannerEl = document.getElementById("respawn-banner");
     this.lastAppliedFov = DEFAULT_FOV;
     this._lobbySocketBound = false;
@@ -466,6 +480,33 @@ export class Game {
       hostId: null,
       players: [],
       selectedTeam: null
+    };
+    this.lobby3d = {
+      active: false,
+      group: null,
+      floorY: LOBBY3D_FLOOR_Y,
+      centerX: LOBBY3D_CENTER_X,
+      centerZ: LOBBY3D_CENTER_Z,
+      bounds: {
+        minX: LOBBY3D_CENTER_X - (LOBBY3D_HALF_X - 1),
+        maxX: LOBBY3D_CENTER_X + (LOBBY3D_HALF_X - 1),
+        minZ: LOBBY3D_CENTER_Z - (LOBBY3D_HALF_Z - 1),
+        maxZ: LOBBY3D_CENTER_Z + (LOBBY3D_HALF_Z - 1)
+      },
+      spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 4.4),
+      portals: [],
+      pulseClock: 0,
+      activePortalId: "",
+      portalCooldownUntil: 0
+    };
+    this.portalFx = {
+      active: false,
+      timer: 0,
+      duration: PORTAL_FX_DURATION_SEC,
+      fovBoost: 0,
+      seed: 0,
+      phase: 0,
+      type: "alpha"
     };
     this.remotePlayers = new Map();
     this.remoteBoxGeometryCache = new Map();
@@ -668,6 +709,663 @@ export class Game {
 
     this.voxelWorld.generateTerrain({ mapId: this.mapId });
     this.setupObjectives();
+    this.setupLobby3D();
+  }
+
+  isLobby3DActive() {
+    return Boolean(this.lobby3d?.active) && !this.isRunning && !this.isGameOver;
+  }
+
+  setupLobby3D() {
+    if (!this.lobby3d) {
+      return;
+    }
+
+    const centerX = this.lobby3d.centerX;
+    const centerZ = this.lobby3d.centerZ;
+    const floorY = this.lobby3d.floorY;
+    const minX = centerX - LOBBY3D_HALF_X;
+    const maxX = centerX + LOBBY3D_HALF_X;
+    const minZ = centerZ - LOBBY3D_HALF_Z;
+    const maxZ = centerZ + LOBBY3D_HALF_Z;
+    const wallTopY = floorY + LOBBY3D_WALL_HEIGHT;
+
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let z = minZ; z <= maxZ; z += 1) {
+        this.voxelWorld.setBlock(x, floorY - 1, z, 8);
+        for (let y = floorY; y <= wallTopY; y += 1) {
+          this.voxelWorld.removeBlock(x, y, z);
+        }
+      }
+    }
+
+    for (let y = floorY; y <= wallTopY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        this.voxelWorld.setBlock(x, y, minZ, 6);
+        this.voxelWorld.setBlock(x, y, maxZ, 6);
+      }
+      for (let z = minZ; z <= maxZ; z += 1) {
+        this.voxelWorld.setBlock(minX, y, z, 6);
+        this.voxelWorld.setBlock(maxX, y, z, 6);
+      }
+    }
+
+    for (let x = minX + 1; x <= maxX - 1; x += 1) {
+      this.voxelWorld.setBlock(x, wallTopY, minZ + 1, 5);
+      this.voxelWorld.setBlock(x, wallTopY, maxZ - 1, 5);
+    }
+    for (let z = minZ + 1; z <= maxZ - 1; z += 1) {
+      this.voxelWorld.setBlock(minX + 1, wallTopY, z, 5);
+      this.voxelWorld.setBlock(maxX - 1, wallTopY, z, 5);
+    }
+
+    const lobbyGroup = new THREE.Group();
+    lobbyGroup.visible = false;
+
+    const roomFrame = new THREE.Mesh(
+      new THREE.BoxGeometry(LOBBY3D_HALF_X * 2 + 0.7, LOBBY3D_WALL_HEIGHT + 0.6, LOBBY3D_HALF_Z * 2 + 0.7),
+      new THREE.MeshStandardMaterial({
+        color: 0x102238,
+        roughness: 0.46,
+        metalness: 0.48,
+        transparent: true,
+        opacity: 0.26,
+        side: THREE.DoubleSide
+      })
+    );
+    roomFrame.position.set(centerX, floorY + LOBBY3D_WALL_HEIGHT * 0.5 - 0.02, centerZ);
+    lobbyGroup.add(roomFrame);
+
+    const specs = [
+      {
+        id: "alpha",
+        label: "BLUE TEAM",
+        action: "team",
+        team: "alpha",
+        color: 0x63b9ff,
+        x: centerX - 5.6,
+        z: centerZ + 2.4
+      },
+      {
+        id: "bravo",
+        label: "RED TEAM",
+        action: "team",
+        team: "bravo",
+        color: 0xff7d67,
+        x: centerX + 5.6,
+        z: centerZ + 2.4
+      },
+      {
+        id: "start",
+        label: "DEPLOY",
+        action: "start",
+        team: null,
+        color: 0x6ff5c6,
+        x: centerX,
+        z: centerZ - 4.2
+      }
+    ];
+
+    this.lobby3d.portals = specs.map((spec) => {
+      const portal = new THREE.Group();
+      portal.position.set(spec.x, floorY + 1.85, spec.z);
+      portal.lookAt(centerX, floorY + 1.85, centerZ);
+
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(1.24, 0.16, 22, 46),
+        new THREE.MeshStandardMaterial({
+          color: spec.color,
+          roughness: 0.18,
+          metalness: 0.54,
+          emissive: spec.color,
+          emissiveIntensity: 0.44,
+          transparent: true,
+          opacity: 0.78
+        })
+      );
+
+      const core = new THREE.Mesh(
+        new THREE.CircleGeometry(1.02, 34),
+        new THREE.MeshBasicMaterial({
+          color: spec.color,
+          transparent: true,
+          opacity: 0.22,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      core.renderOrder = 10;
+
+      const glow = new THREE.Mesh(
+        new THREE.CircleGeometry(0.84, 34),
+        new THREE.MeshBasicMaterial({
+          color: spec.color,
+          transparent: true,
+          opacity: 0.38,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending
+        })
+      );
+      glow.renderOrder = 11;
+
+      const pedestal = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.08, 1.2, 0.42, 16),
+        new THREE.MeshStandardMaterial({
+          color: 0x0f1726,
+          roughness: 0.52,
+          metalness: 0.28,
+          emissive: 0x16314e,
+          emissiveIntensity: 0.22
+        })
+      );
+      pedestal.position.y = -1.55;
+
+      const label = this.createLobbyPortalLabelSprite(spec.label, spec.color);
+      label.position.set(0, 2.14, 0);
+
+      portal.add(pedestal, ring, core, glow, label);
+      lobbyGroup.add(portal);
+
+      return {
+        ...spec,
+        group: portal,
+        ring,
+        core,
+        glow
+      };
+    });
+
+    if (this.lobby3d.group) {
+      this.scene.remove(this.lobby3d.group);
+    }
+    this.lobby3d.group = lobbyGroup;
+    this.lobby3d.activePortalId = "";
+    this.lobby3d.portalCooldownUntil = 0;
+    this.lobby3d.pulseClock = 0;
+    this.scene.add(lobbyGroup);
+    this.syncLobby3DPortalState();
+  }
+
+  createLobbyPortalLabelSprite(text, color) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 128;
+    const context = canvas.getContext("2d");
+    if (context) {
+      const hex = Number(color) || 0x89d3ff;
+      const r = (hex >> 16) & 0xff;
+      const g = (hex >> 8) & 0xff;
+      const b = hex & 0xff;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "rgba(6, 16, 29, 0.78)";
+      context.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.95)`;
+      context.lineWidth = 4;
+      context.fillRect(16, 22, canvas.width - 32, 84);
+      context.strokeRect(16, 22, canvas.width - 32, 84);
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = "700 46px Segoe UI, Arial, sans-serif";
+      context.fillStyle = "rgba(231, 246, 255, 0.98)";
+      context.fillText(String(text ?? "").slice(0, 20), canvas.width * 0.5, canvas.height * 0.54);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false
+      })
+    );
+    sprite.scale.set(2.8, 0.66, 1);
+    sprite.renderOrder = 12;
+    return sprite;
+  }
+
+  setLobby3DActive(active, { reposition = true } = {}) {
+    if (!this.lobby3d) {
+      return;
+    }
+
+    const next = Boolean(active);
+    this.lobby3d.active = next;
+    if (this.lobby3d.group) {
+      this.lobby3d.group.visible = next;
+    }
+    if (!next) {
+      this.lobby3d.activePortalId = "";
+      this.clearPortalTransitionFx();
+      return;
+    }
+
+    this.activeMatchMode = "online";
+    if (reposition) {
+      this.playerPosition.copy(this.lobby3d.spawn);
+      this.verticalVelocity = 0;
+      this.onGround = true;
+      this.fallStartY = this.playerPosition.y;
+      this.yaw = Math.PI;
+      this.pitch = 0;
+      this.camera.position.copy(this.playerPosition);
+      this.camera.rotation.order = "YXZ";
+      this.camera.rotation.y = this.yaw;
+      this.camera.rotation.x = this.pitch;
+      this.camera.rotation.z = 0;
+    }
+    this.state.objectiveText = "목표: 포탈로 팀을 선택하고 중앙 포탈에서 출발하세요.";
+    this.hud.setStatus("3D 로비 활성화: 포탈을 통과해 팀을 선택하세요.", false, 1.3);
+    this.syncLobby3DPortalState();
+  }
+
+  enterOnlineLobby3D() {
+    if (this.isRunning) {
+      return;
+    }
+    this.menuMode = "online";
+    this.applyLobbyNickname();
+    this.joinDefaultRoom({ force: true });
+    this.hud.showStartOverlay(false);
+    this.optionsMenuOpen = false;
+    this.mouseLookEnabled = this.mobileEnabled || this.allowUnlockedLook;
+    this.setLobby3DActive(true, { reposition: true });
+    this.syncCursorVisibility();
+    this.updateLobbyControls();
+    if (!this.mobileEnabled && !this.mouseLookEnabled && !this.chat?.isInputFocused) {
+      this.tryPointerLock();
+    }
+  }
+
+  leaveOnlineLobby3DToMenu() {
+    if (this.isRunning) {
+      return;
+    }
+    this.setLobby3DActive(false, { reposition: false });
+    this.mouseLookEnabled = false;
+    this.hud.showStartOverlay(true);
+    if (
+      this.pointerLockSupported &&
+      document.pointerLockElement === this.renderer.domElement
+    ) {
+      document.exitPointerLock();
+    }
+    this.syncCursorVisibility();
+    this.updateLobbyControls();
+  }
+
+  getActiveLobbyPortal() {
+    if (!this.isLobby3DActive()) {
+      return null;
+    }
+    const portals = Array.isArray(this.lobby3d?.portals) ? this.lobby3d.portals : [];
+    let nearest = null;
+    let bestDistSq = Number.POSITIVE_INFINITY;
+    for (const portal of portals) {
+      const dx = this.playerPosition.x - portal.x;
+      const dz = this.playerPosition.z - portal.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > LOBBY3D_PORTAL_TRIGGER_RADIUS * LOBBY3D_PORTAL_TRIGGER_RADIUS) {
+        continue;
+      }
+      const dy = Math.abs(this.playerPosition.y - (this.lobby3d.floorY + PLAYER_HEIGHT));
+      if (dy > 2.2) {
+        continue;
+      }
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        nearest = portal;
+      }
+    }
+    return nearest;
+  }
+
+  clearPortalTransitionFx() {
+    this.portalFx.active = false;
+    this.portalFx.timer = 0;
+    this.portalFx.phase = 0;
+    this.portalFx.fovBoost = 0;
+    if (!this.portalTransitionEl) {
+      return;
+    }
+    this.portalTransitionEl.classList.remove(
+      "show",
+      "is-alpha",
+      "is-bravo",
+      "is-deploy"
+    );
+  }
+
+  triggerLobbyPortalFx(
+    { portalId = "alpha", intensity = 1, silent = false, statusText = "", statusDuration = 0 } = {}
+  ) {
+    const id = String(portalId ?? "")
+      .trim()
+      .toLowerCase();
+    if (id !== "alpha" && id !== "bravo" && id !== "deploy") {
+      return;
+    }
+
+    const weight = THREE.MathUtils.clamp(Number(intensity) || 1, 0.35, 1.6);
+    const baseFovBoost = id === "deploy" ? PORTAL_FX_DEPLOY_FOV_BOOST : PORTAL_FX_TEAM_FOV_BOOST;
+
+    this.portalFx.active = true;
+    this.portalFx.timer = 0;
+    this.portalFx.phase = Math.random() * Math.PI * 2;
+    this.portalFx.seed = Math.random() * 1000;
+    this.portalFx.type = id;
+    this.portalFx.fovBoost = baseFovBoost * weight;
+
+    if (this.portalTransitionEl) {
+      this.portalTransitionEl.classList.remove(
+        "show",
+        "is-alpha",
+        "is-bravo",
+        "is-deploy"
+      );
+      this.portalTransitionEl.offsetWidth;
+      this.portalTransitionEl.classList.add("show", `is-${id}`);
+    }
+
+    if (!silent) {
+      const gain = id === "deploy" ? 0.76 : 0.56;
+      const rateJitter = id === "deploy" ? 0.18 : 0.12;
+      this.sound.play("portal", { gain, rateJitter });
+      this.duckCenterAdAudio(id === "deploy" ? 220 : 130);
+      this.hud.pulseCrosshair();
+    }
+
+    if (statusText) {
+      this.hud.setStatus(statusText, false, Math.max(0.25, Number(statusDuration) || 0.5));
+    }
+  }
+
+  updatePortalFx(delta) {
+    if (!this.portalFx.active) {
+      return;
+    }
+
+    this.portalFx.timer += Math.max(0, Number(delta) || 0);
+    if (this.portalFx.timer < this.portalFx.duration) {
+      return;
+    }
+
+    this.clearPortalTransitionFx();
+  }
+
+  getPortalFxFovBoost() {
+    if (!this.portalFx.active || this.portalFx.duration <= 0) {
+      return 0;
+    }
+
+    const t = THREE.MathUtils.clamp(this.portalFx.timer / this.portalFx.duration, 0, 1);
+    const envelope = Math.sin(t * Math.PI);
+    const pulse = 0.68 + 0.32 * Math.sin((t * 9 + this.portalFx.seed) * Math.PI);
+    return Math.max(0, this.portalFx.fovBoost * envelope * Math.max(0.2, pulse));
+  }
+
+  getPortalFxCameraRoll() {
+    if (!this.portalFx.active || this.portalFx.duration <= 0) {
+      return 0;
+    }
+
+    const t = THREE.MathUtils.clamp(this.portalFx.timer / this.portalFx.duration, 0, 1);
+    const envelope = Math.sin(t * Math.PI);
+    return Math.sin(this.portalFx.phase + t * Math.PI * 4.4) * envelope * 0.024;
+  }
+
+  requestLobbyPortalEntry(portal) {
+    if (!portal) {
+      return;
+    }
+
+    const fallback = () => {
+      if (portal.action === "team") {
+        this.setTeam(portal.team);
+        return;
+      }
+      if (portal.action !== "start") {
+        return;
+      }
+      if (!this.lobbyState.roomCode) {
+        this.joinDefaultRoom({ force: true });
+        this.hud.setStatus("방 참가를 확인하는 중입니다. 잠시 후 다시 시도하세요.", true, 0.9);
+        return;
+      }
+      if (!normalizeTeamId(this.lobbyState.selectedTeam)) {
+        this.hud.setStatus("먼저 블루/레드 포탈로 팀을 선택하세요.", true, 0.9);
+        return;
+      }
+      this.startOnlineMatch();
+    };
+
+    const socket = this.chat?.socket;
+    const portalId = String(portal.id ?? "")
+      .trim()
+      .toLowerCase();
+    if (!portalId || !socket || !socket.connected || !this.lobbyState.roomCode) {
+      fallback();
+      return;
+    }
+
+    socket.emit("portal:enter", { portalId }, (response = {}) => {
+      if (!response.ok) {
+        this.hud.setStatus(response.error ?? "포탈 동기화에 실패했습니다.", true, 1);
+        return;
+      }
+
+      const action = String(response.action ?? "")
+        .trim()
+        .toLowerCase();
+      if (action === "team") {
+        const nextTeam = normalizeTeamId(response.team ?? portal.team);
+        if (nextTeam) {
+          this.lobbyState.selectedTeam = nextTeam;
+          this.mpTeamAlphaBtn?.classList.toggle("is-active", nextTeam === "alpha");
+          this.mpTeamBravoBtn?.classList.toggle("is-active", nextTeam === "bravo");
+          this.syncLobby3DPortalState();
+          this.triggerLobbyPortalFx({
+            portalId: nextTeam,
+            statusText: `팀 선택 완료: ${formatTeamLabel(nextTeam)}`,
+            statusDuration: 0.62
+          });
+        }
+        return;
+      }
+
+      if (action === "deploy") {
+        const alreadyRunningOnline =
+          this.activeMatchMode === "online" && this.isRunning && !this.isGameOver;
+        if (alreadyRunningOnline) {
+          this.hud.setStatus("이미 온라인 매치에 참가 중입니다.", false, 0.75);
+          return;
+        }
+        if (response.localStart) {
+          this.triggerLobbyPortalFx({
+            portalId: "deploy",
+            intensity: 1.18,
+            statusText: "온라인 매치에 참가합니다.",
+            statusDuration: 0.75
+          });
+          this.start({ mode: "online" });
+        }
+        return;
+      }
+
+      if (action === "start") {
+        this.triggerLobbyPortalFx({
+          portalId: "deploy",
+          intensity: 1.28,
+          statusText: "라운드 시작 신호 전송 완료",
+          statusDuration: 0.72
+        });
+      }
+    });
+  }
+
+  handleLobbyPortalEntry(portal) {
+    if (!portal) {
+      return;
+    }
+    this.requestLobbyPortalEntry(portal);
+  }
+
+  handleLobbyPortalEntered(payload = {}) {
+    if (!this.isLobby3DActive()) {
+      return;
+    }
+
+    const playerId = String(payload.playerId ?? "").trim();
+    if (playerId && playerId === this.getMySocketId()) {
+      return;
+    }
+
+    const playerName = String(payload.playerName ?? "플레이어")
+      .trim()
+      .slice(0, 16) || "플레이어";
+    const portalId = String(payload.portalId ?? "")
+      .trim()
+      .toLowerCase();
+
+    if (portalId === "alpha" || portalId === "bravo") {
+      const team = normalizeTeamId(payload.team) ?? portalId;
+      this.hud.setStatus(`${playerName}: ${formatTeamLabel(team)} 포탈 진입`, false, 0.65);
+      return;
+    }
+
+    if (portalId !== "deploy") {
+      return;
+    }
+
+    const action = String(payload.action ?? "")
+      .trim()
+      .toLowerCase();
+    if (action === "start") {
+      this.triggerLobbyPortalFx({
+        portalId: "deploy",
+        intensity: 0.72,
+        silent: true
+      });
+      this.hud.setStatus(`${playerName}: DEPLOY 포탈로 라운드 시작`, false, 0.75);
+      return;
+    }
+
+    this.hud.setStatus(`${playerName}: DEPLOY 포탈 진입`, false, 0.65);
+  }
+
+  clampLobby3DPlayerBounds() {
+    if (!this.isLobby3DActive()) {
+      return;
+    }
+    const bounds = this.lobby3d?.bounds;
+    if (!bounds) {
+      return;
+    }
+    this.playerPosition.x = THREE.MathUtils.clamp(this.playerPosition.x, bounds.minX, bounds.maxX);
+    this.playerPosition.z = THREE.MathUtils.clamp(this.playerPosition.z, bounds.minZ, bounds.maxZ);
+  }
+
+  updateLobby3D(delta) {
+    if (!this.isLobby3DActive()) {
+      return;
+    }
+    const portals = Array.isArray(this.lobby3d?.portals) ? this.lobby3d.portals : [];
+    this.lobby3d.pulseClock += Math.max(0, Number(delta) || 0);
+    const pulseBase = this.lobby3d.pulseClock;
+
+    for (let i = 0; i < portals.length; i += 1) {
+      const portal = portals[i];
+      const pulse = 0.5 + 0.5 * Math.sin(pulseBase * 3.8 + i * 1.6);
+      portal.group.position.y = this.lobby3d.floorY + 1.85 + pulse * 0.08;
+      portal.ring.rotation.z += delta * (0.6 + i * 0.08);
+      const visualState = portal.visualState ?? "idle";
+      const coreBase = visualState === "locked" ? 0.06 : visualState === "active" ? 0.24 : 0.16;
+      const glowBase = visualState === "locked" ? 0.1 : visualState === "active" ? 0.34 : 0.2;
+      portal.core.material.opacity = coreBase + pulse * 0.14;
+      portal.glow.material.opacity = glowBase + pulse * 0.18;
+    }
+
+    const now = Date.now();
+    const activePortal = this.getActiveLobbyPortal();
+    if (!activePortal) {
+      this.lobby3d.activePortalId = "";
+      return;
+    }
+    if (this.lobby3d.activePortalId === activePortal.id) {
+      return;
+    }
+    if (now < this.lobby3d.portalCooldownUntil) {
+      return;
+    }
+
+    this.lobby3d.activePortalId = activePortal.id;
+    this.lobby3d.portalCooldownUntil = now + LOBBY3D_PORTAL_COOLDOWN_MS;
+    this.handleLobbyPortalEntry(activePortal);
+  }
+
+  syncLobby3DPortalState() {
+    const portals = Array.isArray(this.lobby3d?.portals) ? this.lobby3d.portals : [];
+    if (portals.length === 0) {
+      return;
+    }
+
+    const selectedTeam = normalizeTeamId(this.lobbyState.selectedTeam);
+    const inRoom = Boolean(this.lobbyState.roomCode);
+    const canDeploy = inRoom && Boolean(selectedTeam);
+    const myId = this.getMySocketId();
+    const hostId = String(this.lobbyState.hostId ?? "");
+    const isHost = Boolean(myId && hostId && myId === hostId);
+
+    for (const portal of portals) {
+      const isSelectedTeamPortal = portal.action === "team" && portal.team === selectedTeam;
+      const startLocked = portal.action === "start" && !canDeploy;
+      const colorHex = Number(portal.color) || 0x89d3ff;
+      const ringMaterial = portal.ring?.material;
+      const coreMaterial = portal.core?.material;
+      const glowMaterial = portal.glow?.material;
+      if (!ringMaterial || !coreMaterial || !glowMaterial) {
+        continue;
+      }
+
+      ringMaterial.color.setHex(colorHex);
+      ringMaterial.emissive.setHex(colorHex);
+      if (startLocked) {
+        ringMaterial.emissiveIntensity = 0.06;
+        ringMaterial.opacity = 0.26;
+        portal.visualState = "locked";
+      } else if (isSelectedTeamPortal || (portal.action === "start" && canDeploy)) {
+        ringMaterial.emissiveIntensity = 1.1;
+        ringMaterial.opacity = 0.95;
+        portal.visualState = "active";
+      } else {
+        ringMaterial.emissiveIntensity = 0.34;
+        ringMaterial.opacity = 0.7;
+        portal.visualState = "idle";
+      }
+      if (startLocked) {
+        coreMaterial.opacity = 0.08;
+        glowMaterial.opacity = 0.12;
+      }
+    }
+
+    if (!this.mpPortalHintEl) {
+      return;
+    }
+
+    if (!inRoom) {
+      this.mpPortalHintEl.textContent = "서버 연결 후 로비 포탈이 활성화됩니다.";
+      return;
+    }
+    if (!selectedTeam) {
+      this.mpPortalHintEl.textContent = "블루/레드 포탈로 팀을 선택하세요.";
+      return;
+    }
+    this.mpPortalHintEl.textContent = isHost
+      ? "중앙 DEPLOY 포탈로 매치를 시작하세요."
+      : "중앙 DEPLOY 포탈로 경기에 참가하세요.";
   }
 
   createSkyCloudTexture() {
@@ -933,6 +1631,7 @@ export class Game {
     setText("mode-single", "훈련");
     setText("start-button", "훈련 시작");
     setText("mp-start", "온라인 시작");
+    setText("mp-enter-lobby", "3D 로비 입장");
     setText("mp-refresh", "새로고침");
     setText("mobile-mode-place", "설치");
     setText("mobile-mode-dig", "삽");
@@ -945,6 +1644,11 @@ export class Game {
     setText("flag-interact-btn", "깃발 탈취");
     setText("chat-toggle-btn", "채팅");
     setText("options-title", "옵션");
+    const onlineDesc = document.querySelector("#online-panel .start-desc");
+    if (onlineDesc) {
+      onlineDesc.textContent =
+        "텍스트 팀 선택 대신 3D 로비에서 포탈로 팀을 고르고 중앙 포탈로 출발합니다.";
+    }
     const subtitle = document.querySelector(".options-subtitle");
     if (subtitle) {
       subtitle.textContent = "왼쪽에서 항목을 고르고 오른쪽에서 값을 조절하세요.";
@@ -1176,6 +1880,7 @@ export class Game {
     this.mouseLookEnabled = false;
     this.hud.hideGameOver();
     this.hud.showStartOverlay(true);
+    this.setLobby3DActive(false, { reposition: false });
     if (
       this.pointerLockSupported &&
       document.pointerLockElement === this.renderer.domElement
@@ -4280,9 +4985,10 @@ export class Game {
     }
 
     this.syncMobileUtilityButtons();
+    const controlActive = this.isRunning || this.isLobby3DActive();
     const visible =
       this.mobileEnabled &&
-      this.isRunning &&
+      controlActive &&
       !this.isGameOver &&
       !this.chat?.isInputFocused &&
       !this.optionsMenuOpen;
@@ -4708,6 +5414,10 @@ export class Game {
 
       if (event.code === "Escape") {
         event.preventDefault();
+        if (this.isLobby3DActive() && !this.chat?.isInputFocused) {
+          this.leaveOnlineLobby3DToMenu();
+          return;
+        }
         if (!this.isRunning || this.isGameOver || this.chat?.isInputFocused) {
           return;
         }
@@ -4720,7 +5430,7 @@ export class Game {
       }
 
       if (
-        this.isRunning &&
+        (this.isRunning || this.isLobby3DActive()) &&
         !this.optionsMenuOpen &&
         this.chat &&
         !this.chat.isInputFocused &&
@@ -4771,7 +5481,7 @@ export class Game {
         }
       }
 
-      if (event.code === "Space" && this.onGround && this.isRunning && !this.isGameOver) {
+      if (event.code === "Space" && this.onGround && (this.isRunning || this.isLobby3DActive()) && !this.isGameOver) {
         this.verticalVelocity = JUMP_FORCE;
         this.onGround = false;
       }
@@ -4827,7 +5537,7 @@ export class Game {
         return;
       }
 
-      if (!this.isRunning || this.isGameOver) {
+      if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver) {
         this.mouseLookEnabled = active || this.allowUnlockedLook;
         if (!this.optionsMenuOpen) {
           this.hud.showPauseOverlay(false);
@@ -4870,7 +5580,13 @@ export class Game {
     });
 
     document.addEventListener("pointerlockerror", () => {
-      if (!this.isRunning || this.isGameOver || this.optionsMenuOpen) {
+      if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
+        return;
+      }
+      if (this.isLobby3DActive()) {
+        this.mouseLookEnabled = this.mobileEnabled || this.allowUnlockedLook;
+        this.hud.setStatus("마우스를 다시 클릭하면 시점 고정이 활성화됩니다", true, 1.1);
+        this.syncCursorVisibility();
         return;
       }
       this.openOptionsMenu();
@@ -4878,8 +5594,9 @@ export class Game {
     });
 
     document.addEventListener("mousemove", (event) => {
+      const controlActive = this.isRunning || this.isLobby3DActive();
       if (
-        !this.isRunning ||
+        !controlActive ||
         this.isGameOver ||
         this.optionsMenuOpen ||
         !this.mouseLookEnabled ||
@@ -4927,10 +5644,24 @@ export class Game {
       }
       event.preventDefault();
 
-      if (!this.isRunning || this.isGameOver || this.optionsMenuOpen) {
+      const controlActive = this.isRunning || this.isLobby3DActive();
+      if (!controlActive || this.isGameOver || this.optionsMenuOpen) {
         return;
       }
+      const lobbyActive = this.isLobby3DActive();
       this.sound.unlock();
+      const shouldTryPointerLock =
+        this.pointerLockSupported &&
+        !this.pointerLocked &&
+        !this.mouseLookEnabled &&
+        !this.chat?.isInputFocused;
+
+      if (lobbyActive) {
+        if (shouldTryPointerLock) {
+          this.tryPointerLock();
+        }
+        return;
+      }
 
       if (this.buildSystem.isBuildMode()) {
         if (event.button === 0 || event.button === 2) {
@@ -4940,12 +5671,6 @@ export class Game {
           return;
         }
       }
-
-      const shouldTryPointerLock =
-        this.pointerLockSupported &&
-        !this.pointerLocked &&
-        !this.mouseLookEnabled &&
-        !this.chat?.isInputFocused;
 
       if (event.button === 2) {
         this.rightMouseAiming = true;
@@ -4998,6 +5723,9 @@ export class Game {
     btnSingle?.addEventListener("click", () => {
       switchTab(btnSingle, btnOnline, panelSingle, panelOnline);
       this.menuMode = "single";
+      if (this.isLobby3DActive()) {
+        this.leaveOnlineLobby3DToMenu();
+      }
     });
 
     btnOnline?.addEventListener("click", () => {
@@ -5031,6 +5759,13 @@ export class Game {
     this.mpRefreshBtn?.addEventListener("click", () => {
       this.refreshOnlineStatus();
       this.requestRoomList();
+    });
+    this.mpEnterLobbyBtn?.addEventListener("click", () => {
+      if (this.isLobby3DActive()) {
+        this.leaveOnlineLobby3DToMenu();
+      } else {
+        this.enterOnlineLobby3D();
+      }
     });
 
     this.mpNameInput?.addEventListener("change", () => {
@@ -5092,7 +5827,8 @@ export class Game {
   }
 
   onChatFocusChanged(focused) {
-    if (!this.isRunning || this.isGameOver) {
+    const controlActive = this.isRunning || this.isLobby3DActive();
+    if (!controlActive || this.isGameOver) {
       this.syncCursorVisibility();
       return;
     }
@@ -5142,6 +5878,7 @@ export class Game {
   start(options = {}) {
     const mode = options.mode ?? this.menuMode;
     this.activeMatchMode = mode === "online" ? "online" : "single";
+    this.setLobby3DActive(false, { reposition: false });
     this.resetState();
     this.setTabScoreboardVisible(false);
     this.hud.showStartOverlay(false);
@@ -5233,6 +5970,7 @@ export class Game {
 
   resetState() {
     this.setCenterAdActive(false);
+    this.clearPortalTransitionFx();
     if (this.pointerLockFallbackTimer !== null) {
       window.clearTimeout(this.pointerLockFallbackTimer);
       this.pointerLockFallbackTimer = null;
@@ -5436,7 +6174,10 @@ export class Game {
   }
 
   applyMovement(delta) {
-    if (this.optionsMenuOpen || (this.activeMatchMode === "online" && this.onlineRoundEnded)) {
+    if (
+      this.optionsMenuOpen ||
+      ((this.activeMatchMode === "online" && this.onlineRoundEnded) && !this.isLobby3DActive())
+    ) {
       return;
     }
     const wasOnGround = this.onGround;
@@ -5665,9 +6406,14 @@ export class Game {
     if (this.shovelView) {
       this.shovelView.visible = digMode && !hideViewModel;
     }
-    const nextFov = gunMode
+    const baseFov = gunMode
       ? THREE.MathUtils.lerp(DEFAULT_FOV, AIM_FOV, this.aimBlend)
       : DEFAULT_FOV;
+    const nextFov = THREE.MathUtils.clamp(
+      baseFov + this.getPortalFxFovBoost(),
+      AIM_FOV - 4,
+      DEFAULT_FOV + PORTAL_FX_DEPLOY_FOV_BOOST + 8
+    );
     if (Math.abs(nextFov - this.lastAppliedFov) > 0.01) {
       this.camera.fov = nextFov;
       this.camera.updateProjectionMatrix();
@@ -5693,6 +6439,8 @@ export class Game {
       this.camera.position.y -= LOCAL_DEATH_OFFSET_Y * this.localDeathAnimBlend;
       this.camera.rotation.x += LOCAL_DEATH_PITCH * this.localDeathAnimBlend;
       this.camera.rotation.z = LOCAL_DEATH_ROLL * this.localDeathAnimBlend;
+    } else {
+      this.camera.rotation.z += this.getPortalFxCameraRoll();
     }
   }
 
@@ -5709,6 +6457,7 @@ export class Game {
     this.updateFlagInteractUi();
 
     this.updateSparks(delta);
+    this.updatePortalFx(delta);
     this.updateSky(delta);
     this.updateCenterAdAudio(delta);
     this.updateCenterAdPlaybackWatchdog();
@@ -5731,6 +6480,23 @@ export class Game {
 
     this.updateOnlineRoundCountdown();
     this.updateRespawnCountdown();
+
+    const lobbyActive = this.isLobby3DActive();
+    if (lobbyActive) {
+      const canMoveInLobby = !this.optionsMenuOpen && !isChatting;
+      if (canMoveInLobby) {
+        this.applyMovement(delta);
+        this.clampLobby3DPlayerBounds();
+        this.updateCamera(delta);
+      }
+      this.updateLobby3D(delta);
+      this.hud.update(delta, {
+        ...this.state,
+        ...this.weapon.getState(),
+        enemyCount: aiEnabled ? this.enemyManager.enemies.length : 0
+      });
+      return;
+    }
 
     const requiresLockedLook =
       !this.mobileEnabled && !this.mouseLookEnabled && !isChatting && !this.isRespawning;
@@ -5949,8 +6715,9 @@ export class Game {
       return;
     }
 
+    const controlActive = this.isRunning || this.isLobby3DActive();
     const hideCursor =
-      this.isRunning &&
+      controlActive &&
       !this.isGameOver &&
       !this.optionsMenuOpen &&
       (this.mouseLookEnabled || this.rightMouseAiming || this.isAiming) &&
@@ -6141,6 +6908,10 @@ export class Game {
 
     socket.on("room:snapshot", (payload) => {
       this.applyRoomSnapshot(payload);
+    });
+
+    socket.on("portal:entered", (payload = {}) => {
+      this.handleLobbyPortalEntered(payload);
     });
 
     socket.on("inventory:update", (payload = {}) => {
@@ -6352,6 +7123,7 @@ export class Game {
       this.refreshOnlineStatus();
       this.updateTeamScoreHud();
       this.updateFlagInteractUi();
+      this.syncLobby3DPortalState();
       return;
     }
 
@@ -6441,6 +7213,7 @@ export class Game {
     this.updateTeamScoreHud();
     this.updateFlagInteractUi();
     this.refreshOnlineStatus();
+    this.syncLobby3DPortalState();
   }
 
   applyLobbyNickname() {
@@ -6570,6 +7343,7 @@ export class Game {
     const connected = !!this.chat?.isConnected?.();
     const connecting = !!this.chat?.isConnecting?.();
     const inRoom = !!this.lobbyState.roomCode;
+    const in3dLobby = this.isLobby3DActive();
     const myId = this.getMySocketId();
     const hostId = String(this.lobbyState.hostId ?? "");
     const isHost = !!inRoom && !!myId && !!hostId && myId === hostId;
@@ -6611,13 +7385,32 @@ export class Game {
     }
     if (this.mpTeamAlphaBtn) {
       this.mpTeamAlphaBtn.disabled = !inRoom;
+      this.mpTeamAlphaBtn.classList.add("hidden");
     }
     if (this.mpTeamBravoBtn) {
       this.mpTeamBravoBtn.disabled = !inRoom;
+      this.mpTeamBravoBtn.classList.add("hidden");
     }
     if (this.mpRefreshBtn) {
       this.mpRefreshBtn.disabled = !connected;
     }
+    if (this.mpEnterLobbyBtn) {
+      if (in3dLobby) {
+        this.mpEnterLobbyBtn.textContent = "3D 로비 나가기 (ESC)";
+      } else if (!connected && connecting) {
+        this.mpEnterLobbyBtn.textContent = "서버 연결 중...";
+      } else if (!connected) {
+        this.mpEnterLobbyBtn.textContent = "서버 오프라인";
+      } else if (!inRoom) {
+        this.mpEnterLobbyBtn.textContent = "3D 로비 입장 (자동 참가 중)";
+      } else if (!isHost) {
+        this.mpEnterLobbyBtn.textContent = "3D 로비 입장";
+      } else {
+        this.mpEnterLobbyBtn.textContent = "3D 로비 입장 (호스트)";
+      }
+      this.mpEnterLobbyBtn.disabled = !connected && !in3dLobby;
+    }
+    this.syncLobby3DPortalState();
   }
 
   refreshOnlineStatus() {
