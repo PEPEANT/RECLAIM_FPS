@@ -127,19 +127,19 @@ const MOBILE_LOOK_SENSITIVITY_MIN_SCALE = 0.4;
 const MOBILE_LOOK_SENSITIVITY_MAX_SCALE = 2.2;
 const SKY_BASE_COLOR = 0x8ccfff;
 const LOBBY3D_CENTER_X = 0;
-const LOBBY3D_CENTER_Z = -28;
+const LOBBY3D_CENTER_Z = -22;
 const LOBBY3D_FLOOR_Y = 18;
-const LOBBY3D_HALF_X = 34;
-const LOBBY3D_HALF_Z = 24;
-const LOBBY3D_WALL_HEIGHT = 8;
-const LOBBY3D_PORTAL_TRIGGER_RADIUS = 2.45;
+const LOBBY3D_HALF_X = 48;
+const LOBBY3D_HALF_Z = 34;
+const LOBBY3D_WALL_HEIGHT = 10;
+const LOBBY3D_PORTAL_TRIGGER_RADIUS = 2.7;
 const LOBBY3D_PORTAL_COOLDOWN_MS = 700;
 const LOBBY3D_PORTAL_WARMUP_MS = 850;
 const LOBBY3D_PORTAL_HOLD_MS = 180;
 const LOBBY3D_PORTAL_ARM_DISTANCE = 1.1;
-const LOBBY3D_REMOTE_RING_BASE_RADIUS = 8.2;
-const LOBBY3D_REMOTE_RING_STEP_RADIUS = 2.1;
-const LOBBY3D_REMOTE_RING_BASE_SLOTS = 20;
+const LOBBY3D_REMOTE_RING_BASE_RADIUS = 10.8;
+const LOBBY3D_REMOTE_RING_STEP_RADIUS = 2.8;
+const LOBBY3D_REMOTE_RING_BASE_SLOTS = 24;
 const LOBBY_EXIT_TARGET_PATH = "C:\\Users\\rneet\\OneDrive\\Desktop\\Emptines";
 const PORTAL_FX_DURATION_SEC = 0.52;
 const PORTAL_FX_TEAM_FOV_BOOST = 7;
@@ -557,7 +557,7 @@ export class Game {
         minZ: LOBBY3D_CENTER_Z - (LOBBY3D_HALF_Z - 1),
         maxZ: LOBBY3D_CENTER_Z + (LOBBY3D_HALF_Z - 1)
       },
-      spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 9.8),
+      spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 14.2),
       portals: [],
       pulseClock: 0,
       activePortalId: "",
@@ -943,7 +943,7 @@ export class Game {
       portal.lookAt(centerX, floorY + 1.85, centerZ);
 
       const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(1.24, 0.16, 22, 46),
+        new THREE.TorusGeometry(1.5, 0.18, 24, 52),
         new THREE.MeshStandardMaterial({
           color: spec.color,
           roughness: 0.18,
@@ -956,7 +956,7 @@ export class Game {
       );
 
       const core = new THREE.Mesh(
-        new THREE.CircleGeometry(1.02, 34),
+        new THREE.CircleGeometry(1.22, 36),
         new THREE.MeshBasicMaterial({
           color: spec.color,
           transparent: true,
@@ -968,7 +968,7 @@ export class Game {
       core.renderOrder = 10;
 
       const glow = new THREE.Mesh(
-        new THREE.CircleGeometry(0.84, 34),
+        new THREE.CircleGeometry(1.02, 36),
         new THREE.MeshBasicMaterial({
           color: spec.color,
           transparent: true,
@@ -981,7 +981,7 @@ export class Game {
       glow.renderOrder = 11;
 
       const pedestal = new THREE.Mesh(
-        new THREE.CylinderGeometry(1.08, 1.2, 0.42, 16),
+        new THREE.CylinderGeometry(1.22, 1.38, 0.42, 16),
         new THREE.MeshStandardMaterial({
           color: 0x0f1726,
           roughness: 0.52,
@@ -1393,7 +1393,12 @@ export class Game {
     laneA.position.set(centerX - 5.4, floorY + 0.03, centerZ);
     const laneB = laneA.clone();
     laneB.position.set(centerX + 5.4, floorY + 0.03, centerZ);
-    group.add(laneA, laneB);
+    const laneC = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 22), laneMat);
+    laneC.rotation.x = -Math.PI * 0.5;
+    laneC.position.set(centerX, floorY + 0.03, centerZ - 1.1);
+    const laneD = laneC.clone();
+    laneD.position.set(centerX, floorY + 0.03, centerZ + 1.1);
+    group.add(laneA, laneB, laneC, laneD);
 
     const rackOffsetX = Math.max(10.6, LOBBY3D_HALF_X - 10.4);
     const rackDepthZ = Math.max(6.4, LOBBY3D_HALF_Z - 12.2);
@@ -1426,6 +1431,40 @@ export class Game {
         x: centerX + rackOffsetX,
         y: floorY,
         z: centerZ + rackDepthZ - 1.8,
+        yaw: -Math.PI * 0.5
+      })
+    );
+    const flankRackX = rackOffsetX * 0.62;
+    const flankRackZ = Math.max(3.2, rackDepthZ - 6.2);
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX - flankRackX,
+        y: floorY,
+        z: centerZ - flankRackZ,
+        yaw: Math.PI * 0.5
+      })
+    );
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX + flankRackX,
+        y: floorY,
+        z: centerZ - flankRackZ,
+        yaw: -Math.PI * 0.5
+      })
+    );
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX - flankRackX,
+        y: floorY,
+        z: centerZ + flankRackZ,
+        yaw: Math.PI * 0.5
+      })
+    );
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX + flankRackX,
+        y: floorY,
+        z: centerZ + flankRackZ,
         yaw: -Math.PI * 0.5
       })
     );
@@ -1486,6 +1525,20 @@ export class Game {
         stack: 1
       })
     );
+    const ammoLineZ = centerZ - Math.max(12.2, LOBBY3D_HALF_Z - 4.8);
+    const ammoLineOffsets = [-0.72, -0.36, 0, 0.36, 0.72];
+    for (let i = 0; i < ammoLineOffsets.length; i += 1) {
+      const offset = ammoLineOffsets[i];
+      group.add(
+        this.createLobbyAmmoCrate({
+          x: centerX + crateX * offset,
+          y: floorY,
+          z: ammoLineZ + (i % 2 === 0 ? 0 : 1.2),
+          yaw: (i - 2) * 0.08,
+          stack: i % 2 === 0 ? 2 : 1
+        })
+      );
+    }
 
     const deskZ = centerZ + Math.max(8.2, LOBBY3D_HALF_Z - 10.2);
     group.add(this.createLobbyInfoDesk({ x: centerX, y: floorY, z: deskZ, yaw: Math.PI }));
@@ -1502,6 +1555,11 @@ export class Game {
     const trussBack = trussFront.clone();
     trussBack.position.z = centerZ - Math.max(5.8, LOBBY3D_HALF_Z - 9.4);
     group.add(trussFront, trussBack);
+    const bannerMain = this.createLobbyDeskSignSprite("전술 로비 · 훈련/온라인");
+    bannerMain.position.set(centerX, floorY + 5.6, centerZ - Math.max(2.4, LOBBY3D_HALF_Z * 0.12));
+    const bannerSupply = this.createLobbyDeskSignSprite("무기 · 탄약 보급 구역");
+    bannerSupply.position.set(centerX, floorY + 5.6, centerZ + Math.max(2.4, LOBBY3D_HALF_Z * 0.12));
+    group.add(bannerMain, bannerSupply);
 
     const makeTargetStand = (tx, tz) => {
       const target = new THREE.Group();
@@ -2057,7 +2115,7 @@ export class Game {
         this.triggerLobbyPortalFx({
           portalId: "entry",
           intensity: 0.66,
-          statusText: "들어온 포탈입니다. ONLINE/훈련장/나가기 중 선택하세요.",
+          statusText: "들어온 포탈입니다. 온라인/훈련장/나가기 중 선택하세요.",
           statusDuration: 0.9
         });
         return;
@@ -2187,11 +2245,11 @@ export class Game {
         intensity: 0.72,
         silent: true
       });
-      this.hud.setStatus(`${playerName}: ONLINE 포탈로 라운드 시작`, false, 0.75);
+      this.hud.setStatus(`${playerName}: 온라인 포탈로 라운드 시작`, false, 0.75);
       return;
     }
 
-    this.hud.setStatus(`${playerName}: ONLINE 포탈 진입`, false, 0.65);
+    this.hud.setStatus(`${playerName}: 온라인 포탈 진입`, false, 0.65);
   }
 
   clampLobby3DPlayerBounds() {
@@ -2321,12 +2379,12 @@ export class Game {
     }
 
     if (!inRoom) {
-      this.mpPortalHintEl.textContent = "ONLINE 포탈은 서버 연결 후 활성화됩니다.";
+      this.mpPortalHintEl.textContent = "온라인 포탈은 서버 연결 후 활성화됩니다.";
       return;
     }
     this.mpPortalHintEl.textContent = isHost
-      ? "ONLINE 포탈: 라운드 시작 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위"
-      : "ONLINE 포탈: 경기 참가 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위";
+      ? "온라인 포탈: 라운드 시작 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위"
+      : "온라인 포탈: 경기 참가 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위";
   }
 
   createSkyCloudTexture() {
