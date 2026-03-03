@@ -3055,3 +3055,57 @@ kbd {
     width: min(188px, calc(100vw - 16px));
   }
 }
+
+/* Lobby + Chat cleanup overrides */
+body.ui-lobby #build-hud {
+  display: none !important;
+}
+
+body.ui-lobby .hud-right > div:first-child {
+  display: none !important;
+}
+
+#lobby-quick-panel {
+  display: none !important;
+}
+
+#chat-panel {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+#chat-messages {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.chat-input-wrap {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+#chat-input {
+  background: transparent !important;
+}
+
+#chat-send {
+  background: transparent !important;
+}
+
+#chat-live-feed {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+}
+
+#chat-live-log {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}

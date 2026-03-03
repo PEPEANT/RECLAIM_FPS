@@ -139,6 +139,8 @@ const LOBBY3D_PORTAL_COOLDOWN_MS = 700;
 const LOBBY3D_PORTAL_WARMUP_MS = 850;
 const LOBBY3D_PORTAL_HOLD_MS = 80;
 const LOBBY3D_PORTAL_ARM_DISTANCE = 0.2;
+const LOBBY3D_INFO_DESK_INTERACT_RADIUS = 4.4;
+const LOBBY3D_INFO_DESK_HINT_COOLDOWN_MS = 1200;
 const LOBBY3D_REMOTE_RING_BASE_RADIUS = 10.8;
 const LOBBY3D_REMOTE_RING_STEP_RADIUS = 2.8;
 const LOBBY3D_REMOTE_RING_BASE_SLOTS = 24;
@@ -571,6 +573,8 @@ export class Game {
       pendingPortalSince: 0,
       enteredAt: 0,
       portalActivationArmed: false,
+      infoDesk: null,
+      lastDeskHintAt: 0,
       remotePreviewSignature: "",
       rankBoard: null,
       adBoard: null
@@ -648,6 +652,7 @@ export class Game {
     this.onlineRoundLastSecond = -1;
     this.lastRoomStartedAt = 0;
     this.flagInteractVisible = false;
+    this.flagInteractMode = "none";
     this.flagInteractCooldownUntil = 0;
     this.scoreHudState = { show: null, alpha: null, bravo: null };
     this.pvpImmuneHintUntil = 0;
@@ -1585,6 +1590,11 @@ export class Game {
     }
 
     const deskZ = centerZ + Math.max(8.2, LOBBY3D_HALF_Z - 10.2);
+    this.lobby3d.infoDesk = {
+      x: centerX,
+      z: deskZ + 2.6,
+      radius: LOBBY3D_INFO_DESK_INTERACT_RADIUS
+    };
     group.add(this.createLobbyInfoDesk({ x: centerX, y: floorY, z: deskZ, yaw: Math.PI }));
 
     const trussMat = new THREE.MeshStandardMaterial({
@@ -1867,6 +1877,7 @@ export class Game {
 
     const next = Boolean(active);
     this.lobby3d.active = next;
+    document.body.classList.toggle("ui-lobby", next);
     if (this.lobby3d.group) {
       this.lobby3d.group.visible = next;
     }
@@ -1877,11 +1888,13 @@ export class Game {
       this.lobby3d.pendingPortalSince = 0;
       this.lobby3d.enteredAt = 0;
       this.lobby3d.portalActivationArmed = false;
+      this.lobby3d.lastDeskHintAt = 0;
       this.lobby3d.remotePreviewSignature = "";
       this.lobby3d.animationAccumulator = 0;
       this.lobbyRemotePreviewAccumulator = 0;
       this.clearPortalTransitionFx();
       this.syncRuntimePerformanceBudget(false);
+      this.updateVisualMode(this.buildSystem.getToolMode());
       this.updateLobbyQuickPanel();
       return;
     }
@@ -1892,10 +1905,12 @@ export class Game {
     this.lobby3d.pendingPortalSince = 0;
     this.lobby3d.enteredAt = Date.now();
     this.lobby3d.portalActivationArmed = false;
+    this.lobby3d.lastDeskHintAt = 0;
     this.lobby3d.remotePreviewSignature = "";
     this.lobby3d.animationAccumulator = 0;
     this.lobbyRemotePreviewAccumulator = 0;
     this.activeMatchMode = "online";
+    this.buildSystem.setToolMode("gun", { silentStatus: true });
     if (reposition) {
       this.playerPosition.copy(this.lobby3d.spawn);
       this.verticalVelocity = 0;
@@ -1909,10 +1924,11 @@ export class Game {
       this.camera.rotation.x = this.pitch;
       this.camera.rotation.z = 0;
     }
-    this.state.objectiveText = "목표: 포탈 선택 · 닉네임 변경 · 무기/탄약 존 확인 · TAB 순위";
-    this.hud.setStatus("3D 로비 활성화: 포탈/닉네임/무기/탄약/순위를 확인하세요.", false, 1.3);
+    this.state.objectiveText = "목표: 포탈 선택 · 안내데스크(E/클릭)에서 닉네임 변경 · TAB 순위";
+    this.hud.setStatus("3D 로비 활성화: 포탈 이동, 안내데스크에서 닉네임 변경 가능", false, 1.15);
     this.syncRuntimePerformanceBudget(true);
     this.syncLobby3DPortalState();
+    this.updateVisualMode(this.buildSystem.getToolMode());
     this.updateLobbyQuickPanel();
   }
 
@@ -1983,6 +1999,86 @@ export class Game {
       }
     }
     return nearest;
+  }
+
+  getLobbyInfoDeskDistanceSq() {
+    if (!this.isLobby3DActive()) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const desk = this.lobby3d?.infoDesk;
+    if (!desk) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const dx = this.playerPosition.x - Number(desk.x ?? 0);
+    const dz = this.playerPosition.z - Number(desk.z ?? 0);
+    return dx * dx + dz * dz;
+  }
+
+  isNearLobbyInfoDesk() {
+    if (!this.isLobby3DActive()) {
+      return false;
+    }
+    const desk = this.lobby3d?.infoDesk;
+    if (!desk) {
+      return false;
+    }
+    const radius = Math.max(1.8, Number(desk.radius) || LOBBY3D_INFO_DESK_INTERACT_RADIUS);
+    const nearByDistance = this.getLobbyInfoDeskDistanceSq() <= radius * radius;
+    const nearByHeight = Math.abs(this.playerPosition.y - (this.lobby3d.floorY + PLAYER_HEIGHT)) <= 2.2;
+    return nearByDistance && nearByHeight;
+  }
+
+  requestLobbyDeskNicknameChange({ source = "key" } = {}) {
+    if (!this.isLobby3DActive()) {
+      return false;
+    }
+    if (!this.isNearLobbyInfoDesk()) {
+      this.hud.setStatus("닉네임 변경은 안내데스크 앞에서만 가능합니다.", true, 0.9);
+      return false;
+    }
+    if (typeof window === "undefined" || typeof window.prompt !== "function") {
+      this.hud.setStatus("현재 환경에서는 닉네임 입력창을 열 수 없습니다.", true, 1);
+      return false;
+    }
+
+    this.keys.clear();
+    this.isAiming = false;
+    this.rightMouseAiming = false;
+    this.handlePrimaryActionUp();
+    this.mouseLookEnabled = false;
+    if (
+      this.pointerLockSupported &&
+      document.pointerLockElement === this.renderer.domElement
+    ) {
+      document.exitPointerLock();
+    }
+    this.syncCursorVisibility();
+
+    const currentName = String(this.chat?.playerName ?? "")
+      .trim()
+      .slice(0, 16);
+    const raw = window.prompt("안내데스크: 새 닉네임 입력 (최대 16자)", currentName);
+    if (raw !== null) {
+      this.applyLobbyNickname({
+        source: "desk",
+        syncToServer: true,
+        value: raw
+      });
+    } else if (source === "key") {
+      this.hud.setStatus("닉네임 변경을 취소했습니다.", false, 0.65);
+    }
+
+    if (this.mobileEnabled) {
+      this.mouseLookEnabled = true;
+      this.syncCursorVisibility();
+      return true;
+    }
+    if (this.isLobby3DActive() && !this.optionsMenuOpen && !this.isUiInputFocused()) {
+      this.tryPointerLock();
+    } else {
+      this.syncCursorVisibility();
+    }
+    return true;
   }
 
   clearPortalTransitionFx() {
@@ -2381,6 +2477,14 @@ export class Game {
     }
     this.renderLobbyRankBoard(false);
 
+    if (this.isNearLobbyInfoDesk()) {
+      const now = Date.now();
+      if (now >= (Number(this.lobby3d.lastDeskHintAt) || 0) + LOBBY3D_INFO_DESK_HINT_COOLDOWN_MS) {
+        this.lobby3d.lastDeskHintAt = now;
+        this.hud.setStatus("안내데스크: E 키 또는 클릭으로 닉네임 변경", false, 0.55);
+      }
+    }
+
     const now = Date.now();
     if (!this.lobby3d.portalActivationArmed) {
       const dxFromSpawn = this.playerPosition.x - this.lobby3d.spawn.x;
@@ -2755,16 +2859,16 @@ export class Game {
     setText("mp-room-subtitle", "3D 실시간 로비");
     setText("lobby-quick-name-save", "적용");
     setText("lobby-quick-count", "대기 인원 0/50");
-    setText("lobby-quick-guide", "이동 WASD · 순위 TAB · 채팅 T/Enter");
+    setText("lobby-quick-guide", "");
     const quickRankTitle = document.querySelector(".lobby-quick-rank-title");
     if (quickRankTitle) {
       quickRankTitle.textContent = "실시간 순위";
     }
     if (this.mpNameInput) {
-      this.mpNameInput.setAttribute("placeholder", "닉네임 입력");
+      this.mpNameInput.setAttribute("placeholder", "닉네임은 3D 로비 안내데스크에서 변경");
     }
     if (this.lobbyQuickNameInput) {
-      this.lobbyQuickNameInput.setAttribute("placeholder", "닉네임 수정");
+      this.lobbyQuickNameInput.setAttribute("placeholder", "닉네임은 안내데스크에서만 변경");
     }
     setText("mobile-mode-place", "설치");
     setText("mobile-mode-dig", "삽");
@@ -2801,7 +2905,7 @@ export class Game {
     if (portalGuideRows[3]) {
       portalGuideRows[3].textContent = "나가기포탈: 도시로 이동";
     }
-    setText("mp-portal-hint", "온라인장/훈련장/나가기 중 원하는 포탈로 이동하세요.");
+    setText("mp-portal-hint", "안내데스크(E/클릭)에서 닉네임 변경 · 포탈로 이동");
     const subtitle = document.querySelector(".options-subtitle");
     if (subtitle) {
       subtitle.textContent = "왼쪽에서 항목을 고르고 오른쪽에서 값을 조절하세요.";
@@ -4562,6 +4666,7 @@ export class Game {
 
     if (this.flagInteractVisible) {
       this.flagInteractVisible = false;
+      this.flagInteractMode = "none";
       this.flagInteractBtnEl?.classList.remove("show");
       this.flagInteractBtnEl?.setAttribute("aria-hidden", "true");
     }
@@ -4976,12 +5081,24 @@ export class Game {
       return;
     }
 
-    const show = this.canLocalPickupCenterFlag();
-    if (show === this.flagInteractVisible) {
+    const showDeskNicknameButton =
+      this.mobileEnabled &&
+      this.isLobby3DActive() &&
+      !this.isRunning &&
+      !this.isGameOver &&
+      !this.optionsMenuOpen &&
+      !this.isUiInputFocused() &&
+      this.isNearLobbyInfoDesk();
+    const showFlagInteractButton = this.canLocalPickupCenterFlag();
+    const show = showDeskNicknameButton || showFlagInteractButton;
+    const nextMode = showDeskNicknameButton ? "nickname" : showFlagInteractButton ? "flag" : "none";
+    if (show === this.flagInteractVisible && nextMode === this.flagInteractMode) {
       return;
     }
 
     this.flagInteractVisible = show;
+    this.flagInteractMode = nextMode;
+    this.flagInteractBtnEl.textContent = nextMode === "nickname" ? "닉네임 바꾸기" : "깃발 탈취";
     this.flagInteractBtnEl.classList.toggle("show", show);
     this.flagInteractBtnEl.setAttribute("aria-hidden", show ? "false" : "true");
   }
@@ -6603,6 +6720,18 @@ export class Game {
   syncMobileUtilityButtons() {
     const mode = this.buildSystem?.getToolMode?.() ?? "gun";
     const chatOpen = Boolean(this.chat?.isOpen?.());
+    const lobbyActive = this.isLobby3DActive();
+    const hideCombatButtons = lobbyActive && !this.isRunning;
+    this.mobileModePlaceBtn?.classList.toggle("hidden", hideCombatButtons);
+    this.mobileModeDigBtn?.classList.toggle("hidden", hideCombatButtons);
+    this.mobileModeGunBtn?.classList.toggle("hidden", hideCombatButtons);
+    this.mobileAimBtn?.classList.toggle("hidden", hideCombatButtons);
+    this.mobileReloadBtn?.classList.toggle("hidden", hideCombatButtons);
+    this.mobileModePlaceBtn && (this.mobileModePlaceBtn.disabled = hideCombatButtons);
+    this.mobileModeDigBtn && (this.mobileModeDigBtn.disabled = hideCombatButtons);
+    this.mobileModeGunBtn && (this.mobileModeGunBtn.disabled = hideCombatButtons);
+    this.mobileAimBtn && (this.mobileAimBtn.disabled = hideCombatButtons);
+    this.mobileReloadBtn && (this.mobileReloadBtn.disabled = hideCombatButtons);
     this.mobileModePlaceBtn?.classList.toggle("is-active", mode === "place");
     this.mobileModeDigBtn?.classList.toggle("is-active", mode === "dig");
     this.mobileModeGunBtn?.classList.toggle("is-active", mode === "gun");
@@ -6726,18 +6855,30 @@ export class Game {
     };
 
     bindUtilityTap(this.mobileModePlaceBtn, () => {
+      if (this.isLobby3DActive() && !this.isRunning) {
+        return;
+      }
       this.buildSystem.setToolMode("place");
       this.syncMobileUtilityButtons();
     });
     bindUtilityTap(this.mobileModeDigBtn, () => {
+      if (this.isLobby3DActive() && !this.isRunning) {
+        return;
+      }
       this.buildSystem.setToolMode("dig");
       this.syncMobileUtilityButtons();
     });
     bindUtilityTap(this.mobileModeGunBtn, () => {
+      if (this.isLobby3DActive() && !this.isRunning) {
+        return;
+      }
       this.buildSystem.setToolMode("gun");
       this.syncMobileUtilityButtons();
     });
     bindUtilityTap(this.mobileAimBtn, () => {
+      if (this.isLobby3DActive() && !this.isRunning) {
+        return;
+      }
       if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.isUiInputFocused()) {
         return;
       }
@@ -6757,6 +6898,9 @@ export class Game {
       }
     });
     bindUtilityTap(this.mobileReloadBtn, () => {
+      if (this.isLobby3DActive() && !this.isRunning) {
+        return;
+      }
       if (!this.buildSystem.isGunMode()) {
         this.hud.setStatus("장전하려면 총 모드로 전환하세요.", true, 0.75);
         return;
@@ -6795,6 +6939,10 @@ export class Game {
         }
         event.preventDefault();
         this.sound.unlock();
+        if (this.flagInteractMode === "nickname") {
+          this.requestLobbyDeskNicknameChange({ source: "mobile-button" });
+          return;
+        }
         this.requestCenterFlagInteract({ source: "mobile" });
       });
     }
@@ -6922,6 +7070,7 @@ export class Game {
       "KeyA",
       "KeyS",
       "KeyD",
+      "KeyE",
       "KeyF",
       "KeyQ",
       "ArrowUp",
@@ -6952,6 +7101,7 @@ export class Game {
 
     document.addEventListener("keydown", (event) => {
       const uiInputFocused = this.isUiInputFocused();
+      const lobbyActive = this.isLobby3DActive();
       if (event.code === "Tab") {
         event.preventDefault();
         if (!uiInputFocused) {
@@ -7011,7 +7161,13 @@ export class Game {
         return;
       }
 
-      if (this.buildSystem.handleKeyDown(event)) {
+      if (event.code === "KeyE" && lobbyActive) {
+        event.preventDefault();
+        this.requestLobbyDeskNicknameChange({ source: "key" });
+        return;
+      }
+
+      if (!lobbyActive && this.buildSystem.handleKeyDown(event)) {
         event.preventDefault();
         return;
       }
@@ -7118,8 +7274,15 @@ export class Game {
         return;
       }
 
-      if (this.allowUnlockedLook) {
+      if (this.mobileEnabled && this.allowUnlockedLook) {
         this.mouseLookEnabled = true;
+        this.hud.showPauseOverlay(false);
+        this.syncCursorVisibility();
+        return;
+      }
+
+      if (this.isLobby3DActive()) {
+        this.mouseLookEnabled = false;
         this.hud.showPauseOverlay(false);
         this.syncCursorVisibility();
         return;
@@ -7149,6 +7312,7 @@ export class Game {
         this.isGameOver ||
         this.optionsMenuOpen ||
         !this.mouseLookEnabled ||
+        (!this.mobileEnabled && !this.pointerLocked) ||
         this.isUiInputFocused()
       ) {
         return;
@@ -7203,6 +7367,13 @@ export class Game {
         !this.isUiInputFocused();
 
       if (lobbyActive) {
+        if (
+          event.button === 0 &&
+          this.isNearLobbyInfoDesk() &&
+          this.requestLobbyDeskNicknameChange({ source: "mouse" })
+        ) {
+          return;
+        }
         if (shouldTryPointerLock) {
           this.tryPointerLock();
         }
@@ -7337,32 +7508,6 @@ export class Game {
 
     bindUiInputFocus(this.mpNameInput);
     bindUiInputFocus(this.lobbyQuickNameInput);
-
-    this.mpNameInput?.addEventListener("change", () => {
-      this.applyLobbyNickname({ source: "menu", syncToServer: true });
-    });
-    this.mpNameInput?.addEventListener("keydown", (event) => {
-      if (event.code !== "Enter") {
-        return;
-      }
-      event.preventDefault();
-      this.applyLobbyNickname({ source: "menu", syncToServer: true });
-      this.mpNameInput?.blur();
-    });
-    this.lobbyQuickNameInput?.addEventListener("change", () => {
-      this.applyLobbyNickname({ source: "quick", syncToServer: true });
-    });
-    this.lobbyQuickNameInput?.addEventListener("keydown", (event) => {
-      if (event.code !== "Enter") {
-        return;
-      }
-      event.preventDefault();
-      this.applyLobbyNickname({ source: "quick", syncToServer: true });
-      this.lobbyQuickNameInput?.blur();
-    });
-    this.lobbyQuickNameSaveBtn?.addEventListener("click", () => {
-      this.applyLobbyNickname({ source: "quick", syncToServer: true });
-    });
     this.mpCodeInput?.addEventListener("input", () => {
       this.mpCodeInput.value = this.mpCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
     });
@@ -7457,7 +7602,7 @@ export class Game {
       return;
     }
 
-    if (this.pointerLocked || this.allowUnlockedLook) {
+    if (this.pointerLocked || (this.mobileEnabled && this.allowUnlockedLook)) {
       this.mouseLookEnabled = true;
       this.hud.showPauseOverlay(false);
       this.syncCursorVisibility();
@@ -7596,6 +7741,7 @@ export class Game {
     this.setRespawnBanner("", false);
     this.setTabScoreboardVisible(false);
     this.flagInteractVisible = false;
+    this.flagInteractMode = "none";
     this.flagInteractBtnEl?.classList.remove("show");
     this.flagInteractBtnEl?.setAttribute("aria-hidden", "true");
     this.pvpImmuneHintUntil = 0;
@@ -7997,7 +8143,7 @@ export class Game {
       }
     }
 
-    const hideViewModel = this.isRespawning || this.localDeathAnimBlend > 0.04;
+    const hideViewModel = this.isLobby3DActive() || this.isRespawning || this.localDeathAnimBlend > 0.04;
     this.weaponView.visible = gunMode && !hideViewModel;
     if (this.shovelView) {
       this.shovelView.visible = digMode && !hideViewModel;
@@ -8341,10 +8487,12 @@ export class Game {
     }
 
     const controlActive = this.isRunning || this.isLobby3DActive();
+    const desktopLocked = this.pointerLocked && !this.mobileEnabled;
     const hideCursor =
       controlActive &&
       !this.isGameOver &&
       !this.optionsMenuOpen &&
+      desktopLocked &&
       (this.mouseLookEnabled || this.rightMouseAiming || this.isAiming) &&
       !this.isUiInputFocused();
     const cursor = hideCursor ? "none" : "";
@@ -8353,9 +8501,11 @@ export class Game {
   }
 
   updateVisualMode(mode) {
-    const build = mode !== "gun" && mode !== "weapon";
+    const lobbyActive = this.isLobby3DActive();
+    const build = !lobbyActive && mode !== "gun" && mode !== "weapon";
     document.body.classList.toggle("ui-mode-build", build);
     document.body.classList.toggle("ui-mode-combat", !build);
+    document.body.classList.toggle("ui-lobby", lobbyActive);
   }
 
   isPlayerCollidingAt(positionX, positionY, positionZ) {
@@ -8836,11 +8986,14 @@ export class Game {
     if (!this.lobbyQuickPanelEl) {
       return;
     }
-    const show = this.isLobby3DActive() && !this.isRunning;
+    const show = false;
     if (this._lastLobbyQuickPanelVisible !== show) {
       this.lobbyQuickPanelEl.classList.toggle("show", show);
       this.lobbyQuickPanelEl.setAttribute("aria-hidden", show ? "false" : "true");
       this._lastLobbyQuickPanelVisible = show;
+    }
+    if (!show) {
+      return;
     }
 
     const connected = !!this.chat?.isConnected?.();
@@ -9128,11 +9281,17 @@ export class Game {
     this.updateLobbyQuickPanel();
   }
 
-  applyLobbyNickname({ source = "menu", syncToServer = false } = {}) {
-    const fromMenu = source === "menu";
-    const inputEl = fromMenu ? this.mpNameInput : this.lobbyQuickNameInput;
-    const fallbackName = inputEl?.value ?? this.chat?.playerName ?? "";
+  applyLobbyNickname({ source = "menu", syncToServer = false, value = "" } = {}) {
+    const fromDesk = String(source ?? "")
+      .trim()
+      .toLowerCase() === "desk";
+    const fallbackName = fromDesk ? value : this.chat?.playerName ?? "";
     if (!this.chat?.setPlayerName) {
+      return;
+    }
+
+    if (!fromDesk) {
+      this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: false });
       return;
     }
 
@@ -9279,6 +9438,18 @@ export class Game {
     if (this.mpCreateBtn) {
       this.mpCreateBtn.disabled = true;
       this.mpCreateBtn.classList.add("hidden");
+    }
+    if (this.mpNameInput) {
+      this.mpNameInput.disabled = true;
+      this.mpNameInput.readOnly = true;
+      this.mpNameInput.title = "닉네임은 3D 로비 안내데스크에서만 변경할 수 있습니다.";
+    }
+    if (this.lobbyQuickNameInput) {
+      this.lobbyQuickNameInput.disabled = true;
+      this.lobbyQuickNameInput.readOnly = true;
+    }
+    if (this.lobbyQuickNameSaveBtn) {
+      this.lobbyQuickNameSaveBtn.disabled = true;
     }
     if (this.mpJoinBtn) {
       this.mpJoinBtn.disabled = true;
