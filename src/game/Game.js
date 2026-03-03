@@ -381,6 +381,8 @@ export class Game {
     this.onGround = true;
     this.yaw = 0;
     this.pitch = 0;
+    this.pendingMouseLookX = 0;
+    this.pendingMouseLookY = 0;
     this.keys = new Set();
     this.moveForwardVec = new THREE.Vector3();
     this.moveRightVec = new THREE.Vector3();
@@ -7064,11 +7066,8 @@ export class Game {
         return;
       }
 
-      const currentAim = this.isAiming || this.rightMouseAiming;
-      const lookScale = currentAim ? 0.58 : 1;
-      this.yaw -= event.movementX * 0.0022 * lookScale;
-      this.pitch -= event.movementY * 0.002 * lookScale;
-      this.pitch = THREE.MathUtils.clamp(this.pitch, -1.45, 1.45);
+      this.pendingMouseLookX += event.movementX;
+      this.pendingMouseLookY += event.movementY;
     });
 
     document.addEventListener(
@@ -7955,6 +7954,38 @@ export class Game {
     }
   }
 
+  applyBufferedLookInput(isUiTyping = false) {
+    if (this.pendingMouseLookX === 0 && this.pendingMouseLookY === 0) {
+      return;
+    }
+
+    const controlActive = this.isRunning || this.isLobby3DActive();
+    if (
+      this.mobileEnabled ||
+      !controlActive ||
+      this.isGameOver ||
+      this.optionsMenuOpen ||
+      !this.mouseLookEnabled ||
+      isUiTyping
+    ) {
+      this.pendingMouseLookX = 0;
+      this.pendingMouseLookY = 0;
+      return;
+    }
+
+    const currentAim = this.isRunning && (this.isAiming || this.rightMouseAiming);
+    const lookScale = currentAim ? 0.58 : 1;
+    const deltaX = THREE.MathUtils.clamp(this.pendingMouseLookX, -320, 320);
+    const deltaY = THREE.MathUtils.clamp(this.pendingMouseLookY, -240, 240);
+
+    this.yaw -= deltaX * 0.0022 * lookScale;
+    this.pitch -= deltaY * 0.002 * lookScale;
+    this.pitch = THREE.MathUtils.clamp(this.pitch, -1.45, 1.45);
+
+    this.pendingMouseLookX = 0;
+    this.pendingMouseLookY = 0;
+  }
+
   tick(delta) {
     const lobbyActive = this.isLobby3DActive();
     this.syncRuntimePerformanceBudget(lobbyActive);
@@ -7981,6 +8012,7 @@ export class Game {
       this.emitCenterAdSync();
     }
     const isUiTyping = this.isUiInputFocused();
+    this.applyBufferedLookInput(isUiTyping);
     const gunMode = this.buildSystem.isGunMode();
     const aiEnabled = this.activeMatchMode !== "online";
 
