@@ -61,7 +61,9 @@ const PERF_SLOW_FRAME_MS = 24;
 const RENDER_PIXEL_RATIO_CAP = 1.25;
 const RENDER_PIXEL_RATIO_LOW_CAP = 1.0;
 const RENDER_PIXEL_RATIO_HIGH_CAP = 1.55;
-const LOBBY_RUNTIME_PIXEL_RATIO_CAP = 1.0;
+const LOBBY_RUNTIME_PIXEL_RATIO_CAP = 0.9;
+const LOBBY_PORTAL_ANIMATION_STEP = 1 / 30;
+const LOBBY_REMOTE_PREVIEW_STEP = 1 / 24;
 const SHADOW_MAP_SIZE_DEFAULT = 1024;
 const SHADOW_MAP_SIZE_LOW = 512;
 const SHADOW_MAP_SIZE_HIGH = 1536;
@@ -560,6 +562,7 @@ export class Game {
       spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 14.2),
       portals: [],
       pulseClock: 0,
+      animationAccumulator: 0,
       activePortalId: "",
       portalCooldownUntil: 0,
       pendingPortalId: "",
@@ -582,6 +585,7 @@ export class Game {
     this.remotePlayers = new Map();
     this.remoteBoxGeometryCache = new Map();
     this.remoteSyncClock = 0;
+    this.lobbyRemotePreviewAccumulator = 0;
     this._toRemote = new THREE.Vector3();
     this._remoteHead = new THREE.Vector3();
     this._pvpBox = new THREE.Box3();
@@ -1834,6 +1838,8 @@ export class Game {
       this.lobby3d.enteredAt = 0;
       this.lobby3d.portalActivationArmed = false;
       this.lobby3d.remotePreviewSignature = "";
+      this.lobby3d.animationAccumulator = 0;
+      this.lobbyRemotePreviewAccumulator = 0;
       this.clearPortalTransitionFx();
       this.syncRuntimePerformanceBudget(false);
       this.updateLobbyQuickPanel();
@@ -1847,6 +1853,8 @@ export class Game {
     this.lobby3d.enteredAt = Date.now();
     this.lobby3d.portalActivationArmed = false;
     this.lobby3d.remotePreviewSignature = "";
+    this.lobby3d.animationAccumulator = 0;
+    this.lobbyRemotePreviewAccumulator = 0;
     this.activeMatchMode = "online";
     if (reposition) {
       this.playerPosition.copy(this.lobby3d.spawn);
@@ -2269,19 +2277,24 @@ export class Game {
       return;
     }
     const portals = Array.isArray(this.lobby3d?.portals) ? this.lobby3d.portals : [];
-    this.lobby3d.pulseClock += Math.max(0, Number(delta) || 0);
-    const pulseBase = this.lobby3d.pulseClock;
+    this.lobby3d.animationAccumulator += Math.max(0, Number(delta) || 0);
+    if (this.lobby3d.animationAccumulator >= LOBBY_PORTAL_ANIMATION_STEP) {
+      const animDelta = this.lobby3d.animationAccumulator;
+      this.lobby3d.animationAccumulator = 0;
+      this.lobby3d.pulseClock += animDelta;
+      const pulseBase = this.lobby3d.pulseClock;
 
-    for (let i = 0; i < portals.length; i += 1) {
-      const portal = portals[i];
-      const pulse = 0.5 + 0.5 * Math.sin(pulseBase * 3.8 + i * 1.6);
-      portal.group.position.y = this.lobby3d.floorY + 1.85 + pulse * 0.08;
-      portal.ring.rotation.z += delta * (0.6 + i * 0.08);
-      const visualState = portal.visualState ?? "idle";
-      const coreBase = visualState === "locked" ? 0.06 : visualState === "active" ? 0.24 : 0.16;
-      const glowBase = visualState === "locked" ? 0.1 : visualState === "active" ? 0.34 : 0.2;
-      portal.core.material.opacity = coreBase + pulse * 0.14;
-      portal.glow.material.opacity = glowBase + pulse * 0.18;
+      for (let i = 0; i < portals.length; i += 1) {
+        const portal = portals[i];
+        const pulse = 0.5 + 0.5 * Math.sin(pulseBase * 3.8 + i * 1.6);
+        portal.group.position.y = this.lobby3d.floorY + 1.85 + pulse * 0.08;
+        portal.ring.rotation.z += animDelta * (0.6 + i * 0.08);
+        const visualState = portal.visualState ?? "idle";
+        const coreBase = visualState === "locked" ? 0.06 : visualState === "active" ? 0.24 : 0.16;
+        const glowBase = visualState === "locked" ? 0.1 : visualState === "active" ? 0.34 : 0.2;
+        portal.core.material.opacity = coreBase + pulse * 0.14;
+        portal.glow.material.opacity = glowBase + pulse * 0.18;
+      }
     }
     this.renderLobbyRankBoard(false);
 
@@ -5607,7 +5620,20 @@ export class Game {
       this.applyLobbyRemotePreviewTargets();
     }
 
-    const smooth = THREE.MathUtils.clamp(delta * 11, 0.08, 0.92);
+    let effectiveDelta = Math.max(0, Number(delta) || 0);
+    if (lobbyPreviewActive) {
+      this.lobbyRemotePreviewAccumulator += effectiveDelta;
+      if (this.lobbyRemotePreviewAccumulator < LOBBY_REMOTE_PREVIEW_STEP) {
+        this.syncOnlineFlagMeshes();
+        return;
+      }
+      effectiveDelta = this.lobbyRemotePreviewAccumulator;
+      this.lobbyRemotePreviewAccumulator = 0;
+    } else {
+      this.lobbyRemotePreviewAccumulator = 0;
+    }
+
+    const smooth = THREE.MathUtils.clamp(effectiveDelta * 11, 0.08, 0.92);
 
     for (const remote of this.remotePlayers.values()) {
       if (!Number.isFinite(remote.prevPosition.x)) {
@@ -5623,13 +5649,21 @@ export class Game {
       remote.yaw += yawDiff * smooth;
       remote.group.rotation.y = remote.yaw;
       remote.group.rotation.x = 0;
+      if (lobbyPreviewActive) {
+        remote.group.rotation.z = 0;
+        remote.prevPosition.set(remote.group.position.x, remote.group.position.y, remote.group.position.z);
+        if (remote.nameTag) {
+          remote.nameTag.visible = true;
+        }
+        continue;
+      }
 
       if (remote.isDowned) {
         const elapsed = Math.max(0, Date.now() - remote.downedStartAt);
         const t = THREE.MathUtils.clamp(elapsed / REMOTE_DEATH_FALL_MS, 0, 1);
         remote.downedBlend = Math.max(remote.downedBlend, t);
       } else if (remote.downedBlend > 0) {
-        remote.downedBlend = Math.max(0, remote.downedBlend - delta * 4.8);
+        remote.downedBlend = Math.max(0, remote.downedBlend - effectiveDelta * 4.8);
       }
 
       if (remote.downedBlend > 0) {
@@ -5637,12 +5671,14 @@ export class Game {
       }
       remote.group.rotation.z = REMOTE_DEATH_ROLL * remote.downedBlend;
 
-      const moveSpeed = Math.hypot(remote.group.position.x - prevX, remote.group.position.z - prevZ) / Math.max(delta, 1e-5);
+      const moveSpeed =
+        Math.hypot(remote.group.position.x - prevX, remote.group.position.z - prevZ) /
+        Math.max(effectiveDelta, 1e-5);
       const moveRatio = THREE.MathUtils.clamp(moveSpeed / PLAYER_SPRINT, 0, 1);
       if (remote.isDowned || remote.downedBlend > 0.2) {
         remote.walkPhase = 0;
       } else {
-        remote.walkPhase += delta * (6 + moveRatio * 8);
+        remote.walkPhase += effectiveDelta * (6 + moveRatio * 8);
       }
       const swing = Math.sin(remote.walkPhase) * 0.55 * moveRatio;
       if (remote.legL && remote.legR) {
