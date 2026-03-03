@@ -160,7 +160,7 @@ const PERSISTENT_WORLD_STATE_PATH = resolve(
   "storage",
   "global-world-state.json"
 );
-const PERSISTENT_WORLD_MAP_ID = "forest_frontline";
+const PERSISTENT_WORLD_MAP_ID = "forest_frontline_v2";
 const DAILY_LEADERBOARD_VERSION = 1;
 const DAILY_LEADERBOARD_MAX_ENTRIES = 200;
 const DAILY_LEADERBOARD_PATH = resolve(process.cwd(), "storage", "daily-leaderboard.json");

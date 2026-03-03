@@ -795,9 +795,16 @@ export class Game {
     fill.position.set(-42, 34, -22);
     this.scene.add(fill);
 
-    this.voxelWorld.generateTerrain({ mapId: this.mapId });
-    this.setupObjectives();
+    this.rebuildArenaWorld({ preserveLobbyGeometry: false });
     this.setupLobby3D();
+  }
+
+  rebuildArenaWorld({ preserveLobbyGeometry = true } = {}) {
+    this.voxelWorld.generateTerrain({ mapId: this.mapId });
+    if (preserveLobbyGeometry) {
+      this.stampLobby3DVoxelLayout();
+    }
+    this.setupObjectives();
   }
 
   isLobby3DActive() {
@@ -3743,10 +3750,11 @@ export class Game {
     }
 
     this.latestRoomSnapshot = payload;
-    this.applyInventorySnapshot(payload.stock, { quiet: true });
-    if (this.activeMatchMode !== "online" && this.isRunning) {
+    const shouldApplyOnlineWorld = this.activeMatchMode === "online" && this.isRunning;
+    if (!shouldApplyOnlineWorld) {
       return;
     }
+    this.applyInventorySnapshot(payload.stock, { quiet: true });
 
     const normalize = (entry = {}) => {
       const action = entry.action === "place" ? "place" : entry.action === "remove" ? "remove" : null;
@@ -7667,17 +7675,15 @@ export class Game {
     this.addChatMessage("목표: 적 기지 깃발을 탈취해 아군 거점으로 복귀하세요.", "info");
     this.addChatMessage("조작: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
+      this.rebuildArenaWorld({ preserveLobbyGeometry: true });
       this.hud.setStatus("온라인 매치 시작: AI 비활성화", false, 0.9);
-      if (this.latestRoomSnapshot) {
-        this.applyRoomSnapshot(this.latestRoomSnapshot);
-      } else {
-        this.requestRoomSnapshot();
-      }
+      this.requestRoomSnapshot();
       this.setOnlineSpawnFromLobby();
       this.syncRemotePlayersFromLobby();
       this.state.objectiveText = this.getOnlineObjectiveText();
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     } else {
+      this.rebuildArenaWorld({ preserveLobbyGeometry: true });
       this.setSingleSpawnFromTraining();
     }
     if (!this.isLobby3DActive()) {
