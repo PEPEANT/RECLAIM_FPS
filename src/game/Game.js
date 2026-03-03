@@ -131,8 +131,8 @@ const SKY_BASE_COLOR = 0x8ccfff;
 const LOBBY3D_CENTER_X = 0;
 const LOBBY3D_CENTER_Z = -22;
 const LOBBY3D_FLOOR_Y = 18;
-const LOBBY3D_HALF_X = 48;
-const LOBBY3D_HALF_Z = 34;
+const LOBBY3D_HALF_X = 34;
+const LOBBY3D_HALF_Z = 24;
 const LOBBY3D_WALL_HEIGHT = 10;
 const LOBBY3D_PORTAL_TRIGGER_RADIUS = 3.2;
 const LOBBY3D_PORTAL_COOLDOWN_MS = 700;
@@ -912,7 +912,7 @@ export class Game {
       },
       {
         id: "entry",
-        label: "들어온포탈",
+        label: "사격장",
         action: "entry",
         color: 0x8fb3ff,
         x: centerX,
@@ -1596,10 +1596,10 @@ export class Game {
       );
     }
 
-    const deskZ = centerZ + Math.max(8.2, LOBBY3D_HALF_Z - 10.2);
+    const deskZ = centerZ;
     this.lobby3d.infoDesk = {
       x: centerX,
-      z: deskZ + 2.6,
+      z: deskZ,
       radius: LOBBY3D_INFO_DESK_INTERACT_RADIUS
     };
     group.add(this.createLobbyInfoDesk({ x: centerX, y: floorY, z: deskZ, yaw: Math.PI }));
@@ -1616,12 +1616,6 @@ export class Game {
     const trussBack = trussFront.clone();
     trussBack.position.z = centerZ - Math.max(5.8, LOBBY3D_HALF_Z - 9.4);
     group.add(trussFront, trussBack);
-    const bannerMain = this.createLobbyDeskSignSprite("전술 로비 · 훈련/온라인");
-    bannerMain.position.set(centerX, floorY + 5.6, centerZ - Math.max(2.4, LOBBY3D_HALF_Z * 0.12));
-    const bannerSupply = this.createLobbyDeskSignSprite("무기 · 탄약 보급 구역");
-    bannerSupply.position.set(centerX, floorY + 5.6, centerZ + Math.max(2.4, LOBBY3D_HALF_Z * 0.12));
-    group.add(bannerMain, bannerSupply);
-
     const makeTargetStand = (tx, tz) => {
       const target = new THREE.Group();
       const pole = new THREE.Mesh(
@@ -2036,6 +2030,36 @@ export class Game {
     return nearByDistance && nearByHeight;
   }
 
+  moveToLobbyShootingRange({ announce = true } = {}) {
+    if (!this.isLobby3DActive()) {
+      return false;
+    }
+
+    const floorY = Number(this.lobby3d?.floorY ?? LOBBY3D_FLOOR_Y);
+    const centerX = Number(this.lobby3d?.centerX ?? LOBBY3D_CENTER_X);
+    const centerZ = Number(this.lobby3d?.centerZ ?? LOBBY3D_CENTER_Z);
+    const rangeZ = centerZ - Math.max(8.8, LOBBY3D_HALF_Z - 9.8);
+    this.playerPosition.set(centerX, floorY + PLAYER_HEIGHT, rangeZ);
+    this.verticalVelocity = 0;
+    this.onGround = true;
+    this.fallStartY = this.playerPosition.y;
+    this.yaw = 0;
+    this.pitch = 0;
+    this.camera.position.copy(this.playerPosition);
+    this.camera.rotation.order = "YXZ";
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.z = 0;
+    this.lobby3d.pendingPortalId = "";
+    this.lobby3d.pendingPortalSince = 0;
+    this.lobby3d.portalCooldownUntil = Date.now() + LOBBY3D_PORTAL_COOLDOWN_MS;
+    this.syncCursorVisibility();
+    if (announce) {
+      this.hud.setStatus("사격장으로 이동했습니다.", false, 0.82);
+    }
+    return true;
+  }
+
   requestLobbyDeskNicknameChange({ source = "key" } = {}) {
     if (!this.isLobby3DActive()) {
       return false;
@@ -2220,9 +2244,10 @@ export class Game {
         this.triggerLobbyPortalFx({
           portalId: "entry",
           intensity: 0.66,
-          statusText: "들어온 포탈입니다. 주변 포탈로 이동하세요.",
+          statusText: "사격장으로 이동합니다.",
           statusDuration: 0.8
         });
+        this.moveToLobbyShootingRange({ announce: false });
         return;
       }
       if (portal.action === "exit") {
@@ -2283,9 +2308,10 @@ export class Game {
         this.triggerLobbyPortalFx({
           portalId: "entry",
           intensity: 0.66,
-          statusText: "들어온 포탈입니다. 온라인/훈련장/나가기 중 선택하세요.",
+          statusText: "사격장으로 이동합니다.",
           statusDuration: 0.9
         });
+        this.moveToLobbyShootingRange({ announce: false });
         return;
       }
 
@@ -2423,7 +2449,7 @@ export class Game {
       return;
     }
     if (portalId === "entry" || action === "entry") {
-      this.hud.setStatus(`${playerName}: 들어온 포탈 도착`, false, 0.62);
+      this.hud.setStatus(`${playerName}: 사격장 포탈 진입`, false, 0.62);
       return;
     }
     if (portalId === "exit" || action === "exit") {
@@ -2591,8 +2617,8 @@ export class Game {
       return;
     }
     this.mpPortalHintEl.textContent = isHost
-      ? "온라인 포탈: 라운드 시작 | 훈련장: 즉시 이동 | 나가기: 도시 이동 | TAB: 순위"
-      : "온라인 포탈: 경기 참가 | 훈련장: 즉시 이동 | 나가기: 도시 이동 | TAB: 순위";
+      ? "온라인 포탈: 라운드 시작 | 훈련장: 즉시 이동 | 사격장: 구 사격장 이동 | 나가기: 도시 이동"
+      : "온라인 포탈: 경기 참가 | 훈련장: 즉시 이동 | 사격장: 구 사격장 이동 | 나가기: 도시 이동";
   }
 
   createSkyCloudTexture() {
@@ -2898,7 +2924,7 @@ export class Game {
     const onlineDesc = document.querySelector("#online-panel .start-desc");
     if (onlineDesc) {
       onlineDesc.textContent =
-        "3D 로비에서 4개 포탈(훈련장/온라인장/들어온포탈/나가기포탈)을 이용해 이동합니다.";
+        "3D 로비에서 4개 포탈(훈련장/온라인장/사격장/나가기포탈)을 이용해 이동합니다.";
     }
     const portalGuideRows = Array.from(document.querySelectorAll(".mp-portal-guide-row span:last-child"));
     if (portalGuideRows[0]) {
@@ -2908,7 +2934,7 @@ export class Game {
       portalGuideRows[1].textContent = "온라인장 포탈: 온라인 경기 참가/시작";
     }
     if (portalGuideRows[2]) {
-      portalGuideRows[2].textContent = "들어온포탈: 로비 입장 지점 포탈";
+      portalGuideRows[2].textContent = "사격장 포탈: (구) 사격장 구역으로 이동";
     }
     if (portalGuideRows[3]) {
       portalGuideRows[3].textContent = "나가기포탈: 도시로 이동";
@@ -9040,7 +9066,7 @@ export class Game {
     if (this.lobbyQuickGuideEl) {
       let guideText = "";
       if (!connected) {
-        guideText = "연결 후 포탈(훈련장/온라인장/들어온포탈/나가기) 사용 가능";
+        guideText = "연결 후 포탈(훈련장/온라인장/사격장/나가기) 사용 가능";
       } else if (!inRoom) {
         guideText = "GLOBAL 참가 대기 중 · 이동 WASD · 순위 TAB · 채팅 T/Enter";
       } else {
