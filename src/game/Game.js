@@ -1926,8 +1926,8 @@ export class Game {
       this.camera.rotation.x = this.pitch;
       this.camera.rotation.z = 0;
     }
-    this.state.objectiveText = "목표: 포탈 선택 · 안내데스크(E/클릭)에서 닉네임 변경 · TAB 순위";
-    this.hud.setStatus("3D 로비 활성화: 포탈 이동, 안내데스크에서 닉네임 변경 가능", false, 1.15);
+    this.state.objectiveText = "목표: 포탈 선택 · TAB 순위";
+    this.hud.setStatus("3D 로비 활성화: 포탈 이동 가능", false, 1.15);
     this.syncRuntimePerformanceBudget(true);
     this.syncLobby3DPortalState();
     this.updateVisualMode(this.buildSystem.getToolMode());
@@ -2064,10 +2064,6 @@ export class Game {
     if (!this.isLobby3DActive()) {
       return false;
     }
-    if (!this.isNearLobbyInfoDesk()) {
-      this.hud.setStatus("닉네임 변경은 안내데스크 앞에서만 가능합니다.", true, 0.9);
-      return false;
-    }
     if (typeof window === "undefined" || typeof window.prompt !== "function") {
       this.hud.setStatus("현재 환경에서는 닉네임 입력창을 열 수 없습니다.", true, 1);
       return false;
@@ -2089,10 +2085,10 @@ export class Game {
     const currentName = String(this.chat?.playerName ?? "")
       .trim()
       .slice(0, 16);
-    const raw = window.prompt("안내데스크: 새 닉네임 입력 (최대 16자)", currentName);
+    const raw = window.prompt("새 닉네임 입력 (최대 16자)", currentName);
     if (raw !== null) {
       this.applyLobbyNickname({
-        source: "desk",
+        source: "prompt",
         syncToServer: true,
         value: raw
       });
@@ -2517,14 +2513,6 @@ export class Game {
     }
     this.renderLobbyRankBoard(false);
 
-    if (this.isNearLobbyInfoDesk()) {
-      const now = Date.now();
-      if (now >= (Number(this.lobby3d.lastDeskHintAt) || 0) + LOBBY3D_INFO_DESK_HINT_COOLDOWN_MS) {
-        this.lobby3d.lastDeskHintAt = now;
-        this.hud.setStatus("안내데스크: E 키 또는 클릭으로 닉네임 변경", false, 0.55);
-      }
-    }
-
     const now = Date.now();
     if (!this.lobby3d.portalActivationArmed) {
       const dxFromSpawn = this.playerPosition.x - this.lobby3d.spawn.x;
@@ -2905,10 +2893,10 @@ export class Game {
       quickRankTitle.textContent = "실시간 순위";
     }
     if (this.mpNameInput) {
-      this.mpNameInput.setAttribute("placeholder", "닉네임은 3D 로비 안내데스크에서 변경");
+      this.mpNameInput.setAttribute("placeholder", "닉네임 입력");
     }
     if (this.lobbyQuickNameInput) {
-      this.lobbyQuickNameInput.setAttribute("placeholder", "닉네임은 안내데스크에서만 변경");
+      this.lobbyQuickNameInput.setAttribute("placeholder", "닉네임 입력");
     }
     setText("mobile-mode-place", "설치");
     setText("mobile-mode-dig", "삽");
@@ -2929,8 +2917,7 @@ export class Game {
     setText("quick-open-options", "상세 옵션");
     const onlineDesc = document.querySelector("#online-panel .start-desc");
     if (onlineDesc) {
-      onlineDesc.textContent =
-        "3D 로비에서 4개 포탈(훈련장/온라인장/사격장/나가기포탈)을 이용해 이동합니다.";
+      onlineDesc.textContent = "닉네임 입력 후 입장하세요.";
     }
     const portalGuideRows = Array.from(document.querySelectorAll(".mp-portal-guide-row span:last-child"));
     if (portalGuideRows[0]) {
@@ -2945,7 +2932,7 @@ export class Game {
     if (portalGuideRows[3]) {
       portalGuideRows[3].textContent = "나가기포탈: 도시로 이동";
     }
-    setText("mp-portal-hint", "안내데스크(E/클릭)에서 닉네임 변경 · 포탈로 이동");
+    setText("mp-portal-hint", "포탈로 이동하세요.");
     const subtitle = document.querySelector(".options-subtitle");
     if (subtitle) {
       subtitle.textContent = "왼쪽에서 항목을 고르고 오른쪽에서 값을 조절하세요.";
@@ -5120,24 +5107,16 @@ export class Game {
       return;
     }
 
-    const showDeskNicknameButton =
-      this.mobileEnabled &&
-      this.isLobby3DActive() &&
-      !this.isRunning &&
-      !this.isGameOver &&
-      !this.optionsMenuOpen &&
-      !this.isUiInputFocused() &&
-      this.isNearLobbyInfoDesk();
     const showFlagInteractButton = this.canLocalPickupCenterFlag();
-    const show = showDeskNicknameButton || showFlagInteractButton;
-    const nextMode = showDeskNicknameButton ? "nickname" : showFlagInteractButton ? "flag" : "none";
+    const show = showFlagInteractButton;
+    const nextMode = showFlagInteractButton ? "flag" : "none";
     if (show === this.flagInteractVisible && nextMode === this.flagInteractMode) {
       return;
     }
 
     this.flagInteractVisible = show;
     this.flagInteractMode = nextMode;
-    this.flagInteractBtnEl.textContent = nextMode === "nickname" ? "닉네임 바꾸기" : "깃발 탈취";
+    this.flagInteractBtnEl.textContent = "깃발 탈취";
     this.flagInteractBtnEl.classList.toggle("show", show);
     this.flagInteractBtnEl.setAttribute("aria-hidden", show ? "false" : "true");
   }
@@ -6985,10 +6964,6 @@ export class Game {
         }
         event.preventDefault();
         this.sound.unlock();
-        if (this.flagInteractMode === "nickname") {
-          this.requestLobbyDeskNicknameChange({ source: "mobile-button" });
-          return;
-        }
         this.requestCenterFlagInteract({ source: "mobile" });
       });
     }
@@ -7214,16 +7189,12 @@ export class Game {
 
       if (event.code === "KeyE" && lobbyActive) {
         event.preventDefault();
-        if (this.isNearLobbyInfoDesk()) {
-          this.requestLobbyDeskNicknameChange({ source: "key" });
-          return;
-        }
         const activePortal = this.getActiveLobbyPortal();
         if (activePortal) {
           this.handleLobbyPortalEntry(activePortal);
           return;
         }
-        this.hud.setStatus("안내데스크 또는 포탈 근처에서 E 키를 사용하세요.", true, 0.72);
+        this.hud.setStatus("포탈 근처에서 E 키를 사용하세요.", true, 0.72);
         return;
       }
 
@@ -7341,11 +7312,9 @@ export class Game {
         return;
       }
 
-      if (!this.allowUnlockedLook) {
-        this.allowUnlockedLook = true;
-      }
-      this.mouseLookEnabled = true;
+      this.mouseLookEnabled = false;
       this.hud.showPauseOverlay(false);
+      this.hud.setStatus("화면을 클릭하면 시점이 다시 고정됩니다.", true, 0.9);
       this.syncCursorVisibility();
     });
 
@@ -7353,12 +7322,11 @@ export class Game {
       if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
         return;
       }
-      if (!this.allowUnlockedLook) {
-        this.allowUnlockedLook = true;
-      }
-      this.mouseLookEnabled = true;
+      this.mouseLookEnabled = this.allowUnlockedLook;
       this.hud.showPauseOverlay(false);
-      this.hud.setStatus("포인터락 없이 자유 시점으로 전환합니다.", true, 1);
+      if (!this.allowUnlockedLook) {
+        this.hud.setStatus("화면 클릭 후 다시 시도하세요.", true, 0.9);
+      }
       this.syncCursorVisibility();
     });
 
@@ -7424,13 +7392,6 @@ export class Game {
         !this.isUiInputFocused();
 
       if (lobbyActive) {
-        if (
-          event.button === 0 &&
-          this.isNearLobbyInfoDesk() &&
-          this.requestLobbyDeskNicknameChange({ source: "mouse" })
-        ) {
-          return;
-        }
         if (shouldTryPointerLock) {
           this.tryPointerLock();
         }
@@ -7565,6 +7526,40 @@ export class Game {
 
     bindUiInputFocus(this.mpNameInput);
     bindUiInputFocus(this.lobbyQuickNameInput);
+
+    const commitLobbyNicknameFrom = (source, inputEl) => {
+      if (!inputEl) {
+        return;
+      }
+      this.applyLobbyNickname({
+        source,
+        syncToServer: true,
+        value: inputEl.value
+      });
+    };
+    this.mpNameInput?.addEventListener("change", () => {
+      commitLobbyNicknameFrom("menu-input", this.mpNameInput);
+    });
+    this.mpNameInput?.addEventListener("keydown", (event) => {
+      if (event.code !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      commitLobbyNicknameFrom("menu-input", this.mpNameInput);
+      this.mpNameInput?.blur();
+    });
+    this.lobbyQuickNameSaveBtn?.addEventListener("click", () => {
+      commitLobbyNicknameFrom("quick", this.lobbyQuickNameInput);
+    });
+    this.lobbyQuickNameInput?.addEventListener("keydown", (event) => {
+      if (event.code !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      commitLobbyNicknameFrom("quick", this.lobbyQuickNameInput);
+      this.lobbyQuickNameInput?.blur();
+    });
+
     this.mpCodeInput?.addEventListener("input", () => {
       this.mpCodeInput.value = this.mpCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
     });
@@ -7756,10 +7751,9 @@ export class Game {
         return;
       }
 
-      this.allowUnlockedLook = true;
-      this.mouseLookEnabled = true;
+      this.mouseLookEnabled = false;
       this.hud.showPauseOverlay(false);
-      this.hud.setStatus("포인터 락 대체 모드를 활성화했습니다.", true, 1);
+      this.hud.setStatus("화면 클릭으로 시점을 고정하세요.", true, 0.9);
       this.syncCursorVisibility();
     }, POINTER_LOCK_FALLBACK_MS);
   }
@@ -8527,12 +8521,11 @@ export class Game {
         if (!this.isRunning || this.isGameOver) {
           return;
         }
-        if (!this.allowUnlockedLook) {
-          this.allowUnlockedLook = true;
-        }
-        this.mouseLookEnabled = true;
+        this.mouseLookEnabled = this.allowUnlockedLook;
         this.hud.showPauseOverlay(false);
-        this.hud.setStatus("포인터락 없이 자유 시점으로 전환합니다.", true, 1);
+        if (!this.allowUnlockedLook) {
+          this.hud.setStatus("화면 클릭 후 다시 시도하세요.", true, 0.9);
+        }
         this.syncCursorVisibility();
       });
     }
@@ -9343,25 +9336,36 @@ export class Game {
   }
 
   applyLobbyNickname({ source = "menu", syncToServer = false, value = "" } = {}) {
-    const fromDesk = String(source ?? "")
-      .trim()
-      .toLowerCase() === "desk";
-    const fallbackName = fromDesk ? value : this.chat?.playerName ?? "";
     if (!this.chat?.setPlayerName) {
       return;
     }
+    const sourceTag = String(source ?? "")
+      .trim()
+      .toLowerCase();
+    const pickFirstNonEmpty = (...candidates) => {
+      for (const candidate of candidates) {
+        const text = String(candidate ?? "").trim();
+        if (text) {
+          return text;
+        }
+      }
+      return "";
+    };
 
-    if (!fromDesk) {
-      this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: false });
-      return;
-    }
+    const rawName =
+      sourceTag === "quick"
+        ? pickFirstNonEmpty(value, this.lobbyQuickNameInput?.value, this.mpNameInput?.value, this.chat?.playerName)
+        : sourceTag === "menu" || sourceTag === "menu-input"
+          ? pickFirstNonEmpty(value, this.mpNameInput?.value, this.lobbyQuickNameInput?.value, this.chat?.playerName)
+          : pickFirstNonEmpty(value, this.mpNameInput?.value, this.lobbyQuickNameInput?.value, this.chat?.playerName);
 
-    this.chat.setPlayerName(fallbackName);
+    this.chat.setPlayerName(rawName);
     const safeName = String(this.chat.playerName ?? "")
       .trim()
       .replace(/\s+/g, "_")
       .slice(0, 16);
     if (!safeName) {
+      this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: true });
       return;
     }
 
@@ -9501,16 +9505,16 @@ export class Game {
       this.mpCreateBtn.classList.add("hidden");
     }
     if (this.mpNameInput) {
-      this.mpNameInput.disabled = true;
-      this.mpNameInput.readOnly = true;
-      this.mpNameInput.title = "닉네임은 3D 로비 안내데스크에서만 변경할 수 있습니다.";
+      this.mpNameInput.disabled = false;
+      this.mpNameInput.readOnly = false;
+      this.mpNameInput.title = "";
     }
     if (this.lobbyQuickNameInput) {
-      this.lobbyQuickNameInput.disabled = true;
-      this.lobbyQuickNameInput.readOnly = true;
+      this.lobbyQuickNameInput.disabled = false;
+      this.lobbyQuickNameInput.readOnly = false;
     }
     if (this.lobbyQuickNameSaveBtn) {
-      this.lobbyQuickNameSaveBtn.disabled = true;
+      this.lobbyQuickNameSaveBtn.disabled = false;
     }
     if (this.mpJoinBtn) {
       this.mpJoinBtn.disabled = true;

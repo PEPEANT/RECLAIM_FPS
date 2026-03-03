@@ -1391,6 +1391,10 @@ canvas {
   pointer-events: none;
 }
 
+.overlay-start.minimal-lobby::after {
+  display: none;
+}
+
 @keyframes scan {
   from {
     transform: translateY(0);
@@ -1421,6 +1425,59 @@ canvas {
   backdrop-filter: blur(6px);
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 221, 232, 0.2) transparent;
+}
+
+.overlay-start.minimal-lobby {
+  background: rgba(6, 12, 20, 0.86);
+}
+
+.overlay-start.minimal-lobby .start-panel {
+  width: min(430px, calc(100vw - 26px));
+  max-height: none;
+  padding: 18px 18px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 221, 232, 0.24);
+  background: rgba(8, 16, 26, 0.92);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
+}
+
+.overlay-start.minimal-lobby .start-panel::before,
+.overlay-start.minimal-lobby .start-header,
+.overlay-start.minimal-lobby .start-tabs,
+.overlay-start.minimal-lobby #single-panel,
+.overlay-start.minimal-lobby #mp-room-list,
+.overlay-start.minimal-lobby #mp-lobby,
+.overlay-start.minimal-lobby .mp-status-actions {
+  display: none !important;
+}
+
+.overlay-start.minimal-lobby #online-panel {
+  padding-top: 0;
+}
+
+.overlay-start.minimal-lobby .start-desc {
+  margin: 0 0 10px;
+  font-size: 0.84rem;
+  text-align: left;
+  color: rgba(220, 240, 255, 0.9);
+}
+
+.overlay-start.minimal-lobby .mp-nick-row {
+  margin-bottom: 10px;
+}
+
+.overlay-start.minimal-lobby .mp-label {
+  min-width: 58px;
+}
+
+.overlay-start.minimal-lobby .mp-status-bar {
+  margin-bottom: 10px;
+  padding: 0;
+  border: 0;
+}
+
+.overlay-start.minimal-lobby .mp-enter-lobby {
+  margin-top: 0;
 }
 
 .start-panel::before {
