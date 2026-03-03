@@ -2430,9 +2430,7 @@ export class Game {
     }
 
     const playerId = String(payload.playerId ?? "").trim();
-    if (playerId && playerId === this.getMySocketId()) {
-      return;
-    }
+    const isSelfEvent = playerId && playerId === this.getMySocketId();
 
     const playerName = String(payload.playerName ?? "플레이어")
       .trim()
@@ -2443,6 +2441,14 @@ export class Game {
     const action = String(payload.action ?? "")
       .trim()
       .toLowerCase();
+
+    if (isSelfEvent && (portalId === "entry" || action === "entry")) {
+      this.moveToLobbyShootingRange({ announce: false });
+      return;
+    }
+    if (isSelfEvent) {
+      return;
+    }
 
     if (portalId === "training" || action === "training") {
       this.hud.setStatus(`${playerName}: 훈련장 포탈 진입`, false, 0.65);
@@ -7208,7 +7214,16 @@ export class Game {
 
       if (event.code === "KeyE" && lobbyActive) {
         event.preventDefault();
-        this.requestLobbyDeskNicknameChange({ source: "key" });
+        if (this.isNearLobbyInfoDesk()) {
+          this.requestLobbyDeskNicknameChange({ source: "key" });
+          return;
+        }
+        const activePortal = this.getActiveLobbyPortal();
+        if (activePortal) {
+          this.handleLobbyPortalEntry(activePortal);
+          return;
+        }
+        this.hud.setStatus("안내데스크 또는 포탈 근처에서 E 키를 사용하세요.", true, 0.72);
         return;
       }
 
@@ -7326,28 +7341,25 @@ export class Game {
         return;
       }
 
-      if (this.isLobby3DActive()) {
-        this.mouseLookEnabled = false;
-        this.hud.showPauseOverlay(false);
-        this.syncCursorVisibility();
-        return;
+      if (!this.allowUnlockedLook) {
+        this.allowUnlockedLook = true;
       }
-
-      this.openOptionsMenu();
+      this.mouseLookEnabled = true;
+      this.hud.showPauseOverlay(false);
+      this.syncCursorVisibility();
     });
 
     document.addEventListener("pointerlockerror", () => {
       if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
         return;
       }
-      if (this.isLobby3DActive()) {
-        this.mouseLookEnabled = this.mobileEnabled || this.allowUnlockedLook;
-        this.hud.setStatus("마우스를 다시 클릭하면 시점 고정이 활성화됩니다", true, 1.1);
-        this.syncCursorVisibility();
-        return;
+      if (!this.allowUnlockedLook) {
+        this.allowUnlockedLook = true;
       }
-      this.openOptionsMenu();
-      this.hud.setStatus("\uB9C8\uC6B0\uC2A4\uB97C \uB2E4\uC2DC \uD074\uB9AD\uD574 \uACE0\uC815\uD558\uC138\uC694", true, 1.1);
+      this.mouseLookEnabled = true;
+      this.hud.showPauseOverlay(false);
+      this.hud.setStatus("포인터락 없이 자유 시점으로 전환합니다.", true, 1);
+      this.syncCursorVisibility();
     });
 
     document.addEventListener("mousemove", (event) => {
@@ -8515,8 +8527,13 @@ export class Game {
         if (!this.isRunning || this.isGameOver) {
           return;
         }
-        this.openOptionsMenu();
-        this.hud.setStatus("마우스를 다시 클릭하면 시점 고정이 활성화됩니다", true, 1);
+        if (!this.allowUnlockedLook) {
+          this.allowUnlockedLook = true;
+        }
+        this.mouseLookEnabled = true;
+        this.hud.showPauseOverlay(false);
+        this.hud.setStatus("포인터락 없이 자유 시점으로 전환합니다.", true, 1);
+        this.syncCursorVisibility();
       });
     }
   }
