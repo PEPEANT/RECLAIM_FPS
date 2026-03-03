@@ -2199,11 +2199,31 @@ export class Game {
           statusDuration: 0.85
         });
       } else {
-        this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
+        const copied = this.tryCopyLobbyExitPath();
+        if (!copied) {
+          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
+        }
       }
     }
 
     return opened;
+  }
+
+  tryCopyLobbyExitPath() {
+    const clipboard = navigator?.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") {
+      return false;
+    }
+
+    clipboard
+      .writeText(LOBBY_EXIT_TARGET_PATH)
+      .then(() => {
+        this.hud.setStatus(`파일 열기 제한: 경로 복사 완료 (${LOBBY_EXIT_TARGET_PATH})`, false, 1.5);
+      })
+      .catch(() => {
+        this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
+      });
+    return true;
   }
 
   handleLobbyPortalEntry(portal) {
