@@ -134,15 +134,15 @@ const LOBBY3D_FLOOR_Y = 18;
 const LOBBY3D_HALF_X = 48;
 const LOBBY3D_HALF_Z = 34;
 const LOBBY3D_WALL_HEIGHT = 10;
-const LOBBY3D_PORTAL_TRIGGER_RADIUS = 2.7;
+const LOBBY3D_PORTAL_TRIGGER_RADIUS = 3.2;
 const LOBBY3D_PORTAL_COOLDOWN_MS = 700;
 const LOBBY3D_PORTAL_WARMUP_MS = 850;
-const LOBBY3D_PORTAL_HOLD_MS = 180;
-const LOBBY3D_PORTAL_ARM_DISTANCE = 1.1;
+const LOBBY3D_PORTAL_HOLD_MS = 80;
+const LOBBY3D_PORTAL_ARM_DISTANCE = 0.2;
 const LOBBY3D_REMOTE_RING_BASE_RADIUS = 10.8;
 const LOBBY3D_REMOTE_RING_STEP_RADIUS = 2.8;
 const LOBBY3D_REMOTE_RING_BASE_SLOTS = 24;
-const LOBBY_EXIT_TARGET_PATH = "C:\\Users\\rneet\\OneDrive\\Desktop\\Emptines";
+const LOBBY_EXIT_TARGET_URL = "https://pepeant.github.io/-Emptines/";
 const PORTAL_FX_DURATION_SEC = 0.52;
 const PORTAL_FX_TEAM_FOV_BOOST = 7;
 const PORTAL_FX_DEPLOY_FOV_BOOST = 12;
@@ -2101,7 +2101,23 @@ export class Game {
       return;
     }
 
+    let handled = false;
+    const portalAckTimer = window.setTimeout(() => {
+      if (handled) {
+        return;
+      }
+      handled = true;
+      this.hud.setStatus("포탈 응답 지연: 로컬 이동으로 처리합니다.", true, 0.9);
+      fallback();
+    }, 1000);
+
     socket.emit("portal:enter", { portalId }, (response = {}) => {
+      if (handled) {
+        return;
+      }
+      handled = true;
+      window.clearTimeout(portalAckTimer);
+
       if (!response.ok) {
         this.hud.setStatus(response.error ?? "포탈 동기화에 실패했습니다.", true, 1);
         return;
@@ -2135,7 +2151,7 @@ export class Game {
         const openedByServer = Boolean(response.opened);
         const openedByClient = this.tryOpenLobbyExitPath({ silent: true });
         if (!openedByServer && !openedByClient) {
-          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
+          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_URL}`, false, 1.3);
         }
         return;
       }
@@ -2160,22 +2176,29 @@ export class Game {
       }
 
       if (action === "start") {
+        const alreadyRunningOnline =
+          this.activeMatchMode === "online" && this.isRunning && !this.isGameOver;
+        if (alreadyRunningOnline) {
+          this.hud.setStatus("온라인 라운드가 이미 진행 중입니다.", false, 0.75);
+          return;
+        }
         this.triggerLobbyPortalFx({
           portalId: "online",
           intensity: 1.28,
-          statusText: "온라인 라운드 시작 신호 전송 완료",
+          statusText: "온라인 라운드 시작",
           statusDuration: 0.72
         });
+        this.start({ mode: "online" });
       }
     });
   }
 
   tryOpenLobbyExitPath({ silent = false } = {}) {
-    const fileUrl = `file:///${LOBBY_EXIT_TARGET_PATH.replace(/\\/g, "/")}`;
+    const targetUrl = LOBBY_EXIT_TARGET_URL;
     let opened = false;
 
     try {
-      const popup = window.open(fileUrl, "_blank", "noopener,noreferrer");
+      const popup = window.open(targetUrl, "_blank", "noopener,noreferrer");
       opened = Boolean(popup);
     } catch {
       opened = false;
@@ -2183,7 +2206,7 @@ export class Game {
 
     if (!opened) {
       try {
-        window.location.assign(fileUrl);
+        window.location.assign(targetUrl);
         opened = true;
       } catch {
         opened = false;
@@ -2195,13 +2218,13 @@ export class Game {
         this.triggerLobbyPortalFx({
           portalId: "exit",
           intensity: 1.06,
-          statusText: "나가기 포탈 이동: Emptines",
+          statusText: "나가기 포탈 이동: 도시",
           statusDuration: 0.85
         });
       } else {
-        const copied = this.tryCopyLobbyExitPath();
+        const copied = this.tryCopyLobbyExitTarget();
         if (!copied) {
-          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
+          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_URL}`, false, 1.3);
         }
       }
     }
@@ -2209,19 +2232,19 @@ export class Game {
     return opened;
   }
 
-  tryCopyLobbyExitPath() {
+  tryCopyLobbyExitTarget() {
     const clipboard = navigator?.clipboard;
     if (!clipboard || typeof clipboard.writeText !== "function") {
       return false;
     }
 
     clipboard
-      .writeText(LOBBY_EXIT_TARGET_PATH)
+      .writeText(LOBBY_EXIT_TARGET_URL)
       .then(() => {
-        this.hud.setStatus(`파일 열기 제한: 경로 복사 완료 (${LOBBY_EXIT_TARGET_PATH})`, false, 1.5);
+        this.hud.setStatus(`링크 열기 제한: 도시 링크 복사 완료 (${LOBBY_EXIT_TARGET_URL})`, false, 1.5);
       })
       .catch(() => {
-        this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
+        this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_URL}`, false, 1.3);
       });
     return true;
   }
@@ -2418,8 +2441,8 @@ export class Game {
       return;
     }
     this.mpPortalHintEl.textContent = isHost
-      ? "온라인 포탈: 라운드 시작 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위"
-      : "온라인 포탈: 경기 참가 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위";
+      ? "온라인 포탈: 라운드 시작 | 훈련장: 즉시 이동 | 나가기: 도시 이동 | TAB: 순위"
+      : "온라인 포탈: 경기 참가 | 훈련장: 즉시 이동 | 나가기: 도시 이동 | TAB: 순위";
   }
 
   createSkyCloudTexture() {
@@ -2738,7 +2761,7 @@ export class Game {
       portalGuideRows[2].textContent = "들어온포탈: 로비 입장 지점 포탈";
     }
     if (portalGuideRows[3]) {
-      portalGuideRows[3].textContent = "나가기포탈: Emptines 폴더로 이동";
+      portalGuideRows[3].textContent = "나가기포탈: 도시로 이동";
     }
     setText("mp-portal-hint", "온라인장/훈련장/나가기 중 원하는 포탈로 이동하세요.");
     const subtitle = document.querySelector(".options-subtitle");
@@ -6895,7 +6918,7 @@ export class Game {
       if (event.code === "Escape") {
         event.preventDefault();
         if (this.isLobby3DActive() && !uiInputFocused) {
-          this.leaveOnlineLobby3DToMenu();
+          this.hud.setStatus("3D 로비 유지 중입니다. 포탈로 이동하세요.", false, 0.75);
           return;
         }
         if (!this.isRunning || this.isGameOver || uiInputFocused) {
@@ -7201,9 +7224,7 @@ export class Game {
     btnSingle?.addEventListener("click", () => {
       switchTab(btnSingle, btnOnline, panelSingle, panelOnline);
       this.menuMode = "single";
-      if (this.isLobby3DActive()) {
-        this.leaveOnlineLobby3DToMenu();
-      }
+      this.updateLobbyControls();
     });
 
     btnOnline?.addEventListener("click", () => {
@@ -7239,10 +7260,10 @@ export class Game {
       this.requestRoomList();
     });
     this.mpEnterLobbyBtn?.addEventListener("click", () => {
-      if (this.isLobby3DActive()) {
-        this.leaveOnlineLobby3DToMenu();
-      } else {
+      if (!this.isLobby3DActive()) {
         this.enterOnlineLobby3D();
+      } else {
+        this.hud.setStatus("이미 3D 로비에 있습니다.", false, 0.65);
       }
     });
 
@@ -7457,7 +7478,7 @@ export class Game {
     } else {
       this.setSingleSpawnFromTraining();
     }
-    if (!lobbyActive) {
+    if (!this.isLobby3DActive()) {
       this.updateTeamScoreHud();
       this.updateFlagInteractUi();
     }
@@ -9257,7 +9278,7 @@ export class Game {
     }
     if (this.mpEnterLobbyBtn) {
       if (in3dLobby) {
-        this.mpEnterLobbyBtn.textContent = "3D 로비 나가기 (ESC)";
+        this.mpEnterLobbyBtn.textContent = "3D 로비 접속 중";
       } else if (!connected && connecting) {
         this.mpEnterLobbyBtn.textContent = "서버 연결 중...";
       } else if (!connected) {
