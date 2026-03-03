@@ -17,6 +17,7 @@
     "prod:save": "npx pm2 save",
     "doctor": "node scripts/doctor.mjs",
     "build": "vite build",
+    "render:start": "node server.js",
     "preview": "vite preview",
     "check": "node scripts/verify.mjs",
     "check:smoke": "node scripts/verify.mjs --skip-build",

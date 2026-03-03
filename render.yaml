@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: reclaim-fps
+    runtime: node
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: npm ci && npm run build
+    startCommand: npm run render:start
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: CORS_ORIGIN
+        value: "*"

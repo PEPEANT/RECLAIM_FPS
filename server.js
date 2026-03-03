@@ -1,7 +1,7 @@
 ﻿import { createServer } from "http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, extname, resolve } from "node:path";
 import { Server } from "socket.io";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "./src/shared/gameModes.js";
 import {
@@ -32,6 +32,89 @@ function writeJson(res, statusCode, payload) {
     "cache-control": "no-store"
   });
   res.end(JSON.stringify(payload));
+}
+
+const DIST_DIR = resolve(process.cwd(), "dist");
+const DIST_INDEX_PATH = resolve(DIST_DIR, "index.html");
+const HAS_STATIC_DIST = existsSync(DIST_INDEX_PATH);
+
+const MIME_TYPE_BY_EXT = new Map([
+  [".html", "text/html; charset=utf-8"],
+  [".js", "application/javascript; charset=utf-8"],
+  [".mjs", "application/javascript; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".ico", "image/x-icon"],
+  [".mp4", "video/mp4"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"]
+]);
+
+function getMimeType(filePath) {
+  return MIME_TYPE_BY_EXT.get(extname(filePath).toLowerCase()) ?? "application/octet-stream";
+}
+
+function parsePathname(urlRaw = "/") {
+  try {
+    return new URL(urlRaw, "http://localhost").pathname;
+  } catch {
+    return "/";
+  }
+}
+
+function streamFile(res, filePath, { cacheControl = "no-store" } = {}) {
+  try {
+    const stats = statSync(filePath);
+    res.writeHead(200, {
+      "content-type": getMimeType(filePath),
+      "content-length": String(stats.size),
+      "cache-control": cacheControl
+    });
+    createReadStream(filePath).pipe(res);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryServeStatic(req, res) {
+  if (!HAS_STATIC_DIST) {
+    return false;
+  }
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    return false;
+  }
+
+  const pathname = parsePathname(req.url);
+  if (pathname.startsWith("/socket.io/")) {
+    return false;
+  }
+
+  const requestedPath = pathname === "/" ? "/index.html" : pathname;
+  const absoluteRequested = resolve(DIST_DIR, `.${requestedPath}`);
+  if (!absoluteRequested.startsWith(DIST_DIR)) {
+    return false;
+  }
+
+  if (existsSync(absoluteRequested)) {
+    const isHtml = extname(absoluteRequested).toLowerCase() === ".html";
+    return streamFile(res, absoluteRequested, {
+      cacheControl: isHtml ? "no-store" : "public, max-age=31536000, immutable"
+    });
+  }
+
+  const hasExplicitExtension = /\.[a-zA-Z0-9]+$/.test(pathname);
+  if (hasExplicitExtension) {
+    return false;
+  }
+
+  return streamFile(res, DIST_INDEX_PATH, { cacheControl: "no-store" });
 }
 
 async function probeExistingServer(port) {
@@ -1840,10 +1923,25 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (req.url === "/" || req.url === "/status") {
+  if (req.url === "/status") {
     writeJson(res, 200, {
       ok: true,
       message: "RECLAIM FPS socket server is running",
+      room: DEFAULT_ROOM_CODE,
+      capacity: MAX_ROOM_PLAYERS,
+      health: "/health"
+    });
+    return;
+  }
+
+  if (tryServeStatic(req, res)) {
+    return;
+  }
+
+  if (req.url === "/") {
+    writeJson(res, 200, {
+      ok: true,
+      message: "RECLAIM FPS socket server is running (static build not found)",
       room: DEFAULT_ROOM_CODE,
       capacity: MAX_ROOM_PLAYERS,
       health: "/health"

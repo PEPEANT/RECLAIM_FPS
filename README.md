@@ -114,6 +114,28 @@ Socket server health endpoints:
 - `GET /health`
 - `GET /status`
 
+### Render (Single Service) Recommended
+
+This repo now supports running client + socket on one Render Web Service.
+
+1. Push this repo to GitHub (already done if you are using this repo directly).
+2. In Render dashboard, choose **New +** -> **Blueprint**.
+3. Select this repo. Render will detect `render.yaml`.
+4. Confirm service settings:
+   - Build command: `npm ci && npm run build`
+   - Start command: `npm run render:start`
+   - Health check: `/health`
+5. Deploy.
+
+After deploy, open:
+
+- `https://<your-service>.onrender.com`
+
+Notes:
+
+- Free plan may sleep after idle time, so first reconnect can take around a minute.
+- `CORS_ORIGIN` is set to `*` in `render.yaml` for quick start. Restrict this in production if needed.
+
 ## 24/7 Local Runtime (PM2)
 
 This repo includes `ecosystem.config.cjs` with two apps:
