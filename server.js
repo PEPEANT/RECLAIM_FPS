@@ -182,6 +182,18 @@ const SPAWN_PROTECT_CENTERS = Object.freeze([
   Object.freeze({ x: DEFAULT_TEAM_HOME.alpha.x, z: DEFAULT_TEAM_HOME.alpha.z }),
   Object.freeze({ x: DEFAULT_TEAM_HOME.bravo.x, z: DEFAULT_TEAM_HOME.bravo.z })
 ]);
+const LOBBY3D_CENTER_X = 0;
+const LOBBY3D_CENTER_Z = -22;
+const LOBBY3D_HALF_X = 48;
+const LOBBY3D_HALF_Z = 34;
+const LOBBY3D_FLOOR_Y = 18;
+const LOBBY3D_WALL_HEIGHT = 10;
+const LOBBY3D_MIN_X = LOBBY3D_CENTER_X - LOBBY3D_HALF_X;
+const LOBBY3D_MAX_X = LOBBY3D_CENTER_X + LOBBY3D_HALF_X;
+const LOBBY3D_MIN_Z = LOBBY3D_CENTER_Z - LOBBY3D_HALF_Z;
+const LOBBY3D_MAX_Z = LOBBY3D_CENTER_Z + LOBBY3D_HALF_Z;
+const LOBBY3D_MIN_Y = LOBBY3D_FLOOR_Y - 1;
+const LOBBY3D_MAX_Y = LOBBY3D_FLOOR_Y + LOBBY3D_WALL_HEIGHT;
 
 const rooms = new Map();
 let playerCount = 0;
@@ -251,6 +263,9 @@ function sanitizePersistedBlockEntry(entry = {}) {
     y: Math.trunc(y),
     z: Math.trunc(z)
   };
+  if (isLobbyProtectedBlockCoord(normalized.x, normalized.y, normalized.z)) {
+    return null;
+  }
 
   if (action === "place") {
     const typeId = normalizeStockTypeId(entry.typeId);
@@ -261,6 +276,19 @@ function sanitizePersistedBlockEntry(entry = {}) {
   }
 
   return normalized;
+}
+
+function isLobbyProtectedBlockCoord(x, y, z) {
+  const bx = Math.trunc(Number(x));
+  const by = Math.trunc(Number(y));
+  const bz = Math.trunc(Number(z));
+  if (!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(bz)) {
+    return false;
+  }
+  if (bx < LOBBY3D_MIN_X || bx > LOBBY3D_MAX_X || bz < LOBBY3D_MIN_Z || bz > LOBBY3D_MAX_Z) {
+    return false;
+  }
+  return by >= LOBBY3D_MIN_Y && by <= LOBBY3D_MAX_Y;
 }
 
 function loadPersistentWorldSnapshot() {
@@ -2259,6 +2287,15 @@ io.on("connection", (socket) => {
       ack(ackFn, {
         ok: false,
         error: "스폰 보호 구역은 수정할 수 없습니다",
+        roomStateRevision: state.revision,
+        stock: serializeBlockStock(playerStock)
+      });
+      return;
+    }
+    if (isLobbyProtectedBlockCoord(sanitized.x, sanitized.y, sanitized.z)) {
+      ack(ackFn, {
+        ok: false,
+        error: "3D 로비 보호 구역은 수정할 수 없습니다",
         roomStateRevision: state.revision,
         stock: serializeBlockStock(playerStock)
       });

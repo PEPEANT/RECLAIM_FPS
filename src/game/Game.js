@@ -834,34 +834,7 @@ export class Game {
     const maxZ = centerZ + LOBBY3D_HALF_Z;
     const wallTopY = floorY + LOBBY3D_WALL_HEIGHT;
 
-    for (let x = minX; x <= maxX; x += 1) {
-      for (let z = minZ; z <= maxZ; z += 1) {
-        this.voxelWorld.setBlock(x, floorY - 1, z, 8);
-        for (let y = floorY; y <= wallTopY; y += 1) {
-          this.voxelWorld.removeBlock(x, y, z);
-        }
-      }
-    }
-
-    for (let y = floorY; y <= wallTopY; y += 1) {
-      for (let x = minX; x <= maxX; x += 1) {
-        this.voxelWorld.setBlock(x, y, minZ, 6);
-        this.voxelWorld.setBlock(x, y, maxZ, 6);
-      }
-      for (let z = minZ; z <= maxZ; z += 1) {
-        this.voxelWorld.setBlock(minX, y, z, 6);
-        this.voxelWorld.setBlock(maxX, y, z, 6);
-      }
-    }
-
-    for (let x = minX + 1; x <= maxX - 1; x += 1) {
-      this.voxelWorld.setBlock(x, wallTopY, minZ + 1, 5);
-      this.voxelWorld.setBlock(x, wallTopY, maxZ - 1, 5);
-    }
-    for (let z = minZ + 1; z <= maxZ - 1; z += 1) {
-      this.voxelWorld.setBlock(minX + 1, wallTopY, z, 5);
-      this.voxelWorld.setBlock(maxX - 1, wallTopY, z, 5);
-    }
+    this.stampLobby3DVoxelLayout();
 
     const lobbyGroup = new THREE.Group();
     lobbyGroup.visible = false;
@@ -1028,6 +1001,71 @@ export class Game {
     this.scene.add(lobbyGroup);
     this.syncLobby3DPortalState();
     this.renderLobbyRankBoard(true);
+  }
+
+  isLobby3DProtectedBlockCoord(x = 0, y = 0, z = 0) {
+    const floorY = Number(this.lobby3d?.floorY ?? LOBBY3D_FLOOR_Y);
+    const centerX = Number(this.lobby3d?.centerX ?? LOBBY3D_CENTER_X);
+    const centerZ = Number(this.lobby3d?.centerZ ?? LOBBY3D_CENTER_Z);
+    const minX = centerX - LOBBY3D_HALF_X;
+    const maxX = centerX + LOBBY3D_HALF_X;
+    const minZ = centerZ - LOBBY3D_HALF_Z;
+    const maxZ = centerZ + LOBBY3D_HALF_Z;
+    const wallTopY = floorY + LOBBY3D_WALL_HEIGHT;
+    const bx = Math.trunc(Number(x));
+    const by = Math.trunc(Number(y));
+    const bz = Math.trunc(Number(z));
+    if (!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(bz)) {
+      return false;
+    }
+    if (bx < minX || bx > maxX || bz < minZ || bz > maxZ) {
+      return false;
+    }
+    return by >= floorY - 1 && by <= wallTopY;
+  }
+
+  stampLobby3DVoxelLayout() {
+    if (!this.lobby3d) {
+      return;
+    }
+
+    const centerX = this.lobby3d.centerX;
+    const centerZ = this.lobby3d.centerZ;
+    const floorY = this.lobby3d.floorY;
+    const minX = centerX - LOBBY3D_HALF_X;
+    const maxX = centerX + LOBBY3D_HALF_X;
+    const minZ = centerZ - LOBBY3D_HALF_Z;
+    const maxZ = centerZ + LOBBY3D_HALF_Z;
+    const wallTopY = floorY + LOBBY3D_WALL_HEIGHT;
+
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let z = minZ; z <= maxZ; z += 1) {
+        this.voxelWorld.setBlock(x, floorY - 1, z, 8);
+        for (let y = floorY; y <= wallTopY; y += 1) {
+          this.voxelWorld.removeBlock(x, y, z);
+        }
+      }
+    }
+
+    for (let y = floorY; y <= wallTopY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        this.voxelWorld.setBlock(x, y, minZ, 6);
+        this.voxelWorld.setBlock(x, y, maxZ, 6);
+      }
+      for (let z = minZ; z <= maxZ; z += 1) {
+        this.voxelWorld.setBlock(minX, y, z, 6);
+        this.voxelWorld.setBlock(maxX, y, z, 6);
+      }
+    }
+
+    for (let x = minX + 1; x <= maxX - 1; x += 1) {
+      this.voxelWorld.setBlock(x, wallTopY, minZ + 1, 5);
+      this.voxelWorld.setBlock(x, wallTopY, maxZ - 1, 5);
+    }
+    for (let z = minZ + 1; z <= maxZ - 1; z += 1) {
+      this.voxelWorld.setBlock(minX + 1, wallTopY, z, 5);
+      this.voxelWorld.setBlock(maxX - 1, wallTopY, z, 5);
+    }
   }
 
   createLobbyPortalLabelSprite(text, color) {
@@ -3625,6 +3663,9 @@ export class Game {
         y: Math.trunc(rawY),
         z: Math.trunc(rawZ)
       };
+      if (this.isLobby3DProtectedBlockCoord(normalized.x, normalized.y, normalized.z)) {
+        return null;
+      }
 
       if (action === "place") {
         const typeId = Number(entry.typeId);
@@ -3649,6 +3690,7 @@ export class Game {
         this.voxelWorld.removeBlock(update.x, update.y, update.z);
       }
     }
+    this.stampLobby3DVoxelLayout();
 
     this.pendingRemoteBlocks.clear();
     this.setupObjectives();
@@ -6336,6 +6378,9 @@ export class Game {
       y: Math.trunc(rawY),
       z: Math.trunc(rawZ)
     };
+    if (this.isLobby3DProtectedBlockCoord(normalized.x, normalized.y, normalized.z)) {
+      return null;
+    }
 
     if (action === "place") {
       const typeId = Number(payload.typeId);
