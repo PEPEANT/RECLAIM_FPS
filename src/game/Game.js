@@ -799,7 +799,7 @@ export class Game {
     this.setupLobby3D();
   }
 
-  rebuildArenaWorld({ preserveLobbyGeometry = true } = {}) {
+  rebuildArenaWorld({ preserveLobbyGeometry = false } = {}) {
     this.voxelWorld.generateTerrain({ mapId: this.mapId });
     if (preserveLobbyGeometry) {
       this.stampLobby3DVoxelLayout();
@@ -1911,6 +1911,7 @@ export class Game {
     this.lobby3d.pendingPortalId = "";
     this.lobby3d.pendingPortalSince = 0;
     this.lobby3d.enteredAt = Date.now();
+    this.stampLobby3DVoxelLayout();
     this.lobby3d.portalActivationArmed = false;
     this.lobby3d.lastDeskHintAt = 0;
     this.lobby3d.remotePreviewSignature = "";
@@ -3802,8 +3803,6 @@ export class Game {
         this.voxelWorld.removeBlock(update.x, update.y, update.z);
       }
     }
-    this.stampLobby3DVoxelLayout();
-
     this.pendingRemoteBlocks.clear();
     this.setupObjectives();
     this.applyOnlineStatePayload(payload, { showEvent: false });
@@ -7675,7 +7674,7 @@ export class Game {
     this.addChatMessage("목표: 적 기지 깃발을 탈취해 아군 거점으로 복귀하세요.", "info");
     this.addChatMessage("조작: WASD, SPACE, 1/2/3, R, NumPad1-8", "info");
     if (this.activeMatchMode === "online") {
-      this.rebuildArenaWorld({ preserveLobbyGeometry: true });
+      this.rebuildArenaWorld({ preserveLobbyGeometry: false });
       this.hud.setStatus("온라인 매치 시작: AI 비활성화", false, 0.9);
       this.requestRoomSnapshot();
       this.setOnlineSpawnFromLobby();
@@ -7683,7 +7682,7 @@ export class Game {
       this.state.objectiveText = this.getOnlineObjectiveText();
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
     } else {
-      this.rebuildArenaWorld({ preserveLobbyGeometry: true });
+      this.rebuildArenaWorld({ preserveLobbyGeometry: false });
       this.setSingleSpawnFromTraining();
     }
     if (!this.isLobby3DActive()) {

@@ -1941,6 +1941,9 @@ const httpServer = createServer((req, res) => {
     writeJson(res, 200, {
       ok: true,
       service: "reclaim-fps-chat",
+      worldMapId: PERSISTENT_WORLD_MAP_ID,
+      gitCommit:
+        process.env.RENDER_GIT_COMMIT ?? process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT ?? null,
       rooms: rooms.size,
       online: playerCount,
       globalPlayers: globalRoom.players.size,
