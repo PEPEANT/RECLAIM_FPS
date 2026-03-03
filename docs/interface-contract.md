@@ -78,6 +78,10 @@ Required IDs:
 - `mp-team-bravo`
 - `mp-team-alpha-count`
 - `mp-team-bravo-count`
+- `lobby-quick-panel`
+- `lobby-quick-name`
+- `lobby-quick-name-save`
+- `lobby-quick-count`
 
 Socket event contract:
 
@@ -98,6 +102,7 @@ Socket event contract:
   - `room:started`
   - `room:error`
   - `ctf:update`
+  - `player:set-name`
 
 ## Input Contract
 

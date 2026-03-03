@@ -9,6 +9,7 @@ import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../shared/gameM
 import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
 
 const CENTER_AD_IMAGE_URL = new URL("../../PNG/AD.41415786.1.png", import.meta.url).href;
+const LOBBY_AD_IMAGE_URL = "/assets/graphics/world/lobby/lobby-ad.jpg";
 const CENTER_AD_VIDEO_URLS = [
   new URL("../../MP4/YTDown0.mp4", import.meta.url).href,
   new URL("../../MP4/YTDown1.mp4", import.meta.url).href,
@@ -60,6 +61,7 @@ const PERF_SLOW_FRAME_MS = 24;
 const RENDER_PIXEL_RATIO_CAP = 1.25;
 const RENDER_PIXEL_RATIO_LOW_CAP = 1.0;
 const RENDER_PIXEL_RATIO_HIGH_CAP = 1.55;
+const LOBBY_RUNTIME_PIXEL_RATIO_CAP = 1.0;
 const SHADOW_MAP_SIZE_DEFAULT = 1024;
 const SHADOW_MAP_SIZE_LOW = 512;
 const SHADOW_MAP_SIZE_HIGH = 1536;
@@ -125,19 +127,19 @@ const MOBILE_LOOK_SENSITIVITY_MIN_SCALE = 0.4;
 const MOBILE_LOOK_SENSITIVITY_MAX_SCALE = 2.2;
 const SKY_BASE_COLOR = 0x8ccfff;
 const LOBBY3D_CENTER_X = 0;
-const LOBBY3D_CENTER_Z = -58;
+const LOBBY3D_CENTER_Z = -28;
 const LOBBY3D_FLOOR_Y = 18;
-const LOBBY3D_HALF_X = 11;
-const LOBBY3D_HALF_Z = 9;
-const LOBBY3D_WALL_HEIGHT = 5;
-const LOBBY3D_PORTAL_TRIGGER_RADIUS = 1.9;
+const LOBBY3D_HALF_X = 34;
+const LOBBY3D_HALF_Z = 24;
+const LOBBY3D_WALL_HEIGHT = 8;
+const LOBBY3D_PORTAL_TRIGGER_RADIUS = 2.45;
 const LOBBY3D_PORTAL_COOLDOWN_MS = 700;
 const LOBBY3D_PORTAL_WARMUP_MS = 850;
 const LOBBY3D_PORTAL_HOLD_MS = 180;
 const LOBBY3D_PORTAL_ARM_DISTANCE = 1.1;
-const LOBBY3D_REMOTE_RING_BASE_RADIUS = 3.6;
-const LOBBY3D_REMOTE_RING_STEP_RADIUS = 1.25;
-const LOBBY3D_REMOTE_RING_BASE_SLOTS = 10;
+const LOBBY3D_REMOTE_RING_BASE_RADIUS = 8.2;
+const LOBBY3D_REMOTE_RING_STEP_RADIUS = 2.1;
+const LOBBY3D_REMOTE_RING_BASE_SLOTS = 20;
 const LOBBY_EXIT_TARGET_PATH = "C:\\Users\\rneet\\OneDrive\\Desktop\\Emptines";
 const PORTAL_FX_DURATION_SEC = 0.52;
 const PORTAL_FX_TEAM_FOV_BOOST = 7;
@@ -480,6 +482,8 @@ export class Game {
     this.quickSettingsOpen = false;
     this._quickSettingsBound = false;
     this.renderQualityMode = readStoredRenderQuality();
+    this._lobbyPerfBudgetActive = false;
+    this._lastAppliedPixelRatioCap = this.pixelRatioCap;
     this.mpStatusEl = document.getElementById("mp-status");
     this.mpCreateBtn = document.getElementById("mp-create");
     this.mpJoinBtn = document.getElementById("mp-join");
@@ -553,7 +557,7 @@ export class Game {
         minZ: LOBBY3D_CENTER_Z - (LOBBY3D_HALF_Z - 1),
         maxZ: LOBBY3D_CENTER_Z + (LOBBY3D_HALF_Z - 1)
       },
-      spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 2.6),
+      spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 9.8),
       portals: [],
       pulseClock: 0,
       activePortalId: "",
@@ -563,7 +567,8 @@ export class Game {
       enteredAt: 0,
       portalActivationArmed: false,
       remotePreviewSignature: "",
-      rankBoard: null
+      rankBoard: null,
+      adBoard: null
     };
     this.portalFx = {
       active: false,
@@ -751,7 +756,8 @@ export class Game {
       enemyMap: configureColorTexture("/assets/graphics/world/textures/metal.svg", 1, 1),
       muzzleFlashMap: configureSpriteTexture("/assets/graphics/world/sprites/muzzleflash.svg"),
       sparkMap: configureSpriteTexture("/assets/graphics/world/sprites/spark.svg"),
-      centerAdMap: configureSpriteTexture(CENTER_AD_IMAGE_URL)
+      centerAdMap: configureSpriteTexture(CENTER_AD_IMAGE_URL),
+      lobbyAdMap: configureSpriteTexture(LOBBY_AD_IMAGE_URL)
     };
   }
 
@@ -867,14 +873,34 @@ export class Game {
     );
     roomFrame.position.set(centerX, floorY + LOBBY3D_WALL_HEIGHT * 0.5 - 0.02, centerZ);
     lobbyGroup.add(roomFrame);
+    const shooterSetPieces = this.createLobbyShooterSetPieces({
+      centerX,
+      centerZ,
+      floorY,
+      minX,
+      maxX,
+      minZ,
+      maxZ
+    });
+    lobbyGroup.add(shooterSetPieces);
 
     this.lobby3d.rankBoard = this.createLobbyRankBoardMesh({
-      x: maxX - 0.68,
-      y: floorY + 2.85,
-      z: centerZ,
+      x: maxX - 1.05,
+      y: floorY + 3.12,
+      z: centerZ - 0.8,
       yaw: -Math.PI * 0.5
     });
     lobbyGroup.add(this.lobby3d.rankBoard.group);
+    this.lobby3d.adBoard = this.createLobbyAdBoardMesh({
+      x: centerX,
+      y: floorY + 3.22,
+      z: maxZ - 0.86,
+      yaw: Math.PI
+    });
+    lobbyGroup.add(this.lobby3d.adBoard.group);
+
+    const portalOffsetX = Math.max(7.2, LOBBY3D_HALF_X - 4.2);
+    const portalOffsetZ = Math.max(6.2, LOBBY3D_HALF_Z - 3.6);
 
     const specs = [
       {
@@ -882,16 +908,16 @@ export class Game {
         label: "훈련장",
         action: "training",
         color: 0x66bcff,
-        x: centerX - 6,
-        z: centerZ + 0.2
+        x: centerX - portalOffsetX,
+        z: centerZ + 0.1
       },
       {
         id: "online",
         label: "온라인장",
         action: "online",
         color: 0x6ff5c6,
-        x: centerX + 6,
-        z: centerZ + 0.2
+        x: centerX + portalOffsetX,
+        z: centerZ + 0.1
       },
       {
         id: "entry",
@@ -899,7 +925,7 @@ export class Game {
         action: "entry",
         color: 0x8fb3ff,
         x: centerX,
-        z: centerZ + 4.6
+        z: centerZ + portalOffsetZ
       },
       {
         id: "exit",
@@ -907,7 +933,7 @@ export class Game {
         action: "exit",
         color: 0xff8f8f,
         x: centerX,
-        z: centerZ - 5.2
+        z: centerZ - portalOffsetZ
       }
     ];
 
@@ -1038,6 +1064,573 @@ export class Game {
     return sprite;
   }
 
+  createLobbyAmmoCrate({ x = 0, y = 0, z = 0, yaw = 0, stack = 1 } = {}) {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+    group.rotation.y = yaw;
+
+    const crateMat = new THREE.MeshStandardMaterial({
+      color: 0x3a2f25,
+      roughness: 0.72,
+      metalness: 0.06
+    });
+    const bandMat = new THREE.MeshStandardMaterial({
+      color: 0x768498,
+      roughness: 0.28,
+      metalness: 0.58
+    });
+    const roundMat = new THREE.MeshStandardMaterial({
+      color: 0xb7c9df,
+      roughness: 0.24,
+      metalness: 0.72,
+      emissive: 0x213246,
+      emissiveIntensity: 0.24
+    });
+    const tipMat = new THREE.MeshStandardMaterial({
+      color: 0xd9b36b,
+      roughness: 0.34,
+      metalness: 0.62
+    });
+
+    for (let i = 0; i < Math.max(1, stack); i += 1) {
+      const layerY = i * 0.52;
+      const crate = new THREE.Mesh(new THREE.BoxGeometry(1.18, 0.46, 0.86), crateMat);
+      crate.position.set(0, layerY + 0.23, 0);
+      crate.castShadow = true;
+      crate.receiveShadow = true;
+      group.add(crate);
+
+      const band = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.9), bandMat);
+      band.position.set(0, layerY + 0.25, 0);
+      band.castShadow = true;
+      group.add(band);
+    }
+
+    for (let i = 0; i < 6; i += 1) {
+      const round = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.34, 12), roundMat);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.042, 0.1, 12), tipMat);
+      const row = Math.floor(i / 3);
+      const col = i % 3;
+      const px = -0.24 + col * 0.24;
+      const pz = -0.16 + row * 0.28;
+      const py = 0.28 + Math.max(1, stack) * 0.52;
+
+      round.rotation.z = Math.PI * 0.5;
+      tip.rotation.z = Math.PI * 0.5;
+      round.position.set(px, py, pz);
+      tip.position.set(px + 0.2, py, pz);
+      round.castShadow = true;
+      tip.castShadow = true;
+      group.add(round, tip);
+    }
+
+    return group;
+  }
+
+  createLobbyWeaponRack({ x = 0, y = 0, z = 0, yaw = 0 } = {}) {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+    group.rotation.y = yaw;
+
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0x1b2b3d,
+      roughness: 0.42,
+      metalness: 0.55
+    });
+    const gunMat = new THREE.MeshStandardMaterial({
+      color: 0x2f3944,
+      roughness: 0.28,
+      metalness: 0.76
+    });
+    const stockMat = new THREE.MeshStandardMaterial({
+      color: 0x273849,
+      roughness: 0.52,
+      metalness: 0.34
+    });
+
+    const base = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.18, 1.2), frameMat);
+    base.position.set(0, 0.09, 0);
+    base.receiveShadow = true;
+    group.add(base);
+
+    const railTop = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.12, 0.2), frameMat);
+    railTop.position.set(0, 1.32, -0.36);
+    railTop.castShadow = true;
+    group.add(railTop);
+
+    const leftPost = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.36, 0.14), frameMat);
+    const rightPost = leftPost.clone();
+    leftPost.position.set(-1.5, 0.68, -0.4);
+    rightPost.position.set(1.5, 0.68, -0.4);
+    leftPost.castShadow = true;
+    rightPost.castShadow = true;
+    group.add(leftPost, rightPost);
+
+    const createRifle = (offsetX) => {
+      const rifle = new THREE.Group();
+      rifle.position.set(offsetX, 0.94, 0.02);
+      rifle.rotation.z = -0.24;
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.92), gunMat);
+      const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, 0.64), gunMat);
+      barrel.position.set(0, 0.02, 0.74);
+      const stock = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.2, 0.34), stockMat);
+      stock.position.set(0, -0.04, -0.58);
+      const mag = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.24, 0.18), stockMat);
+      mag.position.set(0, -0.18, 0.08);
+
+      body.castShadow = true;
+      barrel.castShadow = true;
+      stock.castShadow = true;
+      mag.castShadow = true;
+      rifle.add(body, barrel, stock, mag);
+      return rifle;
+    };
+
+    group.add(createRifle(-0.88), createRifle(0), createRifle(0.88));
+    return group;
+  }
+
+  createLobbyDeskSignSprite(text = "안내 데스크") {
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 176;
+    const context = canvas.getContext("2d");
+    if (context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "rgba(8, 22, 40, 0.86)";
+      context.strokeStyle = "rgba(127, 217, 255, 0.94)";
+      context.lineWidth = 5;
+      context.fillRect(20, 26, canvas.width - 40, canvas.height - 52);
+      context.strokeRect(20, 26, canvas.width - 40, canvas.height - 52);
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = "700 58px Segoe UI, Arial, sans-serif";
+      context.fillStyle = "rgba(236, 248, 255, 0.98)";
+      context.fillText(String(text).slice(0, 20), canvas.width * 0.5, canvas.height * 0.5 + 2);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false
+      })
+    );
+    sprite.scale.set(3.5, 0.96, 1);
+    sprite.renderOrder = 16;
+    return sprite;
+  }
+
+  createLobbyInfoDesk({ x = 0, y = 0, z = 0, yaw = 0 } = {}) {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+    group.rotation.y = yaw;
+
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0x1b2f46,
+      roughness: 0.46,
+      metalness: 0.5
+    });
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: 0x6f9bc6,
+      roughness: 0.22,
+      metalness: 0.64,
+      emissive: 0x2a5175,
+      emissiveIntensity: 0.26
+    });
+    const monitorFrameMat = new THREE.MeshStandardMaterial({
+      color: 0x1d2733,
+      roughness: 0.36,
+      metalness: 0.58
+    });
+    const monitorScreenMat = new THREE.MeshBasicMaterial({
+      color: 0xa6e6ff,
+      transparent: true,
+      opacity: 0.92
+    });
+    const ropeMat = new THREE.MeshStandardMaterial({
+      color: 0x3e6a90,
+      roughness: 0.38,
+      metalness: 0.22
+    });
+
+    const counterBase = new THREE.Mesh(new THREE.BoxGeometry(4.9, 1.05, 1.5), bodyMat);
+    counterBase.position.set(0, 0.52, 0);
+    counterBase.castShadow = true;
+    counterBase.receiveShadow = true;
+    group.add(counterBase);
+
+    const counterTop = new THREE.Mesh(new THREE.BoxGeometry(5.1, 0.12, 1.66), trimMat);
+    counterTop.position.set(0, 1.08, 0);
+    counterTop.castShadow = true;
+    counterTop.receiveShadow = true;
+    group.add(counterTop);
+
+    const accentStrip = new THREE.Mesh(new THREE.BoxGeometry(4.75, 0.16, 0.1), trimMat);
+    accentStrip.position.set(0, 0.36, 0.76);
+    group.add(accentStrip);
+
+    const makeMonitor = (offsetX) => {
+      const monitorGroup = new THREE.Group();
+      monitorGroup.position.set(offsetX, 1.23, -0.08);
+
+      const stand = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.22, 0.08), monitorFrameMat);
+      stand.position.set(0, 0.07, -0.02);
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.66, 0.08), monitorFrameMat);
+      frame.position.set(0, 0.44, 0);
+      const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.84, 0.5), monitorScreenMat);
+      screen.position.set(0, 0.44, 0.046);
+      screen.renderOrder = 16;
+
+      stand.castShadow = true;
+      frame.castShadow = true;
+      monitorGroup.add(stand, frame, screen);
+      return monitorGroup;
+    };
+
+    group.add(makeMonitor(-1.12), makeMonitor(1.12));
+
+    const deskSign = this.createLobbyDeskSignSprite("안내 데스크");
+    deskSign.position.set(0, 2.28, -0.28);
+    group.add(deskSign);
+
+    const createPost = (px, pz) => {
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09, 0.1, 0.96, 14),
+        new THREE.MeshStandardMaterial({
+          color: 0x6e8297,
+          roughness: 0.24,
+          metalness: 0.66
+        })
+      );
+      post.position.set(px, 0.48, pz);
+      post.castShadow = true;
+      post.receiveShadow = true;
+      return post;
+    };
+
+    const queuePosts = [
+      createPost(-1.7, 2.2),
+      createPost(1.7, 2.2),
+      createPost(-1.7, 3.3),
+      createPost(1.7, 3.3)
+    ];
+    group.add(...queuePosts);
+
+    const ropeFront = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 3.4, 12), ropeMat);
+    ropeFront.rotation.z = Math.PI * 0.5;
+    ropeFront.position.set(0, 0.88, 2.2);
+    const ropeBack = ropeFront.clone();
+    ropeBack.position.set(0, 0.88, 3.3);
+    const ropeLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.1, 12), ropeMat);
+    ropeLeft.rotation.x = Math.PI * 0.5;
+    ropeLeft.position.set(-1.7, 0.88, 2.75);
+    const ropeRight = ropeLeft.clone();
+    ropeRight.position.set(1.7, 0.88, 2.75);
+    group.add(ropeFront, ropeBack, ropeLeft, ropeRight);
+
+    return group;
+  }
+
+  createLobbyShooterSetPieces({ centerX, centerZ, floorY, minX, maxX, minZ, maxZ } = {}) {
+    const group = new THREE.Group();
+
+    const platform = new THREE.Mesh(
+      new THREE.CylinderGeometry(8.6, 8.6, 0.24, 56),
+      new THREE.MeshStandardMaterial({
+        color: 0x15273c,
+        roughness: 0.46,
+        metalness: 0.54,
+        emissive: 0x173654,
+        emissiveIntensity: 0.18
+      })
+    );
+    platform.position.set(centerX, floorY + 0.12, centerZ);
+    platform.receiveShadow = true;
+    group.add(platform);
+
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(7.2, 0.12, 16, 84),
+      new THREE.MeshStandardMaterial({
+        color: 0x5dbcf5,
+        roughness: 0.2,
+        metalness: 0.64,
+        emissive: 0x5dbcf5,
+        emissiveIntensity: 0.22
+      })
+    );
+    ring.rotation.x = Math.PI * 0.5;
+    ring.position.set(centerX, floorY + 0.2, centerZ);
+    group.add(ring);
+
+    const outerRing = new THREE.Mesh(
+      new THREE.TorusGeometry(9.8, 0.1, 16, 96),
+      new THREE.MeshStandardMaterial({
+        color: 0x284868,
+        roughness: 0.34,
+        metalness: 0.6,
+        emissive: 0x1f3f61,
+        emissiveIntensity: 0.16
+      })
+    );
+    outerRing.rotation.x = Math.PI * 0.5;
+    outerRing.position.set(centerX, floorY + 0.15, centerZ);
+    group.add(outerRing);
+
+    const laneMat = new THREE.MeshBasicMaterial({
+      color: 0x8ddcff,
+      transparent: true,
+      opacity: 0.18
+    });
+    const laneA = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 18.4), laneMat);
+    laneA.rotation.x = -Math.PI * 0.5;
+    laneA.position.set(centerX - 5.4, floorY + 0.03, centerZ);
+    const laneB = laneA.clone();
+    laneB.position.set(centerX + 5.4, floorY + 0.03, centerZ);
+    group.add(laneA, laneB);
+
+    const rackOffsetX = Math.max(10.6, LOBBY3D_HALF_X - 10.4);
+    const rackDepthZ = Math.max(6.4, LOBBY3D_HALF_Z - 12.2);
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX - rackOffsetX,
+        y: floorY,
+        z: centerZ - rackDepthZ,
+        yaw: Math.PI * 0.5
+      })
+    );
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX + rackOffsetX,
+        y: floorY,
+        z: centerZ - rackDepthZ,
+        yaw: -Math.PI * 0.5
+      })
+    );
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX - rackOffsetX,
+        y: floorY,
+        z: centerZ + rackDepthZ - 1.8,
+        yaw: Math.PI * 0.5
+      })
+    );
+    group.add(
+      this.createLobbyWeaponRack({
+        x: centerX + rackOffsetX,
+        y: floorY,
+        z: centerZ + rackDepthZ - 1.8,
+        yaw: -Math.PI * 0.5
+      })
+    );
+
+    const crateX = Math.max(9.2, LOBBY3D_HALF_X - 12.4);
+    const crateZ = Math.max(6.8, LOBBY3D_HALF_Z - 11.2);
+    group.add(
+      this.createLobbyAmmoCrate({
+        x: centerX - crateX,
+        y: floorY,
+        z: centerZ + crateZ,
+        yaw: Math.PI * 0.2,
+        stack: 2
+      })
+    );
+    group.add(
+      this.createLobbyAmmoCrate({
+        x: centerX + crateX,
+        y: floorY,
+        z: centerZ + crateZ,
+        yaw: -Math.PI * 0.2,
+        stack: 2
+      })
+    );
+    group.add(
+      this.createLobbyAmmoCrate({
+        x: centerX - crateX,
+        y: floorY,
+        z: centerZ - crateZ,
+        yaw: Math.PI * 0.12,
+        stack: 1
+      })
+    );
+    group.add(
+      this.createLobbyAmmoCrate({
+        x: centerX + crateX,
+        y: floorY,
+        z: centerZ - crateZ,
+        yaw: -Math.PI * 0.12,
+        stack: 1
+      })
+    );
+    group.add(
+      this.createLobbyAmmoCrate({
+        x: centerX - crateX * 0.44,
+        y: floorY,
+        z: centerZ - crateZ - 1.3,
+        yaw: -Math.PI * 0.06,
+        stack: 1
+      })
+    );
+    group.add(
+      this.createLobbyAmmoCrate({
+        x: centerX + crateX * 0.44,
+        y: floorY,
+        z: centerZ - crateZ - 1.3,
+        yaw: Math.PI * 0.06,
+        stack: 1
+      })
+    );
+
+    const deskZ = centerZ + Math.max(8.2, LOBBY3D_HALF_Z - 10.2);
+    group.add(this.createLobbyInfoDesk({ x: centerX, y: floorY, z: deskZ, yaw: Math.PI }));
+
+    const trussMat = new THREE.MeshStandardMaterial({
+      color: 0x2c435b,
+      roughness: 0.34,
+      metalness: 0.56
+    });
+    const trussWidth = LOBBY3D_HALF_X * 2 - 7.6;
+    const trussFront = new THREE.Mesh(new THREE.BoxGeometry(trussWidth, 0.2, 0.2), trussMat);
+    trussFront.position.set(centerX, floorY + 4.55, centerZ + Math.max(5.8, LOBBY3D_HALF_Z - 9.4));
+    trussFront.castShadow = true;
+    const trussBack = trussFront.clone();
+    trussBack.position.z = centerZ - Math.max(5.8, LOBBY3D_HALF_Z - 9.4);
+    group.add(trussFront, trussBack);
+
+    const makeTargetStand = (tx, tz) => {
+      const target = new THREE.Group();
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.08, 1.62, 12),
+        new THREE.MeshStandardMaterial({
+          color: 0x647b92,
+          roughness: 0.28,
+          metalness: 0.64
+        })
+      );
+      pole.position.set(0, 0.81, 0);
+      pole.castShadow = true;
+      const plate = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.54, 0.54, 0.08, 26),
+        new THREE.MeshStandardMaterial({
+          color: 0xcfe6ff,
+          roughness: 0.24,
+          metalness: 0.22,
+          emissive: 0x1f3249,
+          emissiveIntensity: 0.2
+        })
+      );
+      plate.position.set(0, 1.65, 0);
+      plate.rotation.x = Math.PI * 0.5;
+      target.add(pole, plate);
+      target.position.set(tx, floorY, tz);
+      return target;
+    };
+    group.add(
+      makeTargetStand(centerX - 4.8, centerZ - Math.max(10.8, LOBBY3D_HALF_Z - 7.4)),
+      makeTargetStand(centerX + 4.8, centerZ - Math.max(10.8, LOBBY3D_HALF_Z - 7.4))
+    );
+
+    const lightMat = new THREE.MeshBasicMaterial({
+      color: 0x87d6ff,
+      transparent: true,
+      opacity: 0.52
+    });
+    const wallInsetX = Math.max(2.2, LOBBY3D_HALF_X - 2.4);
+    const wallInsetZ = Math.max(2.2, LOBBY3D_HALF_Z - 2.4);
+    const lights = [
+      [centerX - wallInsetX, floorY + 2.8, centerZ],
+      [centerX + wallInsetX, floorY + 2.8, centerZ],
+      [centerX, floorY + 2.8, centerZ - wallInsetZ],
+      [centerX, floorY + 2.8, centerZ + wallInsetZ],
+      [centerX - wallInsetX * 0.5, floorY + 3.2, centerZ - wallInsetZ * 0.72],
+      [centerX + wallInsetX * 0.5, floorY + 3.2, centerZ - wallInsetZ * 0.72],
+      [centerX - wallInsetX * 0.5, floorY + 3.2, centerZ + wallInsetZ * 0.72],
+      [centerX + wallInsetX * 0.5, floorY + 3.2, centerZ + wallInsetZ * 0.72]
+    ];
+    for (const [lx, ly, lz] of lights) {
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(0.26, 1.45, 0.08), lightMat);
+      strip.position.set(lx, ly, lz);
+      group.add(strip);
+    }
+
+    const corners = [
+      [minX + 2.6, floorY + 0.28, minZ + 2.2],
+      [maxX - 2.6, floorY + 0.28, minZ + 2.2],
+      [minX + 2.6, floorY + 0.28, maxZ - 2.2],
+      [maxX - 2.6, floorY + 0.28, maxZ - 2.2]
+    ];
+    const bollardMat = new THREE.MeshStandardMaterial({
+      color: 0x304459,
+      roughness: 0.32,
+      metalness: 0.52
+    });
+    for (const [bx, by, bz] of corners) {
+      const bollard = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.56, 16), bollardMat);
+      bollard.position.set(bx, by, bz);
+      bollard.castShadow = true;
+      bollard.receiveShadow = true;
+      group.add(bollard);
+    }
+
+    return group;
+  }
+
+  createLobbyAdBoardMesh({ x = 0, y = 0, z = 0, yaw = 0 } = {}) {
+    const texture = this.graphics?.lobbyAdMap ?? this.graphics?.centerAdMap ?? null;
+    const group = new THREE.Group();
+
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(7.32, 3.92, 0.18),
+      new THREE.MeshStandardMaterial({
+        color: 0x12253a,
+        roughness: 0.34,
+        metalness: 0.62,
+        emissive: 0x17385b,
+        emissiveIntensity: 0.22
+      })
+    );
+    frame.position.set(x, y, z);
+    frame.rotation.y = yaw;
+    frame.castShadow = true;
+    frame.receiveShadow = true;
+    group.add(frame);
+
+    const panel = new THREE.Mesh(
+      new THREE.PlaneGeometry(6.92, 3.52),
+      new THREE.MeshStandardMaterial({
+        map: texture,
+        color: 0xffffff,
+        roughness: 0.78,
+        metalness: 0.06
+      })
+    );
+    panel.position.set(x - Math.sin(yaw) * 0.095, y, z - Math.cos(yaw) * 0.095);
+    panel.rotation.y = yaw;
+    panel.receiveShadow = true;
+    panel.renderOrder = 14;
+    group.add(panel);
+
+    const strip = new THREE.Mesh(
+      new THREE.BoxGeometry(7.14, 0.12, 0.08),
+      new THREE.MeshBasicMaterial({
+        color: 0x8ddcff,
+        transparent: true,
+        opacity: 0.58
+      })
+    );
+    strip.position.set(x, y + 1.86, z);
+    strip.rotation.y = yaw;
+    group.add(strip);
+
+    return { group, panel, frame, strip };
+  }
+
   createLobbyRankBoardMesh({ x = 0, y = 0, z = 0, yaw = 0 } = {}) {
     const canvas = document.createElement("canvas");
     canvas.width = 1024;
@@ -1094,6 +1687,10 @@ export class Game {
     }
 
     const now = Date.now();
+    const renderSecond = Math.floor(now / 1000);
+    if (!force && rankBoard.lastRenderedSecond === renderSecond) {
+      return;
+    }
     const countdownSec = Math.max(0, Math.ceil((Number(this.dailyLeaderboard?.resetAt ?? 0) - now) / 1000));
     const hour = Math.floor(countdownSec / 3600);
     const min = Math.floor((countdownSec % 3600) / 60);
@@ -1103,10 +1700,6 @@ export class Game {
     const signature = `${String(this.dailyLeaderboard?.dateKey ?? "")}|${countdownText}|${rows
       .map((entry) => `${entry.rank}:${entry.name}:${entry.captures}:${entry.kills}:${entry.deaths}`)
       .join("|")}`;
-    const renderSecond = Math.floor(now / 1000);
-    if (!force && signature === rankBoard.lastSignature && rankBoard.lastRenderedSecond === renderSecond) {
-      return;
-    }
 
     rankBoard.lastSignature = signature;
     rankBoard.lastRenderedSecond = renderSecond;
@@ -1184,6 +1777,7 @@ export class Game {
       this.lobby3d.portalActivationArmed = false;
       this.lobby3d.remotePreviewSignature = "";
       this.clearPortalTransitionFx();
+      this.syncRuntimePerformanceBudget(false);
       this.updateLobbyQuickPanel();
       return;
     }
@@ -1209,8 +1803,9 @@ export class Game {
       this.camera.rotation.x = this.pitch;
       this.camera.rotation.z = 0;
     }
-    this.state.objectiveText = "목표: 포탈 선택 · 닉네임 변경 · TAB으로 순위 확인";
-    this.hud.setStatus("3D 로비 활성화: 포탈/닉네임/순위를 확인하세요.", false, 1.3);
+    this.state.objectiveText = "목표: 포탈 선택 · 닉네임 변경 · 무기/탄약 존 확인 · TAB 순위";
+    this.hud.setStatus("3D 로비 활성화: 포탈/닉네임/무기/탄약/순위를 확인하세요.", false, 1.3);
+    this.syncRuntimePerformanceBudget(true);
     this.syncLobby3DPortalState();
     this.updateLobbyQuickPanel();
   }
@@ -2003,6 +2598,20 @@ export class Game {
     setText("mp-start", "온라인 시작");
     setText("mp-enter-lobby", "3D 로비 입장");
     setText("mp-refresh", "새로고침");
+    setText("mp-room-subtitle", "3D 실시간 로비");
+    setText("lobby-quick-name-save", "적용");
+    setText("lobby-quick-count", "대기 인원 0/50");
+    setText("lobby-quick-guide", "이동 WASD · 순위 TAB · 채팅 T/Enter");
+    const quickRankTitle = document.querySelector(".lobby-quick-rank-title");
+    if (quickRankTitle) {
+      quickRankTitle.textContent = "실시간 순위";
+    }
+    if (this.mpNameInput) {
+      this.mpNameInput.setAttribute("placeholder", "닉네임 입력");
+    }
+    if (this.lobbyQuickNameInput) {
+      this.lobbyQuickNameInput.setAttribute("placeholder", "닉네임 수정");
+    }
     setText("mobile-mode-place", "설치");
     setText("mobile-mode-dig", "삽");
     setText("mobile-mode-gun", "총");
@@ -2025,6 +2634,20 @@ export class Game {
       onlineDesc.textContent =
         "3D 로비에서 4개 포탈(훈련장/온라인장/들어온포탈/나가기포탈)을 이용해 이동합니다.";
     }
+    const portalGuideRows = Array.from(document.querySelectorAll(".mp-portal-guide-row span:last-child"));
+    if (portalGuideRows[0]) {
+      portalGuideRows[0].textContent = "훈련장 포탈: 즉시 훈련 모드로 이동";
+    }
+    if (portalGuideRows[1]) {
+      portalGuideRows[1].textContent = "온라인장 포탈: 온라인 경기 참가/시작";
+    }
+    if (portalGuideRows[2]) {
+      portalGuideRows[2].textContent = "들어온포탈: 로비 입장 지점 포탈";
+    }
+    if (portalGuideRows[3]) {
+      portalGuideRows[3].textContent = "나가기포탈: Emptines 폴더로 이동";
+    }
+    setText("mp-portal-hint", "온라인장/훈련장/나가기 중 원하는 포탈로 이동하세요.");
     const subtitle = document.querySelector(".options-subtitle");
     if (subtitle) {
       subtitle.textContent = "왼쪽에서 항목을 고르고 오른쪽에서 값을 조절하세요.";
@@ -2210,6 +2833,42 @@ export class Game {
     }
   }
 
+  getEffectivePixelRatioCap(lobbyBudgetActive = this._lobbyPerfBudgetActive) {
+    if (lobbyBudgetActive) {
+      return Math.min(this.pixelRatioCap, LOBBY_RUNTIME_PIXEL_RATIO_CAP);
+    }
+    return this.pixelRatioCap;
+  }
+
+  syncRuntimePerformanceBudget(lobbyBudgetActive) {
+    const inLobbyBudget = Boolean(lobbyBudgetActive);
+    const effectiveCap = this.getEffectivePixelRatioCap(inLobbyBudget);
+    if (this._lastAppliedPixelRatioCap !== effectiveCap) {
+      this._lastAppliedPixelRatioCap = effectiveCap;
+      if (typeof window !== "undefined") {
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, effectiveCap));
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    }
+
+    if (this._lobbyPerfBudgetActive === inLobbyBudget) {
+      return;
+    }
+    this._lobbyPerfBudgetActive = inLobbyBudget;
+
+    const enableShadows = !inLobbyBudget;
+    this.renderer.shadowMap.enabled = enableShadows;
+    this.renderer.shadowMap.needsUpdate = enableShadows;
+
+    if (this.sunLight) {
+      this.sunLight.castShadow = enableShadows;
+      if (this.sunLight.shadow) {
+        this.sunLight.shadow.autoUpdate = enableShadows;
+        this.sunLight.shadow.needsUpdate = enableShadows;
+      }
+    }
+  }
+
   applyRenderQualityMode(mode, { persist = true, announce = true } = {}) {
     const nextMode = normalizeRenderQuality(mode);
     this.renderQualityMode = nextMode;
@@ -2229,7 +2888,12 @@ export class Game {
       this.pixelRatioCap = RENDER_PIXEL_RATIO_CAP;
     }
 
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
+    const lobbyBudgetActive = this.isLobby3DActive();
+    const effectiveCap = this.getEffectivePixelRatioCap(lobbyBudgetActive);
+    if (typeof window !== "undefined") {
+      this._lastAppliedPixelRatioCap = effectiveCap;
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, effectiveCap));
+    }
 
     if (this.sunLight?.shadow) {
       if (nextMode === "low") {
@@ -2256,6 +2920,7 @@ export class Game {
     }
 
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.syncRuntimePerformanceBudget(lobbyBudgetActive);
     this.syncQuickSettingsQualityUi();
 
     if (announce && this.hud) {
@@ -6679,8 +7344,10 @@ export class Game {
     } else {
       this.setSingleSpawnFromTraining();
     }
-    this.updateTeamScoreHud();
-    this.updateFlagInteractUi();
+    if (!lobbyActive) {
+      this.updateTeamScoreHud();
+      this.updateFlagInteractUi();
+    }
     this.refreshOnlineStatus();
     if (this.activeMatchMode === "online") {
       this.emitCenterAdSync({ force: true });
@@ -7195,6 +7862,9 @@ export class Game {
   }
 
   tick(delta) {
+    const lobbyActive = this.isLobby3DActive();
+    this.syncRuntimePerformanceBudget(lobbyActive);
+
     this._bucketOptimizeCooldown -= delta;
     if (this._bucketOptimizeCooldown <= 0) {
       this._bucketOptimizeCooldown = BUCKET_OPTIMIZE_INTERVAL;
@@ -7208,7 +7878,9 @@ export class Game {
 
     this.updateSparks(delta);
     this.updatePortalFx(delta);
-    this.updateSky(delta);
+    if (!lobbyActive) {
+      this.updateSky(delta);
+    }
     this.updateCenterAdAudio(delta);
     this.updateCenterAdPlaybackWatchdog();
     if (this.activeMatchMode === "online" && this.centerAdActive) {
@@ -7218,20 +7890,21 @@ export class Game {
     const gunMode = this.buildSystem.isGunMode();
     const aiEnabled = this.activeMatchMode !== "online";
 
-    if (gunMode) {
+    if (gunMode && this.isRunning) {
       this.weapon.update(delta);
     }
 
     if (this.activeMatchMode === "online") {
       this.updateRemotePlayers(delta);
-      this.processPendingRemoteBlocks(delta);
+      if (!lobbyActive) {
+        this.processPendingRemoteBlocks(delta);
+      }
       this.emitLocalPlayerSync(delta);
     }
 
     this.updateOnlineRoundCountdown();
     this.updateRespawnCountdown();
 
-    const lobbyActive = this.isLobby3DActive();
     if (lobbyActive) {
       const canMoveInLobby = !this.optionsMenuOpen && !isUiTyping;
       if (canMoveInLobby) {
@@ -7409,8 +8082,11 @@ export class Game {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.lastAppliedFov = this.camera.fov;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
+    const effectiveCap = this.getEffectivePixelRatioCap(this.isLobby3DActive());
+    this._lastAppliedPixelRatioCap = effectiveCap;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, effectiveCap));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.syncRuntimePerformanceBudget(this.isLobby3DActive());
     this.updateMobileControlsVisibility();
   }
 

@@ -1,4 +1,4 @@
-import { io } from "socket.io-client";
+﻿import { io } from "socket.io-client";
 
 const PROD_CHAT_FALLBACK_URL = "https://reclaim-fps-chat.onrender.com";
 
@@ -19,7 +19,6 @@ function resolveDefaultServerUrl() {
     return `${protocol}//${hostname}:3001`;
   }
 
-  // Static hosting domains do not run the Socket.IO backend.
   if (hostname.endsWith(".netlify.app") || hostname.endsWith(".vercel.app")) {
     return PROD_CHAT_FALLBACK_URL;
   }
@@ -29,6 +28,8 @@ function resolveDefaultServerUrl() {
 
 const SERVER_URL = import.meta.env.VITE_CHAT_SERVER ?? resolveDefaultServerUrl();
 const MAX_MSGS = 80;
+const MAX_LIVE_MSGS = 10;
+const LIVE_LINE_TTL_MS = 7000;
 
 function isLikelyMobileUi() {
   if (typeof window === "undefined" || typeof navigator === "undefined") {
@@ -50,16 +51,20 @@ export class Chat {
     this._mobileUiBound = false;
     this.mobileUiEnabled = false;
     this.mobileCollapsed = false;
+    this.chatOpen = true;
     this.teamResolver = null;
 
     this.panelEl = document.getElementById("chat-panel");
+    this.titleEl = document.getElementById("chat-title");
     this.messagesEl = document.getElementById("chat-messages");
+    this.liveFeedEl = document.getElementById("chat-live-feed");
+    this.liveLogEl = document.getElementById("chat-live-log");
     this.inputEl = document.getElementById("chat-input");
     this.sendBtn = document.getElementById("chat-send");
     this.inputWrapEl = this.panelEl?.querySelector(".chat-input-wrap") ?? null;
     this.toggleBtnEl = document.getElementById("chat-toggle-btn");
 
-    this.enabled = !!(this.messagesEl && this.inputEl && this.sendBtn);
+    this.enabled = !!(this.messagesEl && this.inputEl && this.sendBtn && this.panelEl);
     if (!this.enabled) {
       return;
     }
@@ -85,7 +90,6 @@ export class Chat {
     if (!safe) {
       return;
     }
-
     this.playerName = safe;
   }
 
@@ -95,6 +99,10 @@ export class Chat {
 
   isConnecting() {
     return !!this.socket?.active && !this.socket?.connected;
+  }
+
+  isOpen() {
+    return this.chatOpen;
   }
 
   notifyFocusChanged() {
@@ -133,7 +141,19 @@ export class Chat {
       });
     });
 
-    this.socket.on("chat:system", () => {});
+    this.socket.on("chat:system", (payload) => {
+      const text =
+        typeof payload === "string"
+          ? payload
+          : typeof payload?.text === "string"
+            ? payload.text
+            : "";
+      if (!text) {
+        return;
+      }
+      const level = payload?.level === "error" ? "system-err" : "system";
+      this.append(null, text, level);
+    });
 
     this.bindTeardown();
   }
@@ -161,6 +181,7 @@ export class Chat {
 
     this.inputEl.addEventListener("focus", () => {
       this.isInputFocused = true;
+      this.setOpenState(true, { focusInput: false });
       this.notifyFocusChanged();
     });
 
@@ -176,7 +197,8 @@ export class Chat {
         this.send();
       }
       if (event.code === "Escape") {
-        this.inputEl.blur();
+        event.preventDefault();
+        this.close();
       }
     });
 
@@ -184,28 +206,22 @@ export class Chat {
   }
 
   setupMobileUi() {
-    if (!this.enabled || !this.panelEl) {
+    if (!this.enabled) {
       return;
     }
 
     const applyMode = () => {
-      const mobile = isLikelyMobileUi();
-      this.mobileUiEnabled = mobile;
-      const collapsed = mobile ? this.mobileCollapsed : false;
-      this.applyMobileCollapsedState(collapsed, { focusInput: false });
+      const isMobileNow = isLikelyMobileUi();
+      if (isMobileNow !== this.mobileUiEnabled) {
+        this.mobileUiEnabled = isMobileNow;
+        this.chatOpen = !isMobileNow;
+      }
+      this.setOpenState(this.chatOpen, { focusInput: false, force: true });
     };
 
     if (this.toggleBtnEl) {
       this.toggleBtnEl.addEventListener("click", () => {
-        if (!this.mobileUiEnabled) {
-          this.open();
-          return;
-        }
-        if (this.mobileCollapsed) {
-          this.open();
-        } else {
-          this.close();
-        }
+        this.toggle({ focusInput: !this.mobileUiEnabled });
       });
     }
 
@@ -214,61 +230,89 @@ export class Chat {
       window.addEventListener("resize", applyMode);
     }
 
-    this.mobileCollapsed = true;
-    applyMode();
+    this.mobileUiEnabled = isLikelyMobileUi();
+    this.chatOpen = !this.mobileUiEnabled;
+    this.setOpenState(this.chatOpen, { focusInput: false, force: true });
   }
 
-  applyMobileCollapsedState(collapsed, { focusInput = false } = {}) {
-    const canCollapse = this.mobileUiEnabled;
-    const nextCollapsed = canCollapse ? Boolean(collapsed) : false;
-    this.mobileCollapsed = nextCollapsed;
+  setOpenState(open, { focusInput = false, force = false } = {}) {
+    if (!this.enabled) {
+      return;
+    }
 
-    this.panelEl?.classList.toggle("is-mobile", canCollapse);
-    this.panelEl?.classList.toggle("mobile-collapsed", nextCollapsed);
+    const nextOpen = Boolean(open);
+    if (!force && this.chatOpen === nextOpen) {
+      this.syncLiveFeedVisibility();
+      return;
+    }
+
+    this.chatOpen = nextOpen;
+    this.mobileCollapsed = this.mobileUiEnabled ? !nextOpen : false;
+
+    this.panelEl?.classList.toggle("is-mobile", this.mobileUiEnabled);
+    this.panelEl?.classList.toggle("mobile-collapsed", this.mobileUiEnabled && !nextOpen);
+    this.panelEl?.classList.toggle("is-collapsed", !this.mobileUiEnabled && !nextOpen);
+
+    if (this.titleEl) {
+      this.titleEl.textContent = "채팅";
+    }
 
     if (this.toggleBtnEl) {
-      this.toggleBtnEl.classList.toggle("show", canCollapse);
-      this.toggleBtnEl.textContent = nextCollapsed ? "채팅" : "X";
-      this.toggleBtnEl.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-      this.toggleBtnEl.setAttribute("aria-label", nextCollapsed ? "채팅 열기" : "채팅 닫기");
-      this.toggleBtnEl.setAttribute("aria-hidden", canCollapse ? "false" : "true");
+      this.toggleBtnEl.classList.add("show");
+      this.toggleBtnEl.textContent = nextOpen ? "닫기" : "채팅";
+      this.toggleBtnEl.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+      this.toggleBtnEl.setAttribute("aria-pressed", nextOpen ? "true" : "false");
+      this.toggleBtnEl.setAttribute("aria-label", nextOpen ? "채팅 닫기" : "채팅 열기");
+      this.toggleBtnEl.setAttribute("aria-hidden", "false");
     }
 
     if (this.inputWrapEl) {
-      this.inputWrapEl.setAttribute("aria-hidden", nextCollapsed ? "true" : "false");
+      this.inputWrapEl.setAttribute("aria-hidden", nextOpen ? "false" : "true");
     }
 
-    if (nextCollapsed) {
+    if (!nextOpen) {
       this.inputEl?.blur();
     } else if (focusInput) {
       this.inputEl?.focus();
     }
+
+    this.syncLiveFeedVisibility();
+  }
+
+  syncLiveFeedVisibility() {
+    if (!this.liveFeedEl) {
+      return;
+    }
+    const visible = !this.chatOpen;
+    this.liveFeedEl.classList.toggle("hidden", !visible);
+    this.liveFeedEl.setAttribute("aria-hidden", visible ? "false" : "true");
   }
 
   isMobileInputOpen() {
-    return this.mobileUiEnabled && !this.mobileCollapsed;
+    return this.mobileUiEnabled && this.chatOpen;
   }
 
-  open() {
+  open(options = {}) {
     if (!this.enabled) {
       return;
     }
-    if (this.mobileUiEnabled) {
-      this.applyMobileCollapsedState(false, { focusInput: false });
-      return;
-    }
-    this.inputEl.focus();
+    const focusInput = options?.focusInput ?? !this.mobileUiEnabled;
+    this.setOpenState(true, { focusInput: Boolean(focusInput) });
   }
 
   close() {
     if (!this.enabled) {
       return;
     }
-    if (this.mobileUiEnabled) {
-      this.applyMobileCollapsedState(true);
+    this.setOpenState(false, { focusInput: false });
+  }
+
+  toggle(options = {}) {
+    if (!this.enabled) {
       return;
     }
-    this.inputEl.blur();
+    const focusInput = options?.focusInput ?? !this.mobileUiEnabled;
+    this.setOpenState(!this.chatOpen, { focusInput: Boolean(focusInput) });
   }
 
   send() {
@@ -303,13 +347,12 @@ export class Chat {
       return;
     }
     this.messagesEl.innerHTML = "";
+    if (this.liveLogEl) {
+      this.liveLogEl.innerHTML = "";
+    }
   }
 
-  append(name, text, type, meta = {}) {
-    if (!this.enabled) {
-      return;
-    }
-
+  createMessageElement(name, text, type, meta = {}) {
     const el = document.createElement("div");
     el.className = `chat-msg ${type}`;
 
@@ -334,17 +377,55 @@ export class Chat {
       nameSpan.textContent = `${name}: `;
       el.appendChild(nameSpan);
       el.appendChild(document.createTextNode(text));
-    } else {
-      el.textContent = text;
+      return el;
     }
 
+    el.textContent = text;
+    return el;
+  }
+
+  append(name, text, type, meta = {}) {
+    if (!this.enabled) {
+      return;
+    }
+
+    const messageText = String(text ?? "").trim();
+    if (!messageText) {
+      return;
+    }
+
+    const nearBottom =
+      this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight < 24;
+
+    const el = this.createMessageElement(name, messageText, type, meta);
     this.messagesEl.appendChild(el);
 
     while (this.messagesEl.children.length > MAX_MSGS) {
       this.messagesEl.removeChild(this.messagesEl.firstChild);
     }
 
-    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    if (nearBottom || !this.chatOpen || type === "system" || type === "system-err") {
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    }
+
+    if (this.liveLogEl) {
+      const liveLine = el.cloneNode(true);
+      liveLine.classList.add("live");
+      this.liveLogEl.appendChild(liveLine);
+      while (this.liveLogEl.children.length > MAX_LIVE_MSGS) {
+        this.liveLogEl.removeChild(this.liveLogEl.firstChild);
+      }
+      this.liveLogEl.scrollTop = this.liveLogEl.scrollHeight;
+
+      window.setTimeout(() => {
+        if (!liveLine.isConnected) {
+          return;
+        }
+        liveLine.classList.add("fade-out");
+        window.setTimeout(() => {
+          liveLine.remove();
+        }, 480);
+      }, LIVE_LINE_TTL_MS);
+    }
   }
 }
-
