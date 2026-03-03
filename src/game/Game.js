@@ -7293,7 +7293,7 @@ export class Game {
         return;
       }
 
-      if (this.mobileEnabled && this.allowUnlockedLook) {
+      if (this.allowUnlockedLook) {
         this.mouseLookEnabled = true;
         this.hud.showPauseOverlay(false);
         this.syncCursorVisibility();
@@ -7331,7 +7331,7 @@ export class Game {
         this.isGameOver ||
         this.optionsMenuOpen ||
         !this.mouseLookEnabled ||
-        (!this.mobileEnabled && !this.pointerLocked) ||
+        (!this.mobileEnabled && !this.pointerLocked && !this.allowUnlockedLook) ||
         this.isUiInputFocused()
       ) {
         return;
@@ -7621,7 +7621,7 @@ export class Game {
       return;
     }
 
-    if (this.pointerLocked || (this.mobileEnabled && this.allowUnlockedLook)) {
+    if (this.pointerLocked || this.allowUnlockedLook) {
       this.mouseLookEnabled = true;
       this.hud.showPauseOverlay(false);
       this.syncCursorVisibility();
@@ -7701,7 +7701,7 @@ export class Game {
       this.pointerLockFallbackTimer = null;
     }
 
-    if (!this.pointerLockSupported || this.allowUnlockedLook || !this.mobileEnabled) {
+    if (!this.pointerLockSupported || this.allowUnlockedLook || this.mobileEnabled) {
       return;
     }
 
@@ -8483,6 +8483,7 @@ export class Game {
     }
 
     const maybePromise = this.renderer.domElement.requestPointerLock();
+    this.schedulePointerLockFallback();
     if (maybePromise && typeof maybePromise.catch === "function") {
       maybePromise.catch(() => {
         if (!this.isRunning || this.isGameOver) {
