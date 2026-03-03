@@ -1,6 +1,6 @@
 ﻿import { io } from "socket.io-client";
 
-const PROD_CHAT_FALLBACK_URL = "https://reclaim-fps-chat.onrender.com";
+const PROD_CHAT_FALLBACK_URL = "https://reclaim-fps.onrender.com";
 
 function resolveDefaultServerUrl() {
   if (typeof window === "undefined") {
