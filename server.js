@@ -1,4 +1,5 @@
 ﻿import { createServer } from "http";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Server } from "socket.io";
@@ -56,6 +57,7 @@ async function probeExistingServer(port) {
 
 const DEFAULT_ROOM_CODE = "GLOBAL";
 const MAX_ROOM_PLAYERS = 50;
+const EXIT_PORTAL_TARGET_PATH = "C:\\Users\\rneet\\OneDrive\\Desktop\\Emptines";
 const PVP_DAMAGE = 34;
 const HAZARD_DAMAGE_MIN = 1;
 const HAZARD_DAMAGE_MAX = 2000;
@@ -76,6 +78,11 @@ const PERSISTENT_WORLD_STATE_PATH = resolve(
   "global-world-state.json"
 );
 const PERSISTENT_WORLD_MAP_ID = "forest_frontline";
+const DAILY_LEADERBOARD_VERSION = 1;
+const DAILY_LEADERBOARD_MAX_ENTRIES = 200;
+const DAILY_LEADERBOARD_PATH = resolve(process.cwd(), "storage", "daily-leaderboard.json");
+const DAILY_LEADERBOARD_TIMEZONE_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAILY_LEADERBOARD_RESET_CHECK_MS = 15_000;
 const DEFAULT_TEAM_HOME = Object.freeze({
   alpha: Object.freeze({ x: -35, y: 0, z: 0 }),
   bravo: Object.freeze({ x: 35, y: 0, z: 0 })
@@ -96,6 +103,9 @@ const SPAWN_PROTECT_CENTERS = Object.freeze([
 const rooms = new Map();
 let playerCount = 0;
 let persistentWorldSaveTimer = null;
+let dailyLeaderboardSaveTimer = null;
+let dailyLeaderboardState = null;
+let dailyLeaderboardResetInterval = null;
 
 function clonePoint(point = { x: 0, y: 0, z: 0 }) {
   return {
@@ -907,13 +917,36 @@ function normalizeLobbyPortalId(rawPortalId) {
   const value = String(rawPortalId ?? "")
     .trim()
     .toLowerCase();
-  if (value === "alpha" || value === "bravo" || value === "deploy") {
-    return value;
+  if (value === "training" || value === "train" || value === "single" || value === "practice") {
+    return "training";
   }
-  if (value === "start") {
-    return "deploy";
+  if (value === "online" || value === "deploy" || value === "start") {
+    return "online";
+  }
+  if (value === "entry" || value === "arrival" || value === "incoming") {
+    return "entry";
+  }
+  if (value === "exit" || value === "leave" || value === "out") {
+    return "exit";
   }
   return null;
+}
+
+function openExitPortalTarget() {
+  if (process.platform !== "win32" || !existsSync(EXIT_PORTAL_TARGET_PATH)) {
+    return false;
+  }
+  try {
+    const child = spawn("explorer.exe", [EXIT_PORTAL_TARGET_PATH], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getEnemyTeam(team) {
@@ -1085,6 +1118,7 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
     score: state.score,
     captures: state.captures,
     round: state.round,
+    dailyLeaderboard: serializeDailyLeaderboard(12),
     stock: serializeBlockStock(player?.stock)
   });
 }
@@ -1146,6 +1180,7 @@ function getDefaultRoom() {
 }
 
 getDefaultRoom();
+dailyLeaderboardState = loadDailyLeaderboardState();
 
 function sanitizeName(raw) {
   const value = String(raw ?? "")
@@ -1153,6 +1188,317 @@ function sanitizeName(raw) {
     .replace(/\s+/g, "_")
     .slice(0, 16);
   return value || "PLAYER";
+}
+
+function getDailyLeaderboardDateKey(now = Date.now()) {
+  const shifted = new Date(Number(now) + DAILY_LEADERBOARD_TIMEZONE_OFFSET_MS);
+  const year = shifted.getUTCFullYear();
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(shifted.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getNextDailyLeaderboardResetAt(now = Date.now()) {
+  const shifted = new Date(Number(now) + DAILY_LEADERBOARD_TIMEZONE_OFFSET_MS);
+  const year = shifted.getUTCFullYear();
+  const month = shifted.getUTCMonth();
+  const day = shifted.getUTCDate();
+  return Date.UTC(year, month, day + 1, 0, 0, 0, 0) - DAILY_LEADERBOARD_TIMEZONE_OFFSET_MS;
+}
+
+function createDailyLeaderboardState(now = Date.now()) {
+  const safeNow = Math.max(0, Math.trunc(Number(now) || Date.now()));
+  return {
+    dateKey: getDailyLeaderboardDateKey(safeNow),
+    resetAt: getNextDailyLeaderboardResetAt(safeNow),
+    updatedAt: safeNow,
+    entries: new Map()
+  };
+}
+
+function getDailyLeaderboardEntryKey(name, fallbackId = "") {
+  const safeName = sanitizeName(name);
+  if (safeName) {
+    return `name:${safeName.toLowerCase()}`;
+  }
+  const safeId = String(fallbackId ?? "").trim();
+  return `id:${safeId || "anon"}`;
+}
+
+function cloneDailyLeaderboardEntry(raw = {}, fallbackName = "PLAYER") {
+  const name = sanitizeName(raw.name ?? fallbackName);
+  return {
+    key: String(raw.key ?? getDailyLeaderboardEntryKey(name)),
+    name,
+    kills: Math.max(0, Math.trunc(Number(raw.kills ?? 0))),
+    deaths: Math.max(0, Math.trunc(Number(raw.deaths ?? 0))),
+    captures: Math.max(0, Math.trunc(Number(raw.captures ?? 0))),
+    updatedAt: Math.max(0, Math.trunc(Number(raw.updatedAt ?? Date.now())))
+  };
+}
+
+function loadDailyLeaderboardState() {
+  const now = Date.now();
+  const emptyState = createDailyLeaderboardState(now);
+
+  try {
+    if (!existsSync(DAILY_LEADERBOARD_PATH)) {
+      return emptyState;
+    }
+
+    const raw = readFileSync(DAILY_LEADERBOARD_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return emptyState;
+    }
+
+    const dateKey = String(parsed.dateKey ?? "");
+    const todayKey = getDailyLeaderboardDateKey(now);
+    if (!dateKey || dateKey !== todayKey) {
+      return emptyState;
+    }
+
+    const loaded = createDailyLeaderboardState(now);
+    loaded.dateKey = dateKey;
+    loaded.resetAt = Math.max(
+      getNextDailyLeaderboardResetAt(now),
+      Math.trunc(Number(parsed.resetAt ?? getNextDailyLeaderboardResetAt(now)))
+    );
+    loaded.updatedAt = Math.max(0, Math.trunc(Number(parsed.updatedAt ?? now)));
+
+    const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    for (const entry of entries) {
+      const safeEntry = cloneDailyLeaderboardEntry(entry);
+      loaded.entries.set(safeEntry.key, safeEntry);
+      if (loaded.entries.size >= DAILY_LEADERBOARD_MAX_ENTRIES) {
+        break;
+      }
+    }
+
+    return loaded;
+  } catch (error) {
+    console.warn("[daily-rank] failed to load snapshot:", error?.message ?? error);
+    return emptyState;
+  }
+}
+
+function saveDailyLeaderboardState() {
+  const state = dailyLeaderboardState ?? createDailyLeaderboardState(Date.now());
+  try {
+    const payload = {
+      version: DAILY_LEADERBOARD_VERSION,
+      dateKey: String(state.dateKey ?? getDailyLeaderboardDateKey(Date.now())),
+      resetAt: Math.max(0, Math.trunc(Number(state.resetAt ?? 0))),
+      updatedAt: Math.max(0, Math.trunc(Number(state.updatedAt ?? Date.now()))),
+      entries: Array.from(state.entries.values()).slice(0, DAILY_LEADERBOARD_MAX_ENTRIES).map((entry) => ({
+        key: String(entry.key ?? ""),
+        name: sanitizeName(entry.name),
+        kills: Math.max(0, Math.trunc(Number(entry.kills ?? 0))),
+        deaths: Math.max(0, Math.trunc(Number(entry.deaths ?? 0))),
+        captures: Math.max(0, Math.trunc(Number(entry.captures ?? 0))),
+        updatedAt: Math.max(0, Math.trunc(Number(entry.updatedAt ?? Date.now())))
+      }))
+    };
+
+    mkdirSync(dirname(DAILY_LEADERBOARD_PATH), { recursive: true });
+    writeFileSync(DAILY_LEADERBOARD_PATH, JSON.stringify(payload), "utf8");
+  } catch (error) {
+    console.warn("[daily-rank] failed to save snapshot:", error?.message ?? error);
+  }
+}
+
+function scheduleDailyLeaderboardSave({ immediate = false } = {}) {
+  if (dailyLeaderboardSaveTimer) {
+    clearTimeout(dailyLeaderboardSaveTimer);
+    dailyLeaderboardSaveTimer = null;
+  }
+
+  if (immediate) {
+    saveDailyLeaderboardState();
+    return;
+  }
+
+  dailyLeaderboardSaveTimer = setTimeout(() => {
+    dailyLeaderboardSaveTimer = null;
+    saveDailyLeaderboardState();
+  }, 600);
+}
+
+function flushDailyLeaderboardSnapshot() {
+  if (dailyLeaderboardSaveTimer) {
+    clearTimeout(dailyLeaderboardSaveTimer);
+    dailyLeaderboardSaveTimer = null;
+  }
+  saveDailyLeaderboardState();
+}
+
+function ensureDailyLeaderboardFresh({ now = Date.now() } = {}) {
+  if (!dailyLeaderboardState) {
+    dailyLeaderboardState = loadDailyLeaderboardState();
+  }
+
+  const currentKey = getDailyLeaderboardDateKey(now);
+  if (dailyLeaderboardState.dateKey === currentKey) {
+    return false;
+  }
+
+  dailyLeaderboardState = createDailyLeaderboardState(now);
+  scheduleDailyLeaderboardSave({ immediate: true });
+  return true;
+}
+
+function sortDailyLeaderboardEntries(entries = []) {
+  return entries.sort((a, b) => {
+    const capturesA = Math.max(0, Math.trunc(Number(a?.captures ?? 0)));
+    const capturesB = Math.max(0, Math.trunc(Number(b?.captures ?? 0)));
+    if (capturesA !== capturesB) {
+      return capturesB - capturesA;
+    }
+
+    const killsA = Math.max(0, Math.trunc(Number(a?.kills ?? 0)));
+    const killsB = Math.max(0, Math.trunc(Number(b?.kills ?? 0)));
+    if (killsA !== killsB) {
+      return killsB - killsA;
+    }
+
+    const deathsA = Math.max(0, Math.trunc(Number(a?.deaths ?? 0)));
+    const deathsB = Math.max(0, Math.trunc(Number(b?.deaths ?? 0)));
+    if (deathsA !== deathsB) {
+      return deathsA - deathsB;
+    }
+
+    return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+  });
+}
+
+function serializeDailyLeaderboard(limit = 10) {
+  ensureDailyLeaderboardFresh();
+
+  const maxCount = Math.max(1, Math.trunc(Number(limit) || 10));
+  const ranked = sortDailyLeaderboardEntries(Array.from(dailyLeaderboardState.entries.values()))
+    .slice(0, maxCount)
+    .map((entry, index) => ({
+      rank: index + 1,
+      key: String(entry.key ?? ""),
+      name: sanitizeName(entry.name),
+      captures: Math.max(0, Math.trunc(Number(entry.captures ?? 0))),
+      kills: Math.max(0, Math.trunc(Number(entry.kills ?? 0))),
+      deaths: Math.max(0, Math.trunc(Number(entry.deaths ?? 0)))
+    }));
+
+  return {
+    dateKey: String(dailyLeaderboardState.dateKey ?? getDailyLeaderboardDateKey(Date.now())),
+    resetAt: Math.max(0, Math.trunc(Number(dailyLeaderboardState.resetAt ?? 0))),
+    updatedAt: Math.max(0, Math.trunc(Number(dailyLeaderboardState.updatedAt ?? Date.now()))),
+    players: ranked
+  };
+}
+
+function emitDailyLeaderboard(target = io) {
+  if (!target) {
+    return;
+  }
+  target.emit("leaderboard:daily", serializeDailyLeaderboard(12));
+}
+
+function emitDailyLeaderboardToRoom(room) {
+  if (!room) {
+    return;
+  }
+  io.to(room.code).emit("leaderboard:daily", serializeDailyLeaderboard(12));
+}
+
+function touchDailyLeaderboardPlayer(player, { killsDelta = 0, deathsDelta = 0, capturesDelta = 0 } = {}) {
+  if (!player) {
+    return false;
+  }
+
+  ensureDailyLeaderboardFresh();
+
+  const key = getDailyLeaderboardEntryKey(player.name, player.id);
+  const name = sanitizeName(player.name);
+  const current = dailyLeaderboardState.entries.get(key) ?? cloneDailyLeaderboardEntry({ key, name });
+
+  const nextKills = Math.max(0, current.kills + Math.trunc(Number(killsDelta) || 0));
+  const nextDeaths = Math.max(0, current.deaths + Math.trunc(Number(deathsDelta) || 0));
+  const nextCaptures = Math.max(0, current.captures + Math.trunc(Number(capturesDelta) || 0));
+
+  const changed =
+    current.name !== name ||
+    current.kills !== nextKills ||
+    current.deaths !== nextDeaths ||
+    current.captures !== nextCaptures ||
+    !dailyLeaderboardState.entries.has(key);
+
+  if (!changed) {
+    return false;
+  }
+
+  dailyLeaderboardState.entries.set(key, {
+    ...current,
+    key,
+    name,
+    kills: nextKills,
+    deaths: nextDeaths,
+    captures: nextCaptures,
+    updatedAt: Date.now()
+  });
+  if (dailyLeaderboardState.entries.size > DAILY_LEADERBOARD_MAX_ENTRIES) {
+    const ranked = sortDailyLeaderboardEntries(Array.from(dailyLeaderboardState.entries.values()));
+    const trimmed = ranked.slice(0, DAILY_LEADERBOARD_MAX_ENTRIES);
+    dailyLeaderboardState.entries = new Map(trimmed.map((entry) => [entry.key, entry]));
+  }
+  dailyLeaderboardState.updatedAt = Date.now();
+  scheduleDailyLeaderboardSave();
+  return true;
+}
+
+function renameDailyLeaderboardEntry(previousName, nextName, fallbackId = "") {
+  ensureDailyLeaderboardFresh();
+
+  const prevKey = getDailyLeaderboardEntryKey(previousName, fallbackId);
+  const nextKey = getDailyLeaderboardEntryKey(nextName, fallbackId);
+  const safeNextName = sanitizeName(nextName);
+  const prevEntry = dailyLeaderboardState.entries.get(prevKey);
+  const nextEntry = dailyLeaderboardState.entries.get(nextKey);
+
+  if (!prevEntry && !nextEntry) {
+    return false;
+  }
+
+  if (prevKey === nextKey) {
+    if (!prevEntry) {
+      return false;
+    }
+    if (prevEntry.name === safeNextName) {
+      return false;
+    }
+    prevEntry.name = safeNextName;
+    prevEntry.updatedAt = Date.now();
+    dailyLeaderboardState.entries.set(nextKey, prevEntry);
+    dailyLeaderboardState.updatedAt = Date.now();
+    scheduleDailyLeaderboardSave();
+    return true;
+  }
+
+  const merged = cloneDailyLeaderboardEntry({
+    key: nextKey,
+    name: safeNextName,
+    kills: Math.max(0, Math.trunc(Number(prevEntry?.kills ?? 0))) + Math.max(0, Math.trunc(Number(nextEntry?.kills ?? 0))),
+    deaths:
+      Math.max(0, Math.trunc(Number(prevEntry?.deaths ?? 0))) +
+      Math.max(0, Math.trunc(Number(nextEntry?.deaths ?? 0))),
+    captures:
+      Math.max(0, Math.trunc(Number(prevEntry?.captures ?? 0))) +
+      Math.max(0, Math.trunc(Number(nextEntry?.captures ?? 0))),
+    updatedAt: Date.now()
+  });
+
+  dailyLeaderboardState.entries.delete(prevKey);
+  dailyLeaderboardState.entries.set(nextKey, merged);
+  dailyLeaderboardState.updatedAt = Date.now();
+  scheduleDailyLeaderboardSave();
+  return true;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1256,7 +1602,8 @@ function serializeRoom(room) {
       captures: Number(player.captures ?? 0),
       stock: serializeBlockStock(player.stock)
     })),
-    state: serializeRoomState(room)
+    state: serializeRoomState(room),
+    dailyLeaderboard: serializeDailyLeaderboard(12)
   };
 }
 
@@ -1407,12 +1754,27 @@ function leaveCurrentRoom(socket) {
 function joinDefaultRoom(socket, nameOverride = null) {
   const room = getDefaultRoom();
   const state = getRoomState(room);
+  ensureDailyLeaderboardFresh();
   pruneRoomPlayers(room);
   const name = sanitizeName(nameOverride ?? socket.data.playerName);
   socket.data.playerName = name;
 
   if (socket.data.roomCode === room.code && state.players.has(socket.id)) {
+    const existing = state.players.get(socket.id);
+    if (existing && existing.name !== name) {
+      const previousName = existing.name;
+      existing.name = name;
+      const renamed = renameDailyLeaderboardEntry(previousName, name, existing.id);
+      if (!renamed) {
+        touchDailyLeaderboardPlayer(existing);
+      }
+      touchRoomState(room);
+      emitRoomUpdate(room);
+      emitRoomList();
+      emitDailyLeaderboardToRoom(room);
+    }
     emitRoomSnapshot(socket, room, "resync");
+    emitDailyLeaderboard(socket);
     return { ok: true, room: serializeRoom(room) };
   }
 
@@ -1440,6 +1802,7 @@ function joinDefaultRoom(socket, nameOverride = null) {
     deaths: 0,
     captures: 0
   });
+  touchDailyLeaderboardPlayer(state.players.get(socket.id));
   room.players = state.players;
   touchRoomState(room);
 
@@ -1456,6 +1819,7 @@ function joinDefaultRoom(socket, nameOverride = null) {
 
   emitRoomUpdate(room);
   emitRoomList();
+  emitDailyLeaderboardToRoom(room);
 
   return { ok: true, room: serializeRoom(room) };
 }
@@ -1503,6 +1867,19 @@ const io = new Server(httpServer, {
   pingTimeout: 5000
 });
 
+dailyLeaderboardResetInterval = setInterval(() => {
+  const didReset = ensureDailyLeaderboardFresh();
+  if (!didReset) {
+    return;
+  }
+  const room = getDefaultRoom();
+  emitRoomUpdate(room);
+  emitDailyLeaderboardToRoom(room);
+}, DAILY_LEADERBOARD_RESET_CHECK_MS);
+if (typeof dailyLeaderboardResetInterval.unref === "function") {
+  dailyLeaderboardResetInterval.unref();
+}
+
 io.on("connection", (socket) => {
   playerCount += 1;
   socket.data.playerName = `PLAYER_${Math.floor(Math.random() * 9000 + 1000)}`;
@@ -1515,6 +1892,7 @@ io.on("connection", (socket) => {
     ack(null, joined);
   }
   emitRoomList(socket);
+  emitDailyLeaderboard(socket);
 
   socket.on("chat:send", ({ name, text }) => {
     const safeName = sanitizeName(name ?? socket.data.playerName);
@@ -1540,6 +1918,41 @@ io.on("connection", (socket) => {
     } else {
       socket.emit("chat:message", payload);
     }
+  });
+
+  socket.on("player:set-name", (payload = {}, ackFn) => {
+    const safeName = sanitizeName(payload.name ?? socket.data.playerName);
+    socket.data.playerName = safeName;
+    ensureDailyLeaderboardFresh();
+
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: true, name: safeName });
+      return;
+    }
+
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
+    if (!player) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
+      return;
+    }
+
+    if (player.name !== safeName) {
+      const previousName = player.name;
+      player.name = safeName;
+      const renamed = renameDailyLeaderboardEntry(previousName, safeName, player.id);
+      if (!renamed) {
+        touchDailyLeaderboardPlayer(player);
+      }
+      touchRoomState(room);
+      emitRoomUpdate(room);
+      emitRoomList();
+      emitDailyLeaderboardToRoom(room);
+    }
+
+    ack(ackFn, { ok: true, name: safeName, room: serializeRoom(room) });
   });
 
   socket.on("player:sync", (payload = {}) => {
@@ -1570,6 +1983,10 @@ io.on("connection", (socket) => {
 
     const ctfEvent = handleCtfPlayerSync(room, player);
     if (ctfEvent) {
+      if (ctfEvent.type === "capture") {
+        touchDailyLeaderboardPlayer(player, { capturesDelta: 1 });
+        emitDailyLeaderboardToRoom(room);
+      }
       emitCtfUpdate(room, ctfEvent);
       const captureTeam = normalizeTeam(ctfEvent.byTeam);
       const teamScore = captureTeam ? Number(state.score[captureTeam] ?? 0) : 0;
@@ -1886,9 +2303,14 @@ io.on("connection", (socket) => {
 
     target.hp = nextHp;
     let ctfEvent = null;
+    let dailyLeaderboardChanged = false;
     if (killed) {
       shooter.kills = (Number(shooter.kills) || 0) + 1;
       target.deaths = (Number(target.deaths) || 0) + 1;
+      dailyLeaderboardChanged =
+        touchDailyLeaderboardPlayer(shooter, { killsDelta: 1 }) ||
+        touchDailyLeaderboardPlayer(target, { deathsDelta: 1 }) ||
+        dailyLeaderboardChanged;
       respawnAt = schedulePlayerRespawn(room, target);
 
       const resetTeam = resetFlagForPlayer(room, target.id);
@@ -1908,6 +2330,9 @@ io.on("connection", (socket) => {
     touchRoomState(room);
     if (ctfEvent) {
       emitCtfUpdate(room, ctfEvent);
+    }
+    if (dailyLeaderboardChanged) {
+      emitDailyLeaderboardToRoom(room);
     }
 
     io.to(room.code).emit("pvp:damage", {
@@ -1970,10 +2395,12 @@ io.on("connection", (socket) => {
     const killed = nextHp <= 0;
     let respawnAt = 0;
     let ctfEvent = null;
+    let dailyLeaderboardChanged = false;
 
     player.hp = nextHp;
     if (killed) {
       player.deaths = (Number(player.deaths) || 0) + 1;
+      dailyLeaderboardChanged = touchDailyLeaderboardPlayer(player, { deathsDelta: 1 });
       respawnAt = schedulePlayerRespawn(room, player);
 
       const resetTeam = resetFlagForPlayer(room, player.id);
@@ -1993,6 +2420,9 @@ io.on("connection", (socket) => {
     touchRoomState(room);
     if (ctfEvent) {
       emitCtfUpdate(room, ctfEvent);
+    }
+    if (dailyLeaderboardChanged) {
+      emitDailyLeaderboardToRoom(room);
     }
 
     io.to(room.code).emit("pvp:damage", {
@@ -2050,26 +2480,64 @@ io.on("connection", (socket) => {
     }
 
     const enteredAt = Date.now();
-    if (portalId === "alpha" || portalId === "bravo") {
-      const changed = normalizeTeam(player.team) !== portalId;
-      player.team = portalId;
-      touchRoomState(room);
-      emitRoomUpdate(room);
+    if (portalId === "training") {
       emitLobbyPortalEntered(room, {
         player,
         portalId,
-        action: "team",
-        team: portalId,
+        action: "training",
+        team: normalizeTeam(player.team),
         enteredAt
       });
       ack(ackFn, {
         ok: true,
         portalId,
-        action: "team",
-        team: portalId,
-        changed,
+        action: "training",
+        team: normalizeTeam(player.team),
         enteredAt
       });
+      return;
+    }
+
+    if (portalId === "entry") {
+      emitLobbyPortalEntered(room, {
+        player,
+        portalId,
+        action: "entry",
+        team: normalizeTeam(player.team),
+        enteredAt
+      });
+      ack(ackFn, {
+        ok: true,
+        portalId,
+        action: "entry",
+        team: normalizeTeam(player.team),
+        enteredAt
+      });
+      return;
+    }
+
+    if (portalId === "exit") {
+      const opened = openExitPortalTarget();
+      emitLobbyPortalEntered(room, {
+        player,
+        portalId,
+        action: "exit",
+        team: normalizeTeam(player.team),
+        enteredAt
+      });
+      ack(ackFn, {
+        ok: true,
+        portalId,
+        action: "exit",
+        team: normalizeTeam(player.team),
+        opened,
+        enteredAt
+      });
+      return;
+    }
+
+    if (portalId !== "online") {
+      ack(ackFn, { ok: false, error: "지원하지 않는 포탈입니다" });
       return;
     }
 
@@ -2078,16 +2546,18 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const team = normalizeTeam(player.team);
+    let team = normalizeTeam(player.team);
     if (!team) {
-      ack(ackFn, { ok: false, error: "먼저 팀을 선택하세요" });
-      return;
+      team = pickBalancedTeam(state.players);
+      player.team = team;
+      touchRoomState(room);
+      emitRoomUpdate(room);
     }
 
     const isHost = !room.hostId || room.hostId === socket.id;
     emitLobbyPortalEntered(room, {
       player,
-      portalId: "deploy",
+      portalId: "online",
       action: isHost ? "start" : "deploy",
       team,
       enteredAt
@@ -2096,7 +2566,7 @@ io.on("connection", (socket) => {
     if (!isHost) {
       ack(ackFn, {
         ok: true,
-        portalId: "deploy",
+        portalId: "online",
         action: "deploy",
         team,
         localStart: true,
@@ -2113,7 +2583,7 @@ io.on("connection", (socket) => {
     });
     ack(ackFn, {
       ok: true,
-      portalId: "deploy",
+      portalId: "online",
       action: "start",
       team,
       startedAt,
@@ -2139,6 +2609,7 @@ io.on("connection", (socket) => {
       snapshot: {
         ...serializeRoomState(room),
         blocks: serializeBlocksSnapshot(room),
+        dailyLeaderboard: serializeDailyLeaderboard(12),
         stock: serializeBlockStock(getRoomState(room).players.get(socket.id)?.stock)
       }
     });
@@ -2252,15 +2723,26 @@ httpServer.on("error", (error) => {
 
 process.on("beforeExit", () => {
   flushPersistentWorldSnapshot();
+  flushDailyLeaderboardSnapshot();
 });
 
 process.on("SIGINT", () => {
+  if (dailyLeaderboardResetInterval) {
+    clearInterval(dailyLeaderboardResetInterval);
+    dailyLeaderboardResetInterval = null;
+  }
   flushPersistentWorldSnapshot();
+  flushDailyLeaderboardSnapshot();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
+  if (dailyLeaderboardResetInterval) {
+    clearInterval(dailyLeaderboardResetInterval);
+    dailyLeaderboardResetInterval = null;
+  }
   flushPersistentWorldSnapshot();
+  flushDailyLeaderboardSnapshot();
   process.exit(0);
 });
 httpServer.listen(PORT, () => {

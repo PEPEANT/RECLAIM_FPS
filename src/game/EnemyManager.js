@@ -2,6 +2,7 @@ import * as THREE from "three";
 
 const WORLD_LIMIT = 72;
 const PLAYER_TARGET_OFFSET_Y = -0.42;
+const PLAYER_TARGET_HEAD_OFFSET_Y = 0.28;
 const MUZZLE_FLASH_TTL = 0.075;
 const TRACER_TTL = 0.07;
 const MAX_TRACER_POOL = 180;
@@ -92,6 +93,7 @@ export class EnemyManager {
     this._spawnCandidate = new THREE.Vector3();
     this._traceTarget = new THREE.Vector3();
     this._losTarget = new THREE.Vector3();
+    this._losTargetHead = new THREE.Vector3();
     this._muzzlePos = new THREE.Vector3();
   }
 
@@ -286,18 +288,21 @@ export class EnemyManager {
       [radius, 0],
       [-radius, 0],
       [0, radius],
-      [0, -radius]
+      [0, -radius],
+      [radius * 0.72, radius * 0.72],
+      [radius * 0.72, -radius * 0.72],
+      [-radius * 0.72, radius * 0.72],
+      [-radius * 0.72, -radius * 0.72]
     ];
+    const heights = [0.08, 1.05, 1.92, 2.52];
 
     for (const [dx, dz] of samples) {
       const sx = x + dx;
       const sz = z + dz;
-      if (
-        this.isBlockedAt(sx, 0.08, sz) ||
-        this.isBlockedAt(sx, 1.05, sz) ||
-        this.isBlockedAt(sx, 1.92, sz)
-      ) {
-        return true;
+      for (const h of heights) {
+        if (this.isBlockedAt(sx, h, sz)) {
+          return true;
+        }
       }
     }
 
@@ -546,11 +551,20 @@ export class EnemyManager {
           playerPosition.y + PLAYER_TARGET_OFFSET_Y,
           playerPosition.z
         );
-        const clearShot = this.canHitTarget
+        this._losTargetHead.set(
+          playerPosition.x,
+          playerPosition.y + PLAYER_TARGET_HEAD_OFFSET_Y,
+          playerPosition.z
+        );
+        const clearShotCenter = this.canHitTarget
           ? this.canHitTarget(this._muzzlePos, this._losTarget)
           : true;
+        const clearShotHead = this.canHitTarget
+          ? this.canHitTarget(this._muzzlePos, this._losTargetHead)
+          : true;
+        const clearShot = clearShotCenter || clearShotHead;
 
-        this._traceTarget.copy(this._losTarget);
+        this._traceTarget.copy(clearShotHead && !clearShotCenter ? this._losTargetHead : this._losTarget);
 
         const spread = Math.min(0.86, playerDistance * 0.018);
         this._traceTarget.x += THREE.MathUtils.randFloatSpread(spread);

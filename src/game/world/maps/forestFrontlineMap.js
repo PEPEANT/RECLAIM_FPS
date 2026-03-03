@@ -281,6 +281,7 @@ export function generateForestFrontlineMap(builder, options = {}) {
       alphaFlag: { x: -baseOffset, y: 0, z: 0 },
       bravoFlag: { x: baseOffset, y: 0, z: 0 },
       mid: { x: 0, y: 0, z: 0 },
+      trainingSpawn: { x: -35, y: 0, z: 0 },
       halfExtent
     }
   };

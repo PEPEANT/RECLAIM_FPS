@@ -59,10 +59,13 @@ const PERF_REPORT_INTERVAL_MS = 4000;
 const PERF_SLOW_FRAME_MS = 24;
 const RENDER_PIXEL_RATIO_CAP = 1.25;
 const RENDER_PIXEL_RATIO_LOW_CAP = 1.0;
+const RENDER_PIXEL_RATIO_HIGH_CAP = 1.55;
 const SHADOW_MAP_SIZE_DEFAULT = 1024;
 const SHADOW_MAP_SIZE_LOW = 512;
+const SHADOW_MAP_SIZE_HIGH = 1536;
 const SHADOW_CAMERA_EXTENT_DEFAULT = 120;
 const SHADOW_CAMERA_EXTENT_LOW = 72;
+const SHADOW_CAMERA_EXTENT_HIGH = 136;
 const ADAPTIVE_QUALITY_LOW_FPS_MS = 34;
 const ADAPTIVE_QUALITY_STRIKE_LIMIT = 2;
 const CTF_INTERACT_COOLDOWN_MS = 260;
@@ -116,6 +119,7 @@ const DEFAULT_CENTER_AD_VOLUME_SCALE = 1;
 const EFFECTS_VOLUME_STORAGE_KEY = "reclaim_effects_volume";
 const DEFAULT_EFFECTS_VOLUME_SCALE = 1;
 const MOBILE_LOOK_SENSITIVITY_STORAGE_KEY = "reclaim_mobile_look_sensitivity";
+const RENDER_QUALITY_STORAGE_KEY = "reclaim_render_quality";
 const DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE = 1;
 const MOBILE_LOOK_SENSITIVITY_MIN_SCALE = 0.4;
 const MOBILE_LOOK_SENSITIVITY_MAX_SCALE = 2.2;
@@ -128,6 +132,13 @@ const LOBBY3D_HALF_Z = 9;
 const LOBBY3D_WALL_HEIGHT = 5;
 const LOBBY3D_PORTAL_TRIGGER_RADIUS = 1.9;
 const LOBBY3D_PORTAL_COOLDOWN_MS = 700;
+const LOBBY3D_PORTAL_WARMUP_MS = 850;
+const LOBBY3D_PORTAL_HOLD_MS = 180;
+const LOBBY3D_PORTAL_ARM_DISTANCE = 1.1;
+const LOBBY3D_REMOTE_RING_BASE_RADIUS = 3.6;
+const LOBBY3D_REMOTE_RING_STEP_RADIUS = 1.25;
+const LOBBY3D_REMOTE_RING_BASE_SLOTS = 10;
+const LOBBY_EXIT_TARGET_PATH = "C:\\Users\\rneet\\OneDrive\\Desktop\\Emptines";
 const PORTAL_FX_DURATION_SEC = 0.52;
 const PORTAL_FX_TEAM_FOV_BOOST = 7;
 const PORTAL_FX_DEPLOY_FOV_BOOST = 12;
@@ -190,6 +201,28 @@ function readStoredMobileLookSensitivityScale() {
     );
   } catch {
     return DEFAULT_MOBILE_LOOK_SENSITIVITY_SCALE;
+  }
+}
+
+function normalizeRenderQuality(rawQuality) {
+  const quality = String(rawQuality ?? "")
+    .trim()
+    .toLowerCase();
+  if (quality === "low" || quality === "high") {
+    return quality;
+  }
+  return "medium";
+}
+
+function readStoredRenderQuality() {
+  if (typeof window === "undefined") {
+    return "medium";
+  }
+  try {
+    const stored = window.localStorage.getItem(RENDER_QUALITY_STORAGE_KEY);
+    return normalizeRenderQuality(stored);
+  } catch {
+    return "medium";
   }
 }
 
@@ -335,7 +368,7 @@ export class Game {
         this.isRunning &&
         !this.isGameOver &&
         !this.isRespawning &&
-        !this.chat?.isInputFocused &&
+        !this.isUiInputFocused() &&
         !this.hud.startOverlayEl?.classList.contains("show")
     });
 
@@ -408,6 +441,7 @@ export class Game {
     this.mobileReloadBtn = document.getElementById("mobile-reload");
     this.mobileTabBtn = document.getElementById("mobile-tab");
     this.mobileOptionsBtn = document.getElementById("mobile-options");
+    this.mobileChatBtn = document.getElementById("mobile-chat");
     this.mobileLookSensitivityScale = readStoredMobileLookSensitivityScale();
     this.mobileState = {
       moveForward: 0,
@@ -438,6 +472,14 @@ export class Game {
     this.optionsMobileLookValueEl = document.getElementById("options-mobile-look-value");
     this.optionsNavButtons = Array.from(document.querySelectorAll(".options-nav-btn"));
     this._optionsNavBound = false;
+    this.quickSettingsBtnEl = document.getElementById("quick-settings-btn");
+    this.quickSettingsPanelEl = document.getElementById("quick-settings-panel");
+    this.quickQualityButtons = Array.from(document.querySelectorAll(".quick-quality-btn"));
+    this.quickFullscreenBtnEl = document.getElementById("quick-fullscreen");
+    this.quickOpenOptionsBtnEl = document.getElementById("quick-open-options");
+    this.quickSettingsOpen = false;
+    this._quickSettingsBound = false;
+    this.renderQualityMode = readStoredRenderQuality();
     this.mpStatusEl = document.getElementById("mp-status");
     this.mpCreateBtn = document.getElementById("mp-create");
     this.mpJoinBtn = document.getElementById("mp-join");
@@ -458,6 +500,12 @@ export class Game {
     this.mpTeamBravoCountEl = document.getElementById("mp-team-bravo-count");
     this.mpEnterLobbyBtn = document.getElementById("mp-enter-lobby");
     this.mpPortalHintEl = document.getElementById("mp-portal-hint");
+    this.lobbyQuickPanelEl = document.getElementById("lobby-quick-panel");
+    this.lobbyQuickNameInput = document.getElementById("lobby-quick-name");
+    this.lobbyQuickNameSaveBtn = document.getElementById("lobby-quick-name-save");
+    this.lobbyQuickCountEl = document.getElementById("lobby-quick-count");
+    this.lobbyQuickGuideEl = document.getElementById("lobby-quick-guide");
+    this.lobbyQuickRankListEl = document.getElementById("lobby-quick-rank-list");
     this.tabScoreboardEl = document.getElementById("tab-scoreboard");
     this.tabAlphaListEl = document.getElementById("tab-alpha-list");
     this.tabBravoListEl = document.getElementById("tab-bravo-list");
@@ -473,7 +521,19 @@ export class Game {
     this._lobbySocketBound = false;
     this._joiningDefaultRoom = false;
     this._nextAutoJoinAt = 0;
+    this._autoEnteredLobby3D = false;
     this.tabBoardVisible = false;
+    this._lastLobbyQuickPanelVisible = null;
+    this._lastLobbyQuickCountText = "";
+    this._lastLobbyQuickGuideText = "";
+    this._lastLobbyQuickRankSignature = "";
+    this.dailyLeaderboard = {
+      dateKey: "",
+      resetAt: 0,
+      updatedAt: 0,
+      players: []
+    };
+    this._dailyLeaderboardSignature = "";
 
     this.lobbyState = {
       roomCode: null,
@@ -493,11 +553,17 @@ export class Game {
         minZ: LOBBY3D_CENTER_Z - (LOBBY3D_HALF_Z - 1),
         maxZ: LOBBY3D_CENTER_Z + (LOBBY3D_HALF_Z - 1)
       },
-      spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 4.4),
+      spawn: new THREE.Vector3(LOBBY3D_CENTER_X, LOBBY3D_FLOOR_Y + PLAYER_HEIGHT, LOBBY3D_CENTER_Z + 2.6),
       portals: [],
       pulseClock: 0,
       activePortalId: "",
-      portalCooldownUntil: 0
+      portalCooldownUntil: 0,
+      pendingPortalId: "",
+      pendingPortalSince: 0,
+      enteredAt: 0,
+      portalActivationArmed: false,
+      remotePreviewSignature: "",
+      rankBoard: null
     };
     this.portalFx = {
       active: false,
@@ -519,10 +585,12 @@ export class Game {
     this._pvpHitPoint = new THREE.Vector3();
     this.pendingRemoteBlocks = new Map();
     this.latestRoomSnapshot = null;
+    this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: true });
 
     this.objective = {
       alphaBase: new THREE.Vector3(),
       bravoBase: new THREE.Vector3(),
+      trainingSpawn: new THREE.Vector3(),
       alphaFlagHome: new THREE.Vector3(),
       bravoFlagHome: new THREE.Vector3(),
       centerFlagHome: new THREE.Vector3(),
@@ -635,8 +703,10 @@ export class Game {
     this.camera.add(this.weaponView);
     this.camera.add(this.shovelView);
     this.setupWorld();
+    this.applyRenderQualityMode(this.renderQualityMode, { persist: false, announce: false });
     this.repairUiLabels();
     this.bindEvents();
+    this.bindQuickSettingsControls();
     this.setupMobileControls();
     this.resetState();
     this.updateVisualMode(this.buildSystem.getToolMode());
@@ -649,6 +719,7 @@ export class Game {
     }
     this.setupLobbySocket();
     this.refreshOnlineStatus();
+    this.autoEnterOnlineLobby3DOnce();
 
     this.syncCursorVisibility();
     this.loop();
@@ -716,6 +787,27 @@ export class Game {
     return Boolean(this.lobby3d?.active) && !this.isRunning && !this.isGameOver;
   }
 
+  isUiInputFocused() {
+    if (this.chat?.isInputFocused) {
+      return true;
+    }
+    if (typeof document === "undefined") {
+      return false;
+    }
+    const activeEl = document.activeElement;
+    if (!activeEl || activeEl === document.body) {
+      return false;
+    }
+    if (activeEl === this.mpNameInput || activeEl === this.lobbyQuickNameInput) {
+      return true;
+    }
+    const tag = String(activeEl.tagName ?? "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      return true;
+    }
+    return Boolean(activeEl.isContentEditable);
+  }
+
   setupLobby3D() {
     if (!this.lobby3d) {
       return;
@@ -776,33 +868,46 @@ export class Game {
     roomFrame.position.set(centerX, floorY + LOBBY3D_WALL_HEIGHT * 0.5 - 0.02, centerZ);
     lobbyGroup.add(roomFrame);
 
+    this.lobby3d.rankBoard = this.createLobbyRankBoardMesh({
+      x: maxX - 0.68,
+      y: floorY + 2.85,
+      z: centerZ,
+      yaw: -Math.PI * 0.5
+    });
+    lobbyGroup.add(this.lobby3d.rankBoard.group);
+
     const specs = [
       {
-        id: "alpha",
-        label: "BLUE TEAM",
-        action: "team",
-        team: "alpha",
-        color: 0x63b9ff,
-        x: centerX - 5.6,
-        z: centerZ + 2.4
+        id: "training",
+        label: "훈련장",
+        action: "training",
+        color: 0x66bcff,
+        x: centerX - 6,
+        z: centerZ + 0.2
       },
       {
-        id: "bravo",
-        label: "RED TEAM",
-        action: "team",
-        team: "bravo",
-        color: 0xff7d67,
-        x: centerX + 5.6,
-        z: centerZ + 2.4
-      },
-      {
-        id: "start",
-        label: "DEPLOY",
-        action: "start",
-        team: null,
+        id: "online",
+        label: "온라인장",
+        action: "online",
         color: 0x6ff5c6,
+        x: centerX + 6,
+        z: centerZ + 0.2
+      },
+      {
+        id: "entry",
+        label: "들어온포탈",
+        action: "entry",
+        color: 0x8fb3ff,
         x: centerX,
-        z: centerZ - 4.2
+        z: centerZ + 4.6
+      },
+      {
+        id: "exit",
+        label: "나가기포탈",
+        action: "exit",
+        color: 0xff8f8f,
+        x: centerX,
+        z: centerZ - 5.2
       }
     ];
 
@@ -882,9 +987,15 @@ export class Game {
     this.lobby3d.group = lobbyGroup;
     this.lobby3d.activePortalId = "";
     this.lobby3d.portalCooldownUntil = 0;
+    this.lobby3d.pendingPortalId = "";
+    this.lobby3d.pendingPortalSince = 0;
+    this.lobby3d.enteredAt = 0;
+    this.lobby3d.portalActivationArmed = false;
+    this.lobby3d.remotePreviewSignature = "";
     this.lobby3d.pulseClock = 0;
     this.scene.add(lobbyGroup);
     this.syncLobby3DPortalState();
+    this.renderLobbyRankBoard(true);
   }
 
   createLobbyPortalLabelSprite(text, color) {
@@ -927,6 +1038,133 @@ export class Game {
     return sprite;
   }
 
+  createLobbyRankBoardMesh({ x = 0, y = 0, z = 0, yaw = 0 } = {}) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 512;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+
+    const panel = new THREE.Mesh(
+      new THREE.PlaneGeometry(5.2, 2.6),
+      new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    );
+    panel.position.set(x, y, z);
+    panel.rotation.y = yaw;
+    panel.renderOrder = 15;
+
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(5.34, 2.74, 0.08),
+      new THREE.MeshStandardMaterial({
+        color: 0x12263c,
+        roughness: 0.42,
+        metalness: 0.52,
+        emissive: 0x17385b,
+        emissiveIntensity: 0.3
+      })
+    );
+    frame.position.set(x, y, z - Math.cos(yaw) * 0.04);
+    frame.rotation.y = yaw;
+
+    const group = new THREE.Group();
+    group.add(frame, panel);
+
+    return {
+      group,
+      canvas,
+      texture,
+      panel,
+      frame,
+      lastSignature: "",
+      lastRenderedSecond: -1
+    };
+  }
+
+  renderLobbyRankBoard(force = false) {
+    const rankBoard = this.lobby3d?.rankBoard;
+    if (!rankBoard?.canvas || !rankBoard?.texture) {
+      return;
+    }
+
+    const now = Date.now();
+    const countdownSec = Math.max(0, Math.ceil((Number(this.dailyLeaderboard?.resetAt ?? 0) - now) / 1000));
+    const hour = Math.floor(countdownSec / 3600);
+    const min = Math.floor((countdownSec % 3600) / 60);
+    const sec = countdownSec % 60;
+    const countdownText = `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    const rows = this.getDailyLeaderboardRows(7);
+    const signature = `${String(this.dailyLeaderboard?.dateKey ?? "")}|${countdownText}|${rows
+      .map((entry) => `${entry.rank}:${entry.name}:${entry.captures}:${entry.kills}:${entry.deaths}`)
+      .join("|")}`;
+    const renderSecond = Math.floor(now / 1000);
+    if (!force && signature === rankBoard.lastSignature && rankBoard.lastRenderedSecond === renderSecond) {
+      return;
+    }
+
+    rankBoard.lastSignature = signature;
+    rankBoard.lastRenderedSecond = renderSecond;
+
+    const context = rankBoard.canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    context.clearRect(0, 0, rankBoard.canvas.width, rankBoard.canvas.height);
+    const gradient = context.createLinearGradient(0, 0, rankBoard.canvas.width, rankBoard.canvas.height);
+    gradient.addColorStop(0, "rgba(8, 20, 35, 0.94)");
+    gradient.addColorStop(1, "rgba(7, 14, 24, 0.9)");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, rankBoard.canvas.width, rankBoard.canvas.height);
+
+    context.strokeStyle = "rgba(126, 215, 255, 0.9)";
+    context.lineWidth = 6;
+    context.strokeRect(14, 14, rankBoard.canvas.width - 28, rankBoard.canvas.height - 28);
+
+    context.fillStyle = "rgba(235, 247, 255, 0.98)";
+    context.font = "700 54px Segoe UI, Arial, sans-serif";
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText("일일 실시간 랭킹", 46, 64);
+
+    context.font = "600 28px Segoe UI, Arial, sans-serif";
+    const dateKey = String(this.dailyLeaderboard?.dateKey ?? "");
+    const resetPrefix = dateKey ? `${dateKey} KST` : "KST";
+    context.fillStyle = "rgba(170, 226, 255, 0.92)";
+    context.fillText(`${resetPrefix} · 리셋까지 ${countdownText}`, 46, 108);
+
+    const baseY = 162;
+    const lineHeight = 46;
+    if (rows.length === 0) {
+      context.font = "600 34px Segoe UI, Arial, sans-serif";
+      context.fillStyle = "rgba(204, 230, 245, 0.94)";
+      context.fillText("순위 데이터 수집 중...", 64, baseY + 46);
+    } else {
+      rows.forEach((entry, index) => {
+        const y = baseY + index * lineHeight;
+        context.fillStyle = index < 3 ? "rgba(255, 233, 154, 0.98)" : "rgba(224, 241, 255, 0.95)";
+        context.font = "700 32px Segoe UI, Arial, sans-serif";
+        context.fillText(`${String(entry.rank).padStart(2, "0")}`, 52, y);
+
+        context.fillStyle = "rgba(241, 249, 255, 0.98)";
+        context.font = "600 30px Segoe UI, Arial, sans-serif";
+        context.fillText(entry.name, 116, y);
+
+        context.fillStyle = "rgba(164, 218, 255, 0.95)";
+        context.font = "600 24px Consolas, monospace";
+        context.fillText(`C${entry.captures}  K${entry.kills}  D${entry.deaths}`, 642, y);
+      });
+    }
+
+    rankBoard.texture.needsUpdate = true;
+  }
+
   setLobby3DActive(active, { reposition = true } = {}) {
     if (!this.lobby3d) {
       return;
@@ -939,17 +1177,31 @@ export class Game {
     }
     if (!next) {
       this.lobby3d.activePortalId = "";
+      this.lobby3d.portalCooldownUntil = 0;
+      this.lobby3d.pendingPortalId = "";
+      this.lobby3d.pendingPortalSince = 0;
+      this.lobby3d.enteredAt = 0;
+      this.lobby3d.portalActivationArmed = false;
+      this.lobby3d.remotePreviewSignature = "";
       this.clearPortalTransitionFx();
+      this.updateLobbyQuickPanel();
       return;
     }
 
+    this.lobby3d.activePortalId = "";
+    this.lobby3d.portalCooldownUntil = 0;
+    this.lobby3d.pendingPortalId = "";
+    this.lobby3d.pendingPortalSince = 0;
+    this.lobby3d.enteredAt = Date.now();
+    this.lobby3d.portalActivationArmed = false;
+    this.lobby3d.remotePreviewSignature = "";
     this.activeMatchMode = "online";
     if (reposition) {
       this.playerPosition.copy(this.lobby3d.spawn);
       this.verticalVelocity = 0;
       this.onGround = true;
       this.fallStartY = this.playerPosition.y;
-      this.yaw = Math.PI;
+      this.yaw = 0;
       this.pitch = 0;
       this.camera.position.copy(this.playerPosition);
       this.camera.rotation.order = "YXZ";
@@ -957,9 +1209,10 @@ export class Game {
       this.camera.rotation.x = this.pitch;
       this.camera.rotation.z = 0;
     }
-    this.state.objectiveText = "목표: 포탈로 팀을 선택하고 중앙 포탈에서 출발하세요.";
-    this.hud.setStatus("3D 로비 활성화: 포탈을 통과해 팀을 선택하세요.", false, 1.3);
+    this.state.objectiveText = "목표: 포탈 선택 · 닉네임 변경 · TAB으로 순위 확인";
+    this.hud.setStatus("3D 로비 활성화: 포탈/닉네임/순위를 확인하세요.", false, 1.3);
     this.syncLobby3DPortalState();
+    this.updateLobbyQuickPanel();
   }
 
   enterOnlineLobby3D() {
@@ -975,7 +1228,7 @@ export class Game {
     this.setLobby3DActive(true, { reposition: true });
     this.syncCursorVisibility();
     this.updateLobbyControls();
-    if (!this.mobileEnabled && !this.mouseLookEnabled && !this.chat?.isInputFocused) {
+    if (!this.mobileEnabled && !this.mouseLookEnabled && !this.isUiInputFocused()) {
       this.tryPointerLock();
     }
   }
@@ -995,6 +1248,14 @@ export class Game {
     }
     this.syncCursorVisibility();
     this.updateLobbyControls();
+  }
+
+  autoEnterOnlineLobby3DOnce() {
+    if (this._autoEnteredLobby3D || this.isRunning) {
+      return;
+    }
+    this._autoEnteredLobby3D = true;
+    this.enterOnlineLobby3D();
   }
 
   getActiveLobbyPortal() {
@@ -1042,9 +1303,17 @@ export class Game {
   triggerLobbyPortalFx(
     { portalId = "alpha", intensity = 1, silent = false, statusText = "", statusDuration = 0 } = {}
   ) {
-    const id = String(portalId ?? "")
+    const rawId = String(portalId ?? "")
       .trim()
       .toLowerCase();
+    const id =
+      rawId === "training" || rawId === "entry"
+        ? "alpha"
+        : rawId === "exit"
+          ? "bravo"
+          : rawId === "online"
+            ? "deploy"
+            : rawId;
     if (id !== "alpha" && id !== "bravo" && id !== "deploy") {
       return;
     }
@@ -1123,30 +1392,48 @@ export class Game {
     }
 
     const fallback = () => {
-      if (portal.action === "team") {
-        this.setTeam(portal.team);
+      if (portal.action === "training") {
+        this.triggerLobbyPortalFx({
+          portalId: "training",
+          intensity: 1.04,
+          statusText: "훈련장으로 이동합니다.",
+          statusDuration: 0.8
+        });
+        this.start({ mode: "single" });
         return;
       }
-      if (portal.action !== "start") {
+      if (portal.action === "online") {
+        if (!this.lobbyState.roomCode) {
+          this.joinDefaultRoom({ force: true });
+          this.hud.setStatus("온라인장 입장을 준비 중입니다. 잠시 후 다시 시도하세요.", true, 0.9);
+          return;
+        }
+        this.startOnlineMatch();
         return;
       }
-      if (!this.lobbyState.roomCode) {
-        this.joinDefaultRoom({ force: true });
-        this.hud.setStatus("방 참가를 확인하는 중입니다. 잠시 후 다시 시도하세요.", true, 0.9);
+      if (portal.action === "entry") {
+        this.triggerLobbyPortalFx({
+          portalId: "entry",
+          intensity: 0.66,
+          statusText: "들어온 포탈입니다. 주변 포탈로 이동하세요.",
+          statusDuration: 0.8
+        });
         return;
       }
-      if (!normalizeTeamId(this.lobbyState.selectedTeam)) {
-        this.hud.setStatus("먼저 블루/레드 포탈로 팀을 선택하세요.", true, 0.9);
+      if (portal.action === "exit") {
+        this.tryOpenLobbyExitPath();
         return;
       }
-      this.startOnlineMatch();
     };
 
     const socket = this.chat?.socket;
     const portalId = String(portal.id ?? "")
       .trim()
       .toLowerCase();
-    if (!portalId || !socket || !socket.connected || !this.lobbyState.roomCode) {
+    if (!portalId) {
+      return;
+    }
+    if (!socket || !socket.connected || !this.lobbyState.roomCode) {
       fallback();
       return;
     }
@@ -1160,18 +1447,32 @@ export class Game {
       const action = String(response.action ?? "")
         .trim()
         .toLowerCase();
-      if (action === "team") {
-        const nextTeam = normalizeTeamId(response.team ?? portal.team);
-        if (nextTeam) {
-          this.lobbyState.selectedTeam = nextTeam;
-          this.mpTeamAlphaBtn?.classList.toggle("is-active", nextTeam === "alpha");
-          this.mpTeamBravoBtn?.classList.toggle("is-active", nextTeam === "bravo");
-          this.syncLobby3DPortalState();
-          this.triggerLobbyPortalFx({
-            portalId: nextTeam,
-            statusText: `팀 선택 완료: ${formatTeamLabel(nextTeam)}`,
-            statusDuration: 0.62
-          });
+      if (action === "training") {
+        this.triggerLobbyPortalFx({
+          portalId: "training",
+          intensity: 1.04,
+          statusText: "훈련장으로 이동합니다.",
+          statusDuration: 0.8
+        });
+        this.start({ mode: "single" });
+        return;
+      }
+
+      if (action === "entry") {
+        this.triggerLobbyPortalFx({
+          portalId: "entry",
+          intensity: 0.66,
+          statusText: "들어온 포탈입니다. ONLINE/훈련장/나가기 중 선택하세요.",
+          statusDuration: 0.9
+        });
+        return;
+      }
+
+      if (action === "exit") {
+        const openedByServer = Boolean(response.opened);
+        const openedByClient = this.tryOpenLobbyExitPath({ silent: true });
+        if (!openedByServer && !openedByClient) {
+          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
         }
         return;
       }
@@ -1185,9 +1486,9 @@ export class Game {
         }
         if (response.localStart) {
           this.triggerLobbyPortalFx({
-            portalId: "deploy",
+            portalId: "online",
             intensity: 1.18,
-            statusText: "온라인 매치에 참가합니다.",
+            statusText: "온라인장으로 이동합니다.",
             statusDuration: 0.75
           });
           this.start({ mode: "online" });
@@ -1197,13 +1498,49 @@ export class Game {
 
       if (action === "start") {
         this.triggerLobbyPortalFx({
-          portalId: "deploy",
+          portalId: "online",
           intensity: 1.28,
-          statusText: "라운드 시작 신호 전송 완료",
+          statusText: "온라인 라운드 시작 신호 전송 완료",
           statusDuration: 0.72
         });
       }
     });
+  }
+
+  tryOpenLobbyExitPath({ silent = false } = {}) {
+    const fileUrl = `file:///${LOBBY_EXIT_TARGET_PATH.replace(/\\/g, "/")}`;
+    let opened = false;
+
+    try {
+      const popup = window.open(fileUrl, "_blank", "noopener,noreferrer");
+      opened = Boolean(popup);
+    } catch {
+      opened = false;
+    }
+
+    if (!opened) {
+      try {
+        window.location.assign(fileUrl);
+        opened = true;
+      } catch {
+        opened = false;
+      }
+    }
+
+    if (!silent) {
+      if (opened) {
+        this.triggerLobbyPortalFx({
+          portalId: "exit",
+          intensity: 1.06,
+          statusText: "나가기 포탈 이동: Emptines",
+          statusDuration: 0.85
+        });
+      } else {
+        this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_PATH}`, false, 1.3);
+      }
+    }
+
+    return opened;
   }
 
   handleLobbyPortalEntry(portal) {
@@ -1229,31 +1566,37 @@ export class Game {
     const portalId = String(payload.portalId ?? "")
       .trim()
       .toLowerCase();
-
-    if (portalId === "alpha" || portalId === "bravo") {
-      const team = normalizeTeamId(payload.team) ?? portalId;
-      this.hud.setStatus(`${playerName}: ${formatTeamLabel(team)} 포탈 진입`, false, 0.65);
-      return;
-    }
-
-    if (portalId !== "deploy") {
-      return;
-    }
-
     const action = String(payload.action ?? "")
       .trim()
       .toLowerCase();
-    if (action === "start") {
-      this.triggerLobbyPortalFx({
-        portalId: "deploy",
-        intensity: 0.72,
-        silent: true
-      });
-      this.hud.setStatus(`${playerName}: DEPLOY 포탈로 라운드 시작`, false, 0.75);
+
+    if (portalId === "training" || action === "training") {
+      this.hud.setStatus(`${playerName}: 훈련장 포탈 진입`, false, 0.65);
+      return;
+    }
+    if (portalId === "entry" || action === "entry") {
+      this.hud.setStatus(`${playerName}: 들어온 포탈 도착`, false, 0.62);
+      return;
+    }
+    if (portalId === "exit" || action === "exit") {
+      this.hud.setStatus(`${playerName}: 나가기 포탈 진입`, false, 0.62);
+      return;
+    }
+    if (portalId !== "online") {
       return;
     }
 
-    this.hud.setStatus(`${playerName}: DEPLOY 포탈 진입`, false, 0.65);
+    if (action === "start") {
+      this.triggerLobbyPortalFx({
+        portalId: "online",
+        intensity: 0.72,
+        silent: true
+      });
+      this.hud.setStatus(`${playerName}: ONLINE 포탈로 라운드 시작`, false, 0.75);
+      return;
+    }
+
+    this.hud.setStatus(`${playerName}: ONLINE 포탈 진입`, false, 0.65);
   }
 
   clampLobby3DPlayerBounds() {
@@ -1287,11 +1630,40 @@ export class Game {
       portal.core.material.opacity = coreBase + pulse * 0.14;
       portal.glow.material.opacity = glowBase + pulse * 0.18;
     }
+    this.renderLobbyRankBoard(false);
 
     const now = Date.now();
+    if (!this.lobby3d.portalActivationArmed) {
+      const dxFromSpawn = this.playerPosition.x - this.lobby3d.spawn.x;
+      const dzFromSpawn = this.playerPosition.z - this.lobby3d.spawn.z;
+      const movedSq = dxFromSpawn * dxFromSpawn + dzFromSpawn * dzFromSpawn;
+      if (movedSq < LOBBY3D_PORTAL_ARM_DISTANCE * LOBBY3D_PORTAL_ARM_DISTANCE) {
+        return;
+      }
+      this.lobby3d.portalActivationArmed = true;
+    }
+
     const activePortal = this.getActiveLobbyPortal();
     if (!activePortal) {
       this.lobby3d.activePortalId = "";
+      this.lobby3d.pendingPortalId = "";
+      this.lobby3d.pendingPortalSince = 0;
+      return;
+    }
+
+    if (this.lobby3d.pendingPortalId !== activePortal.id) {
+      this.lobby3d.pendingPortalId = activePortal.id;
+      this.lobby3d.pendingPortalSince = now;
+      return;
+    }
+
+    const enteredAt = Number(this.lobby3d.enteredAt) || 0;
+    if (now < enteredAt + LOBBY3D_PORTAL_WARMUP_MS) {
+      return;
+    }
+
+    const holdElapsed = now - (Number(this.lobby3d.pendingPortalSince) || 0);
+    if (holdElapsed < LOBBY3D_PORTAL_HOLD_MS) {
       return;
     }
     if (this.lobby3d.activePortalId === activePortal.id) {
@@ -1312,16 +1684,14 @@ export class Game {
       return;
     }
 
-    const selectedTeam = normalizeTeamId(this.lobbyState.selectedTeam);
     const inRoom = Boolean(this.lobbyState.roomCode);
-    const canDeploy = inRoom && Boolean(selectedTeam);
     const myId = this.getMySocketId();
     const hostId = String(this.lobbyState.hostId ?? "");
     const isHost = Boolean(myId && hostId && myId === hostId);
 
     for (const portal of portals) {
-      const isSelectedTeamPortal = portal.action === "team" && portal.team === selectedTeam;
-      const startLocked = portal.action === "start" && !canDeploy;
+      const locked = portal.action === "online" && !inRoom;
+      const active = portal.action === "online" ? inRoom : true;
       const colorHex = Number(portal.color) || 0x89d3ff;
       const ringMaterial = portal.ring?.material;
       const coreMaterial = portal.core?.material;
@@ -1332,20 +1702,20 @@ export class Game {
 
       ringMaterial.color.setHex(colorHex);
       ringMaterial.emissive.setHex(colorHex);
-      if (startLocked) {
+      if (locked) {
         ringMaterial.emissiveIntensity = 0.06;
         ringMaterial.opacity = 0.26;
         portal.visualState = "locked";
-      } else if (isSelectedTeamPortal || (portal.action === "start" && canDeploy)) {
-        ringMaterial.emissiveIntensity = 1.1;
-        ringMaterial.opacity = 0.95;
+      } else if (active) {
+        ringMaterial.emissiveIntensity = 1.08;
+        ringMaterial.opacity = 0.93;
         portal.visualState = "active";
       } else {
         ringMaterial.emissiveIntensity = 0.34;
         ringMaterial.opacity = 0.7;
         portal.visualState = "idle";
       }
-      if (startLocked) {
+      if (locked) {
         coreMaterial.opacity = 0.08;
         glowMaterial.opacity = 0.12;
       }
@@ -1356,16 +1726,12 @@ export class Game {
     }
 
     if (!inRoom) {
-      this.mpPortalHintEl.textContent = "서버 연결 후 로비 포탈이 활성화됩니다.";
-      return;
-    }
-    if (!selectedTeam) {
-      this.mpPortalHintEl.textContent = "블루/레드 포탈로 팀을 선택하세요.";
+      this.mpPortalHintEl.textContent = "ONLINE 포탈은 서버 연결 후 활성화됩니다.";
       return;
     }
     this.mpPortalHintEl.textContent = isHost
-      ? "중앙 DEPLOY 포탈로 매치를 시작하세요."
-      : "중앙 DEPLOY 포탈로 경기에 참가하세요.";
+      ? "ONLINE 포탈: 라운드 시작 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위"
+      : "ONLINE 포탈: 경기 참가 | 훈련장: 즉시 이동 | 나가기: Emptines | TAB: 순위";
   }
 
   createSkyCloudTexture() {
@@ -1536,15 +1902,19 @@ export class Game {
       bravoBase: { x: 42, z: 0 },
       alphaFlag: { x: -42, z: 0 },
       bravoFlag: { x: 42, z: 0 },
+      trainingSpawn: { x: -42, z: 0 },
       mid: { x: 0, z: 0 }
     };
 
     const alphaY = this.voxelWorld.getSurfaceYAt(arena.alphaBase.x, arena.alphaBase.z) ?? 0;
     const bravoY = this.voxelWorld.getSurfaceYAt(arena.bravoBase.x, arena.bravoBase.z) ?? 0;
+    const trainingSpawnRef = arena.trainingSpawn ?? arena.alphaBase;
+    const trainingY = this.voxelWorld.getSurfaceYAt(trainingSpawnRef.x, trainingSpawnRef.z) ?? alphaY;
     const midY = this.voxelWorld.getSurfaceYAt(arena.mid.x, arena.mid.z) ?? 0;
 
     this.objective.alphaBase.set(arena.alphaBase.x, alphaY, arena.alphaBase.z);
     this.objective.bravoBase.set(arena.bravoBase.x, bravoY, arena.bravoBase.z);
+    this.objective.trainingSpawn.set(trainingSpawnRef.x, trainingY, trainingSpawnRef.z);
     this.objective.alphaFlagHome.set(arena.alphaFlag.x, alphaY, arena.alphaFlag.z);
     this.objective.bravoFlagHome.set(arena.bravoFlag.x, bravoY, arena.bravoFlag.z);
     this.objective.controlPoint.set(arena.mid.x, midY, arena.mid.z);
@@ -1641,13 +2011,19 @@ export class Game {
     setText("mobile-reload", "장전");
     setText("mobile-tab", "탭");
     setText("mobile-options", "옵션");
+    setText("mobile-chat", "채팅");
     setText("flag-interact-btn", "깃발 탈취");
-    setText("chat-toggle-btn", "채팅");
+    setText("chat-title", "채팅");
+    setText("chat-toggle-btn", "닫기");
     setText("options-title", "옵션");
+    setText("quick-settings-btn", "퀵옵션");
+    setText("quick-settings-title", "빠른 설정");
+    setText("quick-fullscreen", "전체화면");
+    setText("quick-open-options", "상세 옵션");
     const onlineDesc = document.querySelector("#online-panel .start-desc");
     if (onlineDesc) {
       onlineDesc.textContent =
-        "텍스트 팀 선택 대신 3D 로비에서 포탈로 팀을 고르고 중앙 포탈로 출발합니다.";
+        "3D 로비에서 4개 포탈(훈련장/온라인장/들어온포탈/나가기포탈)을 이용해 이동합니다.";
     }
     const subtitle = document.querySelector(".options-subtitle");
     if (subtitle) {
@@ -1675,7 +2051,29 @@ export class Game {
     this.optionsMobileLookEl = document.getElementById("options-mobile-look");
     this.optionsMobileLookValueEl = document.getElementById("options-mobile-look-value");
     this.optionsNavButtons = Array.from(document.querySelectorAll(".options-nav-btn"));
+    this.mobileChatBtn = document.getElementById("mobile-chat");
+    this.quickSettingsBtnEl = document.getElementById("quick-settings-btn");
+    this.quickSettingsPanelEl = document.getElementById("quick-settings-panel");
+    this.quickQualityButtons = Array.from(document.querySelectorAll(".quick-quality-btn"));
+    this.quickFullscreenBtnEl = document.getElementById("quick-fullscreen");
+    this.quickOpenOptionsBtnEl = document.getElementById("quick-open-options");
+    for (const button of this.quickQualityButtons) {
+      const mode = normalizeRenderQuality(button?.dataset?.quality);
+      if (mode === "low") {
+        button.textContent = "저";
+      } else if (mode === "high") {
+        button.textContent = "고";
+      } else {
+        button.textContent = "중";
+      }
+    }
+    const quickLabelEl = this.quickSettingsPanelEl?.querySelector(".quick-settings-label");
+    if (quickLabelEl) {
+      quickLabelEl.textContent = "그래픽";
+    }
     this.bindOptionsNavButtons();
+    this.syncQuickSettingsQualityUi();
+    this.syncQuickSettingsVisibility();
     this.refreshOptionsAudioUi();
   }
 
@@ -1800,6 +2198,184 @@ export class Game {
     this.setEffectsVolumeScale(0);
   }
 
+  syncQuickSettingsQualityUi() {
+    if (!Array.isArray(this.quickQualityButtons)) {
+      return;
+    }
+    for (const button of this.quickQualityButtons) {
+      const mode = normalizeRenderQuality(button?.dataset?.quality);
+      const active = mode === this.renderQualityMode;
+      button?.classList.toggle("is-active", active);
+      button?.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+  }
+
+  applyRenderQualityMode(mode, { persist = true, announce = true } = {}) {
+    const nextMode = normalizeRenderQuality(mode);
+    this.renderQualityMode = nextMode;
+    this.lowSpecModeApplied = nextMode === "low";
+
+    if (persist && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(RENDER_QUALITY_STORAGE_KEY, nextMode);
+      } catch {}
+    }
+
+    if (nextMode === "low") {
+      this.pixelRatioCap = RENDER_PIXEL_RATIO_LOW_CAP;
+    } else if (nextMode === "high") {
+      this.pixelRatioCap = RENDER_PIXEL_RATIO_HIGH_CAP;
+    } else {
+      this.pixelRatioCap = RENDER_PIXEL_RATIO_CAP;
+    }
+
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
+
+    if (this.sunLight?.shadow) {
+      if (nextMode === "low") {
+        this.sunLight.shadow.mapSize.set(SHADOW_MAP_SIZE_LOW, SHADOW_MAP_SIZE_LOW);
+        this.sunLight.shadow.camera.left = -SHADOW_CAMERA_EXTENT_LOW;
+        this.sunLight.shadow.camera.right = SHADOW_CAMERA_EXTENT_LOW;
+        this.sunLight.shadow.camera.top = SHADOW_CAMERA_EXTENT_LOW;
+        this.sunLight.shadow.camera.bottom = -SHADOW_CAMERA_EXTENT_LOW;
+      } else if (nextMode === "high") {
+        this.sunLight.shadow.mapSize.set(SHADOW_MAP_SIZE_HIGH, SHADOW_MAP_SIZE_HIGH);
+        this.sunLight.shadow.camera.left = -SHADOW_CAMERA_EXTENT_HIGH;
+        this.sunLight.shadow.camera.right = SHADOW_CAMERA_EXTENT_HIGH;
+        this.sunLight.shadow.camera.top = SHADOW_CAMERA_EXTENT_HIGH;
+        this.sunLight.shadow.camera.bottom = -SHADOW_CAMERA_EXTENT_HIGH;
+      } else {
+        this.sunLight.shadow.mapSize.set(SHADOW_MAP_SIZE_DEFAULT, SHADOW_MAP_SIZE_DEFAULT);
+        this.sunLight.shadow.camera.left = -SHADOW_CAMERA_EXTENT_DEFAULT;
+        this.sunLight.shadow.camera.right = SHADOW_CAMERA_EXTENT_DEFAULT;
+        this.sunLight.shadow.camera.top = SHADOW_CAMERA_EXTENT_DEFAULT;
+        this.sunLight.shadow.camera.bottom = -SHADOW_CAMERA_EXTENT_DEFAULT;
+      }
+      this.sunLight.shadow.camera.updateProjectionMatrix();
+      this.sunLight.shadow.needsUpdate = true;
+    }
+
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.syncQuickSettingsQualityUi();
+
+    if (announce && this.hud) {
+      const label = nextMode === "low" ? "저" : nextMode === "high" ? "고" : "중";
+      this.hud.setStatus(`그래픽 품질: ${label}`, false, 0.9);
+    }
+  }
+
+  syncQuickSettingsVisibility() {
+    if (!this.quickSettingsBtnEl || !this.quickSettingsPanelEl) {
+      return;
+    }
+    const controlActive = this.isRunning || this.isLobby3DActive();
+    const visible = controlActive && !this.isGameOver && !this.optionsMenuOpen;
+    this.quickSettingsBtnEl.classList.toggle("hidden", !visible);
+    if (!visible) {
+      this.quickSettingsOpen = false;
+      this.quickSettingsPanelEl.classList.add("hidden");
+    }
+    this.quickSettingsBtnEl.setAttribute("aria-expanded", this.quickSettingsOpen ? "true" : "false");
+  }
+
+  toggleQuickSettingsPanel(forceOpen = null) {
+    if (!this.quickSettingsBtnEl || !this.quickSettingsPanelEl) {
+      return;
+    }
+    const controlActive = this.isRunning || this.isLobby3DActive();
+    if (!controlActive || this.isGameOver || this.optionsMenuOpen) {
+      this.quickSettingsOpen = false;
+      this.quickSettingsPanelEl.classList.add("hidden");
+      this.quickSettingsBtnEl.setAttribute("aria-expanded", "false");
+      return;
+    }
+
+    const nextOpen = forceOpen === null ? !this.quickSettingsOpen : Boolean(forceOpen);
+    this.quickSettingsOpen = nextOpen;
+    this.quickSettingsPanelEl.classList.toggle("hidden", !nextOpen);
+    this.quickSettingsBtnEl.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+  }
+
+  toggleFullscreenFromQuickSettings() {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const doc = document;
+    const active = doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement;
+    if (active) {
+      const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
+      if (typeof exit === "function") {
+        try {
+          const maybe = exit.call(doc);
+          if (maybe && typeof maybe.catch === "function") {
+            maybe.catch(() => {});
+          }
+        } catch {}
+      }
+      return;
+    }
+
+    const target = doc.documentElement;
+    const request =
+      target.requestFullscreen || target.webkitRequestFullscreen || target.msRequestFullscreen;
+    if (typeof request !== "function") {
+      return;
+    }
+    try {
+      const maybe = request.call(target);
+      if (maybe && typeof maybe.catch === "function") {
+        maybe.catch(() => {});
+      }
+    } catch {}
+  }
+
+  bindQuickSettingsControls() {
+    if (this._quickSettingsBound) {
+      return;
+    }
+    this._quickSettingsBound = true;
+
+    this.quickSettingsBtnEl?.addEventListener("click", () => {
+      this.toggleQuickSettingsPanel();
+    });
+
+    this.quickFullscreenBtnEl?.addEventListener("click", () => {
+      this.toggleFullscreenFromQuickSettings();
+    });
+
+    this.quickOpenOptionsBtnEl?.addEventListener("click", () => {
+      this.toggleQuickSettingsPanel(false);
+      if (!this.isRunning || this.isGameOver) {
+        return;
+      }
+      this.openOptionsMenu();
+    });
+
+    for (const button of this.quickQualityButtons) {
+      button?.addEventListener("click", () => {
+        const mode = normalizeRenderQuality(button?.dataset?.quality);
+        this.applyRenderQualityMode(mode, { persist: true, announce: true });
+      });
+    }
+
+    document.addEventListener("pointerdown", (event) => {
+      if (!this.quickSettingsOpen || !this.quickSettingsPanelEl || !this.quickSettingsBtnEl) {
+        return;
+      }
+      const target = event.target;
+      if (
+        this.quickSettingsPanelEl.contains(target) ||
+        this.quickSettingsBtnEl.contains(target)
+      ) {
+        return;
+      }
+      this.toggleQuickSettingsPanel(false);
+    });
+
+    this.syncQuickSettingsQualityUi();
+    this.syncQuickSettingsVisibility();
+  }
+
   openOptionsMenu() {
     if (!this.isRunning || this.isGameOver) {
       return;
@@ -1819,6 +2395,7 @@ export class Game {
     this.mobileState.aimPointerId = null;
     this.mobileState.firePointerId = null;
     this.chat?.close?.();
+    this.toggleQuickSettingsPanel(false);
     this.mouseLookEnabled = false;
     this.hud.showPauseOverlay(true);
     this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "false");
@@ -1844,7 +2421,7 @@ export class Game {
       this.syncCursorVisibility();
       return;
     }
-    if (this.chat?.isInputFocused) {
+    if (this.isUiInputFocused()) {
       this.syncCursorVisibility();
       return;
     }
@@ -2236,6 +2813,7 @@ export class Game {
   }
 
   applyRoomSnapshot(payload = {}) {
+    this.applyDailyLeaderboardPayload(payload.dailyLeaderboard ?? null);
     const blocks = Array.isArray(payload.blocks) ? payload.blocks : null;
     if (!blocks) {
       return;
@@ -3400,7 +3978,7 @@ export class Game {
       visible &&
         this.tabScoreboardEl &&
         this.activeMatchMode === "online" &&
-        this.isRunning &&
+        (this.isRunning || this.isLobby3DActive()) &&
         !this.isGameOver
     );
     this.tabBoardVisible = show;
@@ -4096,6 +4674,9 @@ export class Game {
     if (!remote || !state) {
       return;
     }
+    if (this.isLobby3DActive() && !this.isRunning) {
+      return;
+    }
 
     const x = Number(state.x);
     const y = Number(state.y);
@@ -4172,6 +4753,66 @@ export class Game {
     }
   }
 
+  getLobbyRemotePreviewTransform(index = 0) {
+    const safeIndex = Math.max(0, Math.trunc(index));
+    let remaining = safeIndex;
+    let ring = 0;
+    let slots = LOBBY3D_REMOTE_RING_BASE_SLOTS;
+    while (remaining >= slots) {
+      remaining -= slots;
+      ring += 1;
+      slots += 2;
+    }
+
+    const angle = (Math.PI * 2 * remaining) / Math.max(1, slots) + ring * 0.28;
+    const radius = LOBBY3D_REMOTE_RING_BASE_RADIUS + ring * LOBBY3D_REMOTE_RING_STEP_RADIUS;
+    const x = this.lobby3d.centerX + Math.cos(angle) * radius;
+    const z = this.lobby3d.centerZ + Math.sin(angle) * radius;
+    const y = this.lobby3d.floorY + PLAYER_HEIGHT + 0.92 + ring * 0.06;
+    const yaw = Math.atan2(this.lobby3d.centerX - x, this.lobby3d.centerZ - z);
+
+    return { x, y, z, yaw };
+  }
+
+  applyLobbyRemotePreviewTargets() {
+    if (!this.isLobby3DActive()) {
+      return;
+    }
+
+    const myId = this.getMySocketId();
+    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
+    const remoteIds = [];
+    for (const player of players) {
+      const id = String(player?.id ?? "");
+      if (!id || id === myId) {
+        continue;
+      }
+      if (!this.remotePlayers.has(id)) {
+        continue;
+      }
+      remoteIds.push(id);
+    }
+
+    const signature = remoteIds.join("|");
+    if (signature === this.lobby3d.remotePreviewSignature) {
+      return;
+    }
+    this.lobby3d.remotePreviewSignature = signature;
+
+    let previewIndex = 0;
+    for (const id of remoteIds) {
+      const remote = this.remotePlayers.get(id);
+      if (!remote) {
+        continue;
+      }
+      const pose = this.getLobbyRemotePreviewTransform(previewIndex);
+      remote.targetPosition.set(pose.x, pose.y - PLAYER_HEIGHT, pose.z);
+      remote.targetYaw = pose.yaw;
+      this.clearRemoteDowned(remote);
+      previewIndex += 1;
+    }
+  }
+
   syncRemotePlayersFromLobby() {
     if (this.activeMatchMode !== "online") {
       this.clearRemotePlayers();
@@ -4237,6 +4878,10 @@ export class Game {
     if (this.remotePlayers.size === 0) {
       this.syncOnlineFlagMeshes();
       return;
+    }
+    const lobbyPreviewActive = this.isLobby3DActive() && !this.isRunning;
+    if (lobbyPreviewActive) {
+      this.applyLobbyRemotePreviewTargets();
     }
 
     const smooth = THREE.MathUtils.clamp(delta * 11, 0.08, 0.92);
@@ -4312,7 +4957,7 @@ export class Game {
       const distance = this._toRemote.length();
 
       if (remote.nameTag) {
-        const hideEnemyName = this.isEnemyTeam(remote.team);
+        const hideEnemyName = !lobbyPreviewActive && this.isEnemyTeam(remote.team);
         const hideForDeath = remote.isDowned || remote.downedBlend > 0.2;
         remote.nameTag.visible =
           !hideForDeath && !hideEnemyName && distance <= REMOTE_NAME_TAG_DISTANCE;
@@ -4322,6 +4967,43 @@ export class Game {
     if (this.activeMatchMode === "online") {
       this.syncOnlineFlagMeshes();
     }
+  }
+
+  setSingleSpawnFromTraining() {
+    if (this.activeMatchMode !== "single") {
+      return;
+    }
+
+    const anchorX = Number.isFinite(this.objective?.trainingSpawn?.x)
+      ? this.objective.trainingSpawn.x
+      : Number.isFinite(this.objective?.alphaBase?.x)
+        ? this.objective.alphaBase.x
+        : 0;
+    const anchorZ = Number.isFinite(this.objective?.trainingSpawn?.z)
+      ? this.objective.trainingSpawn.z
+      : Number.isFinite(this.objective?.alphaBase?.z)
+        ? this.objective.alphaBase.z
+        : 0;
+
+    const fallbackY = (this.voxelWorld.getSurfaceYAt(anchorX, anchorZ) ?? 0) + PLAYER_HEIGHT;
+    const spawnPoint = this.findSafeSpawnPlacement(anchorX, anchorZ, fallbackY) ?? {
+      x: anchorX,
+      y: fallbackY + 2,
+      z: anchorZ
+    };
+
+    this.playerPosition.set(spawnPoint.x, spawnPoint.y, spawnPoint.z);
+    this.verticalVelocity = 0;
+    this.onGround = true;
+    this.fallStartY = this.playerPosition.y;
+
+    const lookTarget = this.objective?.controlPoint ?? this.objective?.bravoBase;
+    this.yaw = lookTarget ? Math.atan2(lookTarget.x - spawnPoint.x, lookTarget.z - spawnPoint.z) : 0;
+    this.pitch = 0;
+    this.camera.position.copy(this.playerPosition);
+    this.camera.rotation.order = "YXZ";
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
   }
 
   setOnlineSpawnFromLobby() {
@@ -4990,7 +5672,7 @@ export class Game {
       this.mobileEnabled &&
       controlActive &&
       !this.isGameOver &&
-      !this.chat?.isInputFocused &&
+      !this.isUiInputFocused() &&
       !this.optionsMenuOpen;
     this.mobileControlsEl.classList.toggle("is-active", visible);
 
@@ -5050,7 +5732,7 @@ export class Game {
   }
 
   handlePrimaryActionDown() {
-    if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.chat?.isInputFocused) {
+    if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.isUiInputFocused()) {
       return;
     }
 
@@ -5071,6 +5753,7 @@ export class Game {
 
   syncMobileUtilityButtons() {
     const mode = this.buildSystem?.getToolMode?.() ?? "gun";
+    const chatOpen = Boolean(this.chat?.isOpen?.());
     this.mobileModePlaceBtn?.classList.toggle("is-active", mode === "place");
     this.mobileModeDigBtn?.classList.toggle("is-active", mode === "dig");
     this.mobileModeGunBtn?.classList.toggle("is-active", mode === "gun");
@@ -5078,6 +5761,8 @@ export class Game {
       "is-active",
       mode === "gun" && (this.isAiming || this.rightMouseAiming)
     );
+    this.mobileChatBtn?.classList.toggle("is-active", chatOpen);
+    this.mobileChatBtn?.setAttribute("aria-pressed", chatOpen ? "true" : "false");
   }
 
   setupMobileControls() {
@@ -5204,7 +5889,7 @@ export class Game {
       this.syncMobileUtilityButtons();
     });
     bindUtilityTap(this.mobileAimBtn, () => {
-      if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.chat?.isInputFocused) {
+      if (!this.isRunning || this.isGameOver || this.optionsMenuOpen || this.isUiInputFocused()) {
         return;
       }
       if (!this.buildSystem.isGunMode()) {
@@ -5240,6 +5925,19 @@ export class Game {
       }
       this.openOptionsMenu();
     });
+    if (this.mobileChatBtn) {
+      bindUtilityTap(this.mobileChatBtn, () => {
+        if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
+          return;
+        }
+        if (this.chat?.isOpen?.()) {
+          this.chat.close();
+        } else {
+          this.chat?.open?.({ focusInput: true });
+        }
+        this.syncCursorVisibility();
+      });
+    }
 
     if (this.flagInteractBtnEl) {
       this.flagInteractBtnEl.addEventListener("pointerdown", (event) => {
@@ -5258,7 +5956,7 @@ export class Game {
         !this.mobileEnabled ||
         !this.isRunning ||
         this.isGameOver ||
-        this.chat?.isInputFocused
+        this.isUiInputFocused()
       ) {
         return;
       }
@@ -5280,7 +5978,7 @@ export class Game {
         event.pointerId !== this.mobileState.lookPointerId ||
         !this.isRunning ||
         this.isGameOver ||
-        this.chat?.isInputFocused
+        this.isUiInputFocused()
       ) {
         return;
       }
@@ -5404,9 +6102,10 @@ export class Game {
     ]);
 
     document.addEventListener("keydown", (event) => {
+      const uiInputFocused = this.isUiInputFocused();
       if (event.code === "Tab") {
         event.preventDefault();
-        if (!this.chat?.isInputFocused) {
+        if (!uiInputFocused) {
           this.setTabScoreboardVisible(true);
         }
         return;
@@ -5414,11 +6113,11 @@ export class Game {
 
       if (event.code === "Escape") {
         event.preventDefault();
-        if (this.isLobby3DActive() && !this.chat?.isInputFocused) {
+        if (this.isLobby3DActive() && !uiInputFocused) {
           this.leaveOnlineLobby3DToMenu();
           return;
         }
-        if (!this.isRunning || this.isGameOver || this.chat?.isInputFocused) {
+        if (!this.isRunning || this.isGameOver || uiInputFocused) {
           return;
         }
         if (this.optionsMenuOpen) {
@@ -5433,7 +6132,7 @@ export class Game {
         (this.isRunning || this.isLobby3DActive()) &&
         !this.optionsMenuOpen &&
         this.chat &&
-        !this.chat.isInputFocused &&
+        !uiInputFocused &&
         (event.code === "KeyT" || event.code === "Enter")
       ) {
         event.preventDefault();
@@ -5459,7 +6158,7 @@ export class Game {
         return;
       }
 
-      if (this.chat?.isInputFocused) {
+      if (uiInputFocused) {
         return;
       }
 
@@ -5496,13 +6195,14 @@ export class Game {
     });
 
     document.addEventListener("keyup", (event) => {
+      const uiInputFocused = this.isUiInputFocused();
       if (event.code === "Tab") {
         event.preventDefault();
         this.setTabScoreboardVisible(false);
         return;
       }
 
-      if (this.chat?.isInputFocused) {
+      if (uiInputFocused) {
         return;
       }
       if (this.optionsMenuOpen) {
@@ -5546,7 +6246,7 @@ export class Game {
         return;
       }
 
-      if (this.chat?.isInputFocused) {
+      if (this.isUiInputFocused()) {
         this.mouseLookEnabled = false;
         if (!this.optionsMenuOpen) {
           this.hud.showPauseOverlay(false);
@@ -5600,7 +6300,7 @@ export class Game {
         this.isGameOver ||
         this.optionsMenuOpen ||
         !this.mouseLookEnabled ||
-        this.chat?.isInputFocused
+        this.isUiInputFocused()
       ) {
         return;
       }
@@ -5615,7 +6315,7 @@ export class Game {
     document.addEventListener(
       "wheel",
       (event) => {
-        if (this.chat?.isInputFocused || !this.isRunning || this.isGameOver || this.optionsMenuOpen) {
+        if (this.isUiInputFocused() || !this.isRunning || this.isGameOver || this.optionsMenuOpen) {
           return;
         }
         if (this.buildSystem.handleWheel(event)) {
@@ -5654,7 +6354,7 @@ export class Game {
         this.pointerLockSupported &&
         !this.pointerLocked &&
         !this.mouseLookEnabled &&
-        !this.chat?.isInputFocused;
+        !this.isUiInputFocused();
 
       if (lobbyActive) {
         if (shouldTryPointerLock) {
@@ -5741,16 +6441,16 @@ export class Game {
     }
 
     this.startButton?.addEventListener("click", () => {
-      this.applyLobbyNickname();
+      this.applyLobbyNickname({ source: "menu", syncToServer: false });
       this.start({ mode: "single" });
     });
 
     this.mpCreateBtn?.addEventListener("click", () => {
-      this.applyLobbyNickname();
+      this.applyLobbyNickname({ source: "menu", syncToServer: false });
       this.createRoom();
     });
     this.mpJoinBtn?.addEventListener("click", () => {
-      this.applyLobbyNickname();
+      this.applyLobbyNickname({ source: "menu", syncToServer: false });
       this.joinRoomByInputCode();
     });
     this.mpStartBtn?.addEventListener("click", () => {
@@ -5768,8 +6468,56 @@ export class Game {
       }
     });
 
+    const bindUiInputFocus = (inputEl) => {
+      if (!inputEl) {
+        return;
+      }
+      inputEl.addEventListener("focus", () => {
+        this.keys.clear();
+        this.handlePrimaryActionUp();
+        this.rightMouseAiming = false;
+        this.isAiming = false;
+        this.mouseLookEnabled = false;
+        if (
+          this.pointerLockSupported &&
+          document.pointerLockElement === this.renderer.domElement
+        ) {
+          document.exitPointerLock();
+        }
+        this.syncCursorVisibility();
+      });
+      inputEl.addEventListener("blur", () => {
+        this.syncCursorVisibility();
+      });
+    };
+
+    bindUiInputFocus(this.mpNameInput);
+    bindUiInputFocus(this.lobbyQuickNameInput);
+
     this.mpNameInput?.addEventListener("change", () => {
-      this.applyLobbyNickname();
+      this.applyLobbyNickname({ source: "menu", syncToServer: true });
+    });
+    this.mpNameInput?.addEventListener("keydown", (event) => {
+      if (event.code !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      this.applyLobbyNickname({ source: "menu", syncToServer: true });
+      this.mpNameInput?.blur();
+    });
+    this.lobbyQuickNameInput?.addEventListener("change", () => {
+      this.applyLobbyNickname({ source: "quick", syncToServer: true });
+    });
+    this.lobbyQuickNameInput?.addEventListener("keydown", (event) => {
+      if (event.code !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      this.applyLobbyNickname({ source: "quick", syncToServer: true });
+      this.lobbyQuickNameInput?.blur();
+    });
+    this.lobbyQuickNameSaveBtn?.addEventListener("click", () => {
+      this.applyLobbyNickname({ source: "quick", syncToServer: true });
     });
     this.mpCodeInput?.addEventListener("input", () => {
       this.mpCodeInput.value = this.mpCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -5928,6 +6676,8 @@ export class Game {
       this.syncRemotePlayersFromLobby();
       this.state.objectiveText = this.getOnlineObjectiveText();
       this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+    } else {
+      this.setSingleSpawnFromTraining();
     }
     this.updateTeamScoreHud();
     this.updateFlagInteractUi();
@@ -5955,7 +6705,7 @@ export class Game {
         this.isGameOver ||
         this.pointerLocked ||
         this.allowUnlockedLook ||
-        this.chat?.isInputFocused
+        this.isUiInputFocused()
       ) {
         return;
       }
@@ -6072,7 +6822,7 @@ export class Game {
       this.optionsMenuOpen ||
       this.isRespawning ||
       (this.activeMatchMode === "online" && this.onlineRoundEnded) ||
-      this.chat?.isInputFocused ||
+      this.isUiInputFocused() ||
       !this.buildSystem.isGunMode()
     ) {
       return;
@@ -6354,7 +7104,7 @@ export class Game {
       (this.isAiming || this.rightMouseAiming) &&
       this.isRunning &&
       !this.isGameOver &&
-      !this.chat?.isInputFocused;
+      !this.isUiInputFocused();
     this.aimBlend = THREE.MathUtils.damp(this.aimBlend, aiming ? 1 : 0, 12, delta);
 
     const bobSpeed = sprinting ? 13 : 9;
@@ -6464,7 +7214,7 @@ export class Game {
     if (this.activeMatchMode === "online" && this.centerAdActive) {
       this.emitCenterAdSync();
     }
-    const isChatting = !!this.chat?.isInputFocused;
+    const isUiTyping = this.isUiInputFocused();
     const gunMode = this.buildSystem.isGunMode();
     const aiEnabled = this.activeMatchMode !== "online";
 
@@ -6483,7 +7233,7 @@ export class Game {
 
     const lobbyActive = this.isLobby3DActive();
     if (lobbyActive) {
-      const canMoveInLobby = !this.optionsMenuOpen && !isChatting;
+      const canMoveInLobby = !this.optionsMenuOpen && !isUiTyping;
       if (canMoveInLobby) {
         this.applyMovement(delta);
         this.clampLobby3DPlayerBounds();
@@ -6499,7 +7249,7 @@ export class Game {
     }
 
     const requiresLockedLook =
-      !this.mobileEnabled && !this.mouseLookEnabled && !isChatting && !this.isRespawning;
+      !this.mobileEnabled && !this.mouseLookEnabled && !isUiTyping && !this.isRespawning;
     if (!this.isRunning || this.isGameOver || requiresLockedLook) {
       this.hud.update(delta, {
         ...this.state,
@@ -6592,21 +7342,7 @@ export class Game {
     if (this.lowSpecModeApplied) {
       return;
     }
-    this.lowSpecModeApplied = true;
-    this.pixelRatioCap = RENDER_PIXEL_RATIO_LOW_CAP;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
-
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
-    if (this.sunLight?.shadow) {
-      this.sunLight.shadow.mapSize.set(SHADOW_MAP_SIZE_LOW, SHADOW_MAP_SIZE_LOW);
-      this.sunLight.shadow.camera.left = -SHADOW_CAMERA_EXTENT_LOW;
-      this.sunLight.shadow.camera.right = SHADOW_CAMERA_EXTENT_LOW;
-      this.sunLight.shadow.camera.top = SHADOW_CAMERA_EXTENT_LOW;
-      this.sunLight.shadow.camera.bottom = -SHADOW_CAMERA_EXTENT_LOW;
-      this.sunLight.shadow.camera.updateProjectionMatrix();
-      this.sunLight.shadow.needsUpdate = true;
-    }
-
+    this.applyRenderQualityMode("low", { persist: true, announce: false });
     this.hud.setStatus("저사양 최적화 모드를 자동 적용했습니다.", false, 1.1);
   }
 
@@ -6690,7 +7426,7 @@ export class Game {
       !this.pointerLockSupported ||
       this.pointerLocked ||
       this.optionsMenuOpen ||
-      this.chat?.isInputFocused
+      this.isUiInputFocused()
     ) {
       return;
     }
@@ -6709,6 +7445,7 @@ export class Game {
 
   syncCursorVisibility() {
     this.updateMobileControlsVisibility();
+    this.syncQuickSettingsVisibility();
     if (this.mobileEnabled) {
       document.body.style.cursor = "";
       this.renderer.domElement.style.cursor = "";
@@ -6721,7 +7458,7 @@ export class Game {
       !this.isGameOver &&
       !this.optionsMenuOpen &&
       (this.mouseLookEnabled || this.rightMouseAiming || this.isAiming) &&
-      !this.chat?.isInputFocused;
+      !this.isUiInputFocused();
     const cursor = hideCursor ? "none" : "";
     document.body.style.cursor = cursor;
     this.renderer.domElement.style.cursor = cursor;
@@ -6884,6 +7621,7 @@ export class Game {
     this._lobbySocketBound = true;
 
     socket.on("connect", () => {
+      this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: false });
       this.refreshOnlineStatus();
       this.requestRoomList();
       this.joinDefaultRoom();
@@ -6904,6 +7642,10 @@ export class Game {
     socket.on("room:update", (room) => {
       this.setLobbyState(room);
       this.requestRoomList();
+    });
+
+    socket.on("leaderboard:daily", (payload = {}) => {
+      this.applyDailyLeaderboardPayload(payload);
     });
 
     socket.on("room:snapshot", (payload) => {
@@ -7084,8 +7826,279 @@ export class Game {
       `</div>`;
   }
 
+  syncLobbyNicknameInputs(name, { force = false } = {}) {
+    const safeName = String(name ?? "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .slice(0, 16);
+    if (!safeName) {
+      return;
+    }
+
+    const menuFocused = document.activeElement === this.mpNameInput;
+    const quickFocused = document.activeElement === this.lobbyQuickNameInput;
+
+    if (this.mpNameInput && (force || !menuFocused)) {
+      this.mpNameInput.value = safeName;
+    }
+    if (this.lobbyQuickNameInput && (force || !quickFocused)) {
+      this.lobbyQuickNameInput.value = safeName;
+    }
+  }
+
+  normalizeDailyLeaderboardPayload(payload = null) {
+    const source = payload && typeof payload === "object" ? payload : {};
+    const dateKey = String(source.dateKey ?? "").trim();
+    const resetAtRaw = Number(source.resetAt);
+    const updatedAtRaw = Number(source.updatedAt);
+    const playersRaw = Array.isArray(source.players) ? source.players : [];
+
+    const players = playersRaw
+      .map((entry) => {
+        const name = String(entry?.name ?? "PLAYER")
+          .trim()
+          .replace(/\s+/g, "_")
+          .slice(0, 16) || "PLAYER";
+        const captures = Math.max(0, Math.trunc(Number(entry?.captures ?? 0)));
+        const kills = Math.max(0, Math.trunc(Number(entry?.kills ?? 0)));
+        const deaths = Math.max(0, Math.trunc(Number(entry?.deaths ?? 0)));
+        const rankRaw = Number(entry?.rank);
+        const rank = Number.isFinite(rankRaw) ? Math.max(1, Math.trunc(rankRaw)) : null;
+        return {
+          rank,
+          name,
+          captures,
+          kills,
+          deaths,
+          key: String(entry?.key ?? "").trim()
+        };
+      })
+      .filter((entry) => entry.name)
+      .slice(0, 16);
+
+    return {
+      dateKey,
+      resetAt: Number.isFinite(resetAtRaw) ? Math.max(0, Math.trunc(resetAtRaw)) : 0,
+      updatedAt: Number.isFinite(updatedAtRaw) ? Math.max(0, Math.trunc(updatedAtRaw)) : 0,
+      players
+    };
+  }
+
+  getDailyLeaderboardRows(limit = 6) {
+    const maxCount = Math.max(1, Math.trunc(Number(limit) || 6));
+    const fromServer = Array.isArray(this.dailyLeaderboard?.players) ? this.dailyLeaderboard.players : [];
+    if (fromServer.length > 0) {
+      return fromServer.slice(0, maxCount).map((entry, index) => ({
+        rank: Number.isFinite(entry.rank) ? entry.rank : index + 1,
+        name: entry.name,
+        captures: Math.max(0, Math.trunc(Number(entry.captures ?? 0))),
+        kills: Math.max(0, Math.trunc(Number(entry.kills ?? 0))),
+        deaths: Math.max(0, Math.trunc(Number(entry.deaths ?? 0)))
+      }));
+    }
+
+    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
+    return players
+      .slice()
+      .sort((a, b) => {
+        const capturesA = Math.max(0, Math.trunc(Number(a?.captures ?? 0)));
+        const capturesB = Math.max(0, Math.trunc(Number(b?.captures ?? 0)));
+        if (capturesA !== capturesB) {
+          return capturesB - capturesA;
+        }
+        const killsA = Math.max(0, Math.trunc(Number(a?.kills ?? 0)));
+        const killsB = Math.max(0, Math.trunc(Number(b?.kills ?? 0)));
+        if (killsA !== killsB) {
+          return killsB - killsA;
+        }
+        const deathsA = Math.max(0, Math.trunc(Number(a?.deaths ?? 0)));
+        const deathsB = Math.max(0, Math.trunc(Number(b?.deaths ?? 0)));
+        if (deathsA !== deathsB) {
+          return deathsA - deathsB;
+        }
+        return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+      })
+      .slice(0, maxCount)
+      .map((player, index) => ({
+        rank: index + 1,
+        name: String(player?.name ?? "PLAYER"),
+        captures: Math.max(0, Math.trunc(Number(player?.captures ?? 0))),
+        kills: Math.max(0, Math.trunc(Number(player?.kills ?? 0))),
+        deaths: Math.max(0, Math.trunc(Number(player?.deaths ?? 0)))
+      }));
+  }
+
+  applyDailyLeaderboardPayload(payload = null) {
+    const normalized = this.normalizeDailyLeaderboardPayload(payload);
+    const signature = `${normalized.dateKey}|${normalized.resetAt}|${normalized.players
+      .map((entry) => `${entry.rank ?? "-"}:${entry.name}:${entry.captures}:${entry.kills}:${entry.deaths}`)
+      .join("|")}`;
+    if (signature === this._dailyLeaderboardSignature) {
+      return;
+    }
+
+    this.dailyLeaderboard = normalized;
+    this._dailyLeaderboardSignature = signature;
+    this._lastLobbyQuickRankSignature = "";
+    this.renderLobbyRankBoard(true);
+    this.updateLobbyQuickPanel();
+  }
+
+  updateLobbyQuickPanel() {
+    if (!this.lobbyQuickPanelEl) {
+      return;
+    }
+    const show = this.isLobby3DActive() && !this.isRunning;
+    if (this._lastLobbyQuickPanelVisible !== show) {
+      this.lobbyQuickPanelEl.classList.toggle("show", show);
+      this.lobbyQuickPanelEl.setAttribute("aria-hidden", show ? "false" : "true");
+      this._lastLobbyQuickPanelVisible = show;
+    }
+
+    const connected = !!this.chat?.isConnected?.();
+    const inRoom = Boolean(this.lobbyState.roomCode);
+    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
+    const count = players.length;
+    const alphaCount = players.filter((player) => player?.team === "alpha").length;
+    const bravoCount = players.filter((player) => player?.team === "bravo").length;
+
+    if (this.lobbyQuickCountEl) {
+      let nextText = "";
+      if (!connected) {
+        nextText = "서버 연결 중...";
+      } else if (!inRoom) {
+        nextText = "GLOBAL 자동 참가 중...";
+      } else {
+        nextText =
+          `대기 인원 ${count}/${ONLINE_MAX_PLAYERS} | 블루 ${alphaCount} 레드 ${bravoCount} | TAB 순위`;
+      }
+      if (nextText !== this._lastLobbyQuickCountText) {
+        this.lobbyQuickCountEl.textContent = nextText;
+        this._lastLobbyQuickCountText = nextText;
+      }
+    }
+
+    if (this.lobbyQuickGuideEl) {
+      let guideText = "";
+      if (!connected) {
+        guideText = "연결 후 포탈(훈련장/온라인장/들어온포탈/나가기) 사용 가능";
+      } else if (!inRoom) {
+        guideText = "GLOBAL 참가 대기 중 · 이동 WASD · 순위 TAB · 채팅 T/Enter";
+      } else {
+        guideText = "포탈 4개 사용 가능 · 닉네임 변경 가능 · 순위 TAB";
+      }
+      if (guideText !== this._lastLobbyQuickGuideText) {
+        this.lobbyQuickGuideEl.textContent = guideText;
+        this._lastLobbyQuickGuideText = guideText;
+      }
+    }
+
+    if (this.lobbyQuickRankListEl) {
+      const myName = String(this.chat?.playerName ?? "")
+        .trim()
+        .toLowerCase();
+      const rankMode = connected && inRoom ? "live" : connected ? "queue" : "offline";
+      const ranked = this.getDailyLeaderboardRows(6);
+      const rankPayload = ranked
+        .map((entry) => {
+          const name = String(entry?.name ?? "PLAYER");
+          const captures = Math.max(0, Math.trunc(Number(entry?.captures ?? 0)));
+          const kills = Math.max(0, Math.trunc(Number(entry?.kills ?? 0)));
+          const deaths = Math.max(0, Math.trunc(Number(entry?.deaths ?? 0)));
+          const rank = Math.max(1, Math.trunc(Number(entry?.rank ?? 0) || 0));
+          return `${rank}:${name}:${captures}:${kills}:${deaths}`;
+        })
+        .join("|");
+      const rankSignature = `${rankMode}|${rankPayload}`;
+      if (rankSignature !== this._lastLobbyQuickRankSignature) {
+        this.lobbyQuickRankListEl.innerHTML = "";
+        if (rankMode !== "live") {
+          const emptyEl = document.createElement("div");
+          emptyEl.className = "lobby-quick-rank-empty";
+          emptyEl.textContent =
+            rankMode === "offline" ? "서버 연결 후 순위가 표시됩니다." : "GLOBAL 참가 후 순위가 표시됩니다.";
+          this.lobbyQuickRankListEl.appendChild(emptyEl);
+        } else if (ranked.length === 0) {
+          const emptyEl = document.createElement("div");
+          emptyEl.className = "lobby-quick-rank-empty";
+          emptyEl.textContent = "순위 데이터 대기 중...";
+          this.lobbyQuickRankListEl.appendChild(emptyEl);
+        } else {
+          ranked.forEach((entry, index) => {
+            const row = document.createElement("div");
+            row.className = "lobby-quick-rank-row";
+            const rowName = String(entry?.name ?? "")
+              .trim()
+              .toLowerCase();
+            if (rowName && myName && rowName === myName) {
+              row.classList.add("is-self");
+            }
+
+            const posEl = document.createElement("span");
+            posEl.className = "rank-pos";
+            const rank = Math.max(1, Math.trunc(Number(entry?.rank ?? index + 1)));
+            posEl.textContent = `${rank}.`;
+            row.appendChild(posEl);
+
+            const nameEl = document.createElement("span");
+            nameEl.className = "rank-name";
+            nameEl.textContent = String(entry?.name ?? "PLAYER");
+            row.appendChild(nameEl);
+
+            const captures = Math.max(0, Math.trunc(Number(entry?.captures ?? 0)));
+            const kills = Math.max(0, Math.trunc(Number(entry?.kills ?? 0)));
+            const deaths = Math.max(0, Math.trunc(Number(entry?.deaths ?? 0)));
+            const metaEl = document.createElement("span");
+            metaEl.className = "rank-meta";
+            metaEl.textContent = `C${captures} K${kills} D${deaths}`;
+            row.appendChild(metaEl);
+
+            this.lobbyQuickRankListEl.appendChild(row);
+          });
+        }
+        this._lastLobbyQuickRankSignature = rankSignature;
+      }
+    }
+  }
+
+  pushLobbyNicknameToServer(name) {
+    const safeName = String(name ?? "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .slice(0, 16);
+    if (!safeName) {
+      return;
+    }
+
+    const socket = this.chat?.socket;
+    if (!socket || !socket.connected) {
+      this.hud.setStatus("닉네임 저장: 서버 연결 후 자동 반영됩니다.", true, 0.95);
+      return;
+    }
+
+    socket.emit("player:set-name", { name: safeName }, (response = {}) => {
+      if (!response.ok) {
+        this.hud.setStatus(response.error ?? "닉네임 변경에 실패했습니다.", true, 1);
+        return;
+      }
+
+      const syncedName = String(response.name ?? safeName)
+        .trim()
+        .replace(/\s+/g, "_")
+        .slice(0, 16);
+      this.chat?.setPlayerName?.(syncedName);
+      this.syncLobbyNicknameInputs(syncedName, { force: true });
+      this.hud.setStatus(`닉네임 변경: ${syncedName}`, false, 0.8);
+
+      if (response.room) {
+        this.setLobbyState(response.room);
+      }
+    });
+  }
+
   setLobbyState(room) {
     if (!room) {
+      this.applyDailyLeaderboardPayload(null);
       this.lobbyState.roomCode = null;
       this.lobbyState.hostId = null;
       this.lobbyState.players = [];
@@ -7124,17 +8137,24 @@ export class Game {
       this.updateTeamScoreHud();
       this.updateFlagInteractUi();
       this.syncLobby3DPortalState();
+      this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: false });
+      this.updateLobbyQuickPanel();
       return;
     }
 
     this.lobbyState.roomCode = String(room.code ?? "");
     this.lobbyState.hostId = String(room.hostId ?? "");
     this.lobbyState.players = Array.isArray(room.players) ? room.players : [];
+    this.applyDailyLeaderboardPayload(room.dailyLeaderboard ?? null);
 
     const myId = this.chat?.socket?.id ?? "";
     const me = this.lobbyState.players.find((player) => player.id === myId) ?? null;
     this.lobbyState.selectedTeam = me?.team ?? null;
     this.applyInventorySnapshot(me?.stock ?? null, { quiet: true });
+    if (me?.name) {
+      this.chat?.setPlayerName?.(me.name);
+      this.syncLobbyNicknameInputs(me.name, { force: false });
+    }
 
     if (this.mpRoomTitleEl) {
       this.mpRoomTitleEl.textContent = `${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;
@@ -7204,6 +8224,9 @@ export class Game {
       applyAd: !(this.activeMatchMode === "online" && this.isRunning)
     });
     this.syncRemotePlayersFromLobby();
+    if (this.isLobby3DActive() && !this.isRunning) {
+      this.applyLobbyRemotePreviewTargets();
+    }
     if (this.tabBoardVisible) {
       this.renderTabScoreboard();
     }
@@ -7214,28 +8237,44 @@ export class Game {
     this.updateFlagInteractUi();
     this.refreshOnlineStatus();
     this.syncLobby3DPortalState();
+    this.updateLobbyQuickPanel();
   }
 
-  applyLobbyNickname() {
-    const raw = this.mpNameInput?.value;
-    if (!raw || !this.chat?.setPlayerName) {
+  applyLobbyNickname({ source = "menu", syncToServer = false } = {}) {
+    const fromMenu = source === "menu";
+    const inputEl = fromMenu ? this.mpNameInput : this.lobbyQuickNameInput;
+    const fallbackName = inputEl?.value ?? this.chat?.playerName ?? "";
+    if (!this.chat?.setPlayerName) {
       return;
     }
-    this.chat.setPlayerName(raw);
+
+    this.chat.setPlayerName(fallbackName);
+    const safeName = String(this.chat.playerName ?? "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .slice(0, 16);
+    if (!safeName) {
+      return;
+    }
+
+    this.syncLobbyNicknameInputs(safeName, { force: true });
+    if (syncToServer) {
+      this.pushLobbyNicknameToServer(safeName);
+    }
   }
 
   createRoom() {
-    this.applyLobbyNickname();
+    this.applyLobbyNickname({ source: "menu", syncToServer: false });
     this.joinDefaultRoom();
   }
 
   joinRoomByInputCode() {
-    this.applyLobbyNickname();
+    this.applyLobbyNickname({ source: "menu", syncToServer: false });
     this.joinDefaultRoom();
   }
 
   joinRoom(_code) {
-    this.applyLobbyNickname();
+    this.applyLobbyNickname({ source: "menu", syncToServer: false });
     this.joinDefaultRoom();
   }
 
@@ -7411,6 +8450,7 @@ export class Game {
       this.mpEnterLobbyBtn.disabled = !connected && !in3dLobby;
     }
     this.syncLobby3DPortalState();
+    this.updateLobbyQuickPanel();
   }
 
   refreshOnlineStatus() {

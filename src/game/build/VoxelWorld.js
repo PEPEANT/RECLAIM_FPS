@@ -24,6 +24,7 @@ export class VoxelWorld {
     this.activeMapId = getDefaultMapId();
     this._losDirection = new THREE.Vector3();
     this._losPoint = new THREE.Vector3();
+    this._losRaycaster = new THREE.Raycaster();
     this.dirtyBoundsBuckets = new Set();
     this.bucketOptimizeDirty = true;
   }
@@ -303,19 +304,36 @@ export class VoxelWorld {
       return true;
     }
 
-    direction.multiplyScalar(1 / distance);
     const point = this._losPoint;
-    const epsilon = 0.05;
-    const maxTravel = Math.max(0, distance - epsilon);
+    const epsilon = Math.max(0.03, Number(step) || 0.03);
+    const startTravel = Math.min(distance * 0.5, epsilon);
+    const endTravel = Math.max(0, distance - epsilon);
 
-    for (let traveled = step; traveled < maxTravel; traveled += step) {
-      point.copy(start).addScaledVector(direction, traveled);
+    if (startTravel > 0) {
+      point.copy(start).addScaledVector(direction, startTravel / distance);
+      if (this.hasBlockAtWorld(point.x, point.y, point.z)) {
+        return false;
+      }
+    }
+    if (endTravel > 0) {
+      point.copy(start).addScaledVector(direction, endTravel / distance);
       if (this.hasBlockAtWorld(point.x, point.y, point.z)) {
         return false;
       }
     }
 
-    return true;
+    if (this.raycastTargets.length === 0) {
+      return true;
+    }
+
+    this.flushDirtyBounds();
+    const raycaster = this._losRaycaster;
+    direction.multiplyScalar(1 / distance);
+    raycaster.set(start, direction);
+    raycaster.near = epsilon;
+    raycaster.far = Math.max(epsilon, distance - epsilon);
+    const hits = raycaster.intersectObjects(this.raycastTargets, false);
+    return hits.length === 0;
   }
 
   raycast(raycaster, maxDistance = 8) {
@@ -410,12 +428,14 @@ export class VoxelWorld {
     if (!this.arenaMeta) {
       return null;
     }
+    const fallbackTrainingSpawn = this.arenaMeta.trainingSpawn ?? this.arenaMeta.alphaBase;
     return {
       alphaBase: { ...this.arenaMeta.alphaBase },
       bravoBase: { ...this.arenaMeta.bravoBase },
       alphaFlag: { ...this.arenaMeta.alphaFlag },
       bravoFlag: { ...this.arenaMeta.bravoFlag },
       mid: { ...this.arenaMeta.mid },
+      trainingSpawn: { ...fallbackTrainingSpawn },
       halfExtent: this.arenaMeta.halfExtent
     };
   }
@@ -509,6 +529,7 @@ export class VoxelWorld {
         alphaFlag: { x: -44, y: 0, z: 0 },
         bravoFlag: { x: 44, y: 0, z: 0 },
         mid: { x: 0, y: 0, z: 0 },
+        trainingSpawn: { x: -35, y: 0, z: 0 },
         halfExtent: 60
       };
   }
