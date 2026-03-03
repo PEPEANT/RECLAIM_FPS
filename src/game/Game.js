@@ -6722,16 +6722,23 @@ export class Game {
     const chatOpen = Boolean(this.chat?.isOpen?.());
     const lobbyActive = this.isLobby3DActive();
     const hideCombatButtons = lobbyActive && !this.isRunning;
+    this.mobileFireButtonEl?.classList.toggle("hidden", hideCombatButtons);
     this.mobileModePlaceBtn?.classList.toggle("hidden", hideCombatButtons);
     this.mobileModeDigBtn?.classList.toggle("hidden", hideCombatButtons);
     this.mobileModeGunBtn?.classList.toggle("hidden", hideCombatButtons);
     this.mobileAimBtn?.classList.toggle("hidden", hideCombatButtons);
     this.mobileReloadBtn?.classList.toggle("hidden", hideCombatButtons);
+    this.mobileFireButtonEl && (this.mobileFireButtonEl.disabled = hideCombatButtons);
     this.mobileModePlaceBtn && (this.mobileModePlaceBtn.disabled = hideCombatButtons);
     this.mobileModeDigBtn && (this.mobileModeDigBtn.disabled = hideCombatButtons);
     this.mobileModeGunBtn && (this.mobileModeGunBtn.disabled = hideCombatButtons);
     this.mobileAimBtn && (this.mobileAimBtn.disabled = hideCombatButtons);
     this.mobileReloadBtn && (this.mobileReloadBtn.disabled = hideCombatButtons);
+    if (hideCombatButtons) {
+      this.handlePrimaryActionUp();
+      this.isAiming = false;
+      this.rightMouseAiming = false;
+    }
     this.mobileModePlaceBtn?.classList.toggle("is-active", mode === "place");
     this.mobileModeDigBtn?.classList.toggle("is-active", mode === "dig");
     this.mobileModeGunBtn?.classList.toggle("is-active", mode === "gun");
@@ -6948,17 +6955,20 @@ export class Game {
     }
 
     this.renderer.domElement.addEventListener("pointerdown", (event) => {
+      const controlActive = this.isRunning || this.isLobby3DActive();
       if (
         !acceptPointer(event) ||
         !this.mobileEnabled ||
-        !this.isRunning ||
+        !controlActive ||
         this.isGameOver ||
+        this.optionsMenuOpen ||
         this.isUiInputFocused()
       ) {
         return;
       }
 
-      if (event.clientX < window.innerWidth * 0.38) {
+      const minLookStartX = this.isLobby3DActive() && !this.isRunning ? 0 : window.innerWidth * 0.38;
+      if (event.clientX < minLookStartX) {
         return;
       }
 
@@ -6970,11 +6980,13 @@ export class Game {
     });
 
     document.addEventListener("pointermove", (event) => {
+      const controlActive = this.isRunning || this.isLobby3DActive();
       if (
         !acceptPointer(event) ||
         event.pointerId !== this.mobileState.lookPointerId ||
-        !this.isRunning ||
+        !controlActive ||
         this.isGameOver ||
+        this.optionsMenuOpen ||
         this.isUiInputFocused()
       ) {
         return;
