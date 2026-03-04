@@ -144,7 +144,8 @@ const LOBBY3D_INFO_DESK_HINT_COOLDOWN_MS = 1200;
 const LOBBY3D_REMOTE_RING_BASE_RADIUS = 10.8;
 const LOBBY3D_REMOTE_RING_STEP_RADIUS = 2.8;
 const LOBBY3D_REMOTE_RING_BASE_SLOTS = 24;
-const LOBBY_EXIT_TARGET_URL = "https://pepeant.github.io/-Emptines/";
+const LOBBY_EXIT_TARGET_URL =
+  "https://emptines-chat-2.onrender.com/?zone=lobby&returnPortal=fps&from=fps";
 const PORTAL_FX_DURATION_SEC = 0.52;
 const PORTAL_FX_TEAM_FOV_BOOST = 7;
 const PORTAL_FX_DEPLOY_FOV_BOOST = 12;
@@ -2315,7 +2316,7 @@ export class Game {
         const openedByServer = Boolean(response.opened);
         const openedByClient = this.tryOpenLobbyExitPath({ silent: true });
         if (!openedByServer && !openedByClient) {
-          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_URL}`, false, 1.3);
+          this.hud.setStatus(`나가기 포탈 대상: ${this.resolveLobbyExitTargetUrl()}`, false, 1.3);
         }
         return;
       }
@@ -2357,24 +2358,44 @@ export class Game {
     });
   }
 
+  resolveLobbyExitTargetUrl() {
+    let targetUrl = LOBBY_EXIT_TARGET_URL;
+    try {
+      const query = new URLSearchParams(window.location.search);
+      const fromQuery = String(query.get("returnUrl") ?? query.get("return") ?? "").trim();
+      if (fromQuery) {
+        const parsedFromQuery = new URL(fromQuery, window.location.href);
+        if (parsedFromQuery.protocol === "http:" || parsedFromQuery.protocol === "https:") {
+          targetUrl = parsedFromQuery.toString();
+        }
+      }
+    } catch {
+      // keep fallback target
+    }
+
+    try {
+      const parsedTarget = new URL(targetUrl, window.location.href);
+      if (!parsedTarget.searchParams.has("returnPortal")) {
+        parsedTarget.searchParams.set("returnPortal", "fps");
+      }
+      if (!parsedTarget.searchParams.has("from")) {
+        parsedTarget.searchParams.set("from", "fps");
+      }
+      return parsedTarget.toString();
+    } catch {
+      return LOBBY_EXIT_TARGET_URL;
+    }
+  }
+
   tryOpenLobbyExitPath({ silent = false } = {}) {
-    const targetUrl = LOBBY_EXIT_TARGET_URL;
+    const targetUrl = this.resolveLobbyExitTargetUrl();
     let opened = false;
 
     try {
-      const popup = window.open(targetUrl, "_blank", "noopener,noreferrer");
-      opened = Boolean(popup);
+      window.location.assign(targetUrl);
+      opened = true;
     } catch {
       opened = false;
-    }
-
-    if (!opened) {
-      try {
-        window.location.assign(targetUrl);
-        opened = true;
-      } catch {
-        opened = false;
-      }
     }
 
     if (!silent) {
@@ -2388,7 +2409,7 @@ export class Game {
       } else {
         const copied = this.tryCopyLobbyExitTarget();
         if (!copied) {
-          this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_URL}`, false, 1.3);
+          this.hud.setStatus(`나가기 포탈 대상: ${targetUrl}`, false, 1.3);
         }
       }
     }
@@ -2397,18 +2418,19 @@ export class Game {
   }
 
   tryCopyLobbyExitTarget() {
+    const targetUrl = this.resolveLobbyExitTargetUrl();
     const clipboard = navigator?.clipboard;
     if (!clipboard || typeof clipboard.writeText !== "function") {
       return false;
     }
 
     clipboard
-      .writeText(LOBBY_EXIT_TARGET_URL)
+      .writeText(targetUrl)
       .then(() => {
-        this.hud.setStatus(`링크 열기 제한: 도시 링크 복사 완료 (${LOBBY_EXIT_TARGET_URL})`, false, 1.5);
+        this.hud.setStatus(`링크 열기 제한: 도시 링크 복사 완료 (${targetUrl})`, false, 1.5);
       })
       .catch(() => {
-        this.hud.setStatus(`나가기 포탈 대상: ${LOBBY_EXIT_TARGET_URL}`, false, 1.3);
+        this.hud.setStatus(`나가기 포탈 대상: ${targetUrl}`, false, 1.3);
       });
     return true;
   }
