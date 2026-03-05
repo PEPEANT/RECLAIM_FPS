@@ -2965,13 +2965,13 @@ export class Game {
     setText("options-sfx-mute", "효과음 끄기");
     setText("options-mobile-look-label", "모바일 감도");
     setText("options-continue", "계속하기");
-    setText("options-exit", "게임종료");
     setHtml("mp-team-alpha", '블루팀 <span id="mp-team-alpha-count" class="team-count">0</span>');
     setHtml("mp-team-bravo", '레드팀 <span id="mp-team-bravo-count" class="team-count">0</span>');
     this.mpTeamAlphaCountEl = document.getElementById("mp-team-alpha-count");
     this.mpTeamBravoCountEl = document.getElementById("mp-team-bravo-count");
     this.optionsContinueBtn = document.getElementById("options-continue");
     this.optionsExitBtn = document.getElementById("options-exit");
+    this.updateOptionsExitUi();
     this.optionsBgmMuteBtn = document.getElementById("options-bgm-mute");
     this.optionsBgmVolumeEl = document.getElementById("options-bgm-volume");
     this.optionsBgmValueEl = document.getElementById("options-bgm-value");
@@ -3348,10 +3348,29 @@ export class Game {
     this.syncQuickSettingsVisibility();
   }
 
+  updateOptionsExitUi() {
+    if (!this.optionsExitBtn) {
+      return;
+    }
+    const returnToLobby = this.activeMatchMode === "online" && this.isRunning && !this.isGameOver;
+    this.optionsExitBtn.textContent = returnToLobby ? "3D 로비 복귀" : "게임 종료";
+    this.optionsExitBtn.dataset.action = returnToLobby ? "return-lobby" : "exit-game";
+  }
+
+  handleOptionsExitAction() {
+    const returnToLobby = this.activeMatchMode === "online" && this.isRunning && !this.isGameOver;
+    if (returnToLobby) {
+      this.exitOnlineMatchToLobby3D();
+      return;
+    }
+    this.exitToStartMenu();
+  }
+
   openOptionsMenu() {
     if (!this.isRunning || this.isGameOver) {
       return;
     }
+    this.updateOptionsExitUi();
     if (this.optionsMenuOpen) {
       this.hud.showPauseOverlay(true);
       this.syncCursorVisibility();
@@ -3388,6 +3407,7 @@ export class Game {
     this.optionsMenuOpen = false;
     this.hud.showPauseOverlay(false);
     this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "true");
+    this.updateOptionsExitUi();
 
     if (!this.isRunning || this.isGameOver) {
       this.syncCursorVisibility();
@@ -3409,6 +3429,48 @@ export class Game {
     if (resume) {
       this.tryPointerLock();
     }
+  }
+
+  exitOnlineMatchToLobby3D() {
+    if (this.activeMatchMode !== "online" || !this.isRunning) {
+      this.exitToStartMenu();
+      return;
+    }
+
+    this.optionsMenuOpen = false;
+    this.hud.showPauseOverlay(false);
+    this.hud.pauseOverlayEl?.setAttribute("aria-hidden", "true");
+    this.isRunning = false;
+    this.isGameOver = false;
+    this.keys.clear();
+    this.isAiming = false;
+    this.rightMouseAiming = false;
+    this.handlePrimaryActionUp();
+    this.resetMobileStick();
+    this.mobileState.lookPointerId = null;
+    this.mobileState.aimPointerId = null;
+    this.mobileState.firePointerId = null;
+    this.chat?.close?.();
+    this.setRespawnBanner("", false);
+    this.setTabScoreboardVisible(false);
+    this.hud.hideGameOver();
+    this.mouseLookEnabled = false;
+
+    this.setLobby3DActive(true, { reposition: true });
+    this.updateTeamScoreHud();
+    this.updateFlagInteractUi();
+    this.refreshOnlineStatus();
+    this.updateOptionsExitUi();
+
+    if (this.mobileEnabled || this.allowUnlockedLook) {
+      this.mouseLookEnabled = true;
+      this.syncCursorVisibility();
+      return;
+    }
+
+    this.mouseLookEnabled = false;
+    this.syncCursorVisibility();
+    this.tryPointerLock();
   }
 
   exitToStartMenu() {
@@ -3436,6 +3498,7 @@ export class Game {
     ) {
       document.exitPointerLock();
     }
+    this.updateOptionsExitUi();
     this.syncCursorVisibility();
   }
 
@@ -7384,6 +7447,31 @@ export class Game {
 
     const isGameplayMouseEvent = (event) =>
       this.pointerLocked || event.target === this.renderer.domElement;
+    const isNonGameplayUiTarget = (target) => {
+      if (!(target instanceof Element)) {
+        return false;
+      }
+      if (target === this.renderer.domElement) {
+        return false;
+      }
+      if (
+        target.closest(
+          "#start-overlay.show, #pause-overlay.show, #gameover-overlay.show, #chat-panel, #quick-settings-panel, #quick-settings-btn, #mobile-controls"
+        )
+      ) {
+        return true;
+      }
+      const tag = String(target.tagName ?? "").toUpperCase();
+      return (
+        tag === "BUTTON" ||
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        tag === "LABEL" ||
+        tag === "A" ||
+        tag === "SUMMARY"
+      );
+    };
 
     document.addEventListener("contextmenu", (event) => {
       if (
@@ -7396,15 +7484,27 @@ export class Game {
     });
 
     document.addEventListener("mousedown", (event) => {
+      const controlActive = this.isRunning || this.isLobby3DActive();
+      if (!controlActive || this.isGameOver || this.optionsMenuOpen) {
+        return;
+      }
+
+      const shouldTryPointerLockFromUi =
+        event.button === 0 &&
+        this.pointerLockSupported &&
+        !this.pointerLocked &&
+        !this.mouseLookEnabled &&
+        !this.isUiInputFocused() &&
+        !isNonGameplayUiTarget(event.target);
+      if (shouldTryPointerLockFromUi) {
+        this.tryPointerLock();
+      }
+
       if (!isGameplayMouseEvent(event)) {
         return;
       }
       event.preventDefault();
 
-      const controlActive = this.isRunning || this.isLobby3DActive();
-      if (!controlActive || this.isGameOver || this.optionsMenuOpen) {
-        return;
-      }
       const lobbyActive = this.isLobby3DActive();
       this.sound.unlock();
       const shouldTryPointerLock =
@@ -7607,7 +7707,7 @@ export class Game {
       this.closeOptionsMenu({ resume: true });
     });
     this.optionsExitBtn?.addEventListener("click", () => {
-      this.exitToStartMenu();
+      this.handleOptionsExitAction();
     });
     this.optionsBgmMuteBtn?.addEventListener("click", () => {
       this.toggleCenterAdMute();
