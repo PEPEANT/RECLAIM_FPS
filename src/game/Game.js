@@ -8362,9 +8362,6 @@ export class Game {
         this.requestCenterFlagInteract({ source: "key" });
       }
 
-      if (event.code === "ArrowRight") {
-        this.isAiming = true;
-      }
     });
 
     document.addEventListener("keyup", (event) => {
@@ -8388,9 +8385,6 @@ export class Game {
       }
       this.keys.delete(event.code);
 
-      if (event.code === "ArrowRight") {
-        this.isAiming = false;
-      }
       if (event.code === "ControlLeft" || event.code === "ControlRight") {
         this.updateCrouchState();
         this.syncMobileUtilityButtons();
@@ -9452,7 +9446,7 @@ export class Game {
       (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
       (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0);
     const keyStrafe =
-      (this.keys.has("KeyD") ? 1 : 0) -
+      (this.keys.has("KeyD") || this.keys.has("ArrowRight") ? 1 : 0) -
       (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0);
     const forward = THREE.MathUtils.clamp(keyForward + mobileForward, -1, 1);
     const strafe = THREE.MathUtils.clamp(keyStrafe + mobileStrafe, -1, 1);

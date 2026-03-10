@@ -1686,12 +1686,25 @@ function clampNumber(value, min, max, fallback) {
   return Math.min(max, Math.max(min, num));
 }
 
+function normalizeYaw(value, fallback = 0) {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+  const tau = Math.PI * 2;
+  let wrapped = (raw + Math.PI) % tau;
+  if (wrapped < 0) {
+    wrapped += tau;
+  }
+  return wrapped - Math.PI;
+}
+
 function sanitizePlayerState(raw = {}) {
   return {
     x: clampNumber(raw.x, -256, 256, 0),
     y: clampNumber(raw.y, -64, 128, 1.75),
     z: clampNumber(raw.z, -256, 256, 0),
-    yaw: clampNumber(raw.yaw, -Math.PI, Math.PI, 0),
+    yaw: normalizeYaw(raw.yaw, 0),
     pitch: clampNumber(raw.pitch, -1.55, 1.55, 0),
     crouched: Boolean(raw.crouched),
     updatedAt: Date.now()
