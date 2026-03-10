@@ -1,16 +1,19 @@
-import * as THREE from "three";
+﻿import * as THREE from "three";
 import { BLOCK_TYPES, getBlockTypeBySlot } from "./BlockPalette.js";
 
 const CENTER = new THREE.Vector2(0, 0);
-const TOOL_LABELS = {
-  place: "설치",
+const LINE_BUILD_MAX = 8;
+const TOOL_LABELS = Object.freeze({
+  place: "블록",
   dig: "삽",
   gun: "총"
-};
+});
 const DEFAULT_SLOT_STOCK = 32;
 const MAX_SLOT_STOCK = 999;
-const DRAG_START_DISTANCE = 8;
-const DRAG_DISCARD_DISTANCE = 42;
+
+function clampSlot(slot) {
+  return Math.max(1, Math.min(BLOCK_TYPES.length, Math.trunc(Number(slot) || 1)));
+}
 
 export class BuildSystem {
   constructor({
@@ -18,30 +21,53 @@ export class BuildSystem {
     camera,
     raycaster,
     onModeChanged = null,
+    onInventoryChanged = null,
     onStatus = null,
     onBlockChanged = null,
-    canInteract = null
+    canInteract = null,
+    canRemoveBlock = null,
+    canPlaceBlock = null
   }) {
     this.world = world;
     this.camera = camera;
     this.raycaster = raycaster;
     this.onModeChanged = onModeChanged;
+    this.onInventoryChanged = onInventoryChanged;
     this.onStatus = onStatus;
     this.onBlockChanged = onBlockChanged;
     this.canInteract = canInteract;
+    this.canRemoveBlock = canRemoveBlock;
+    this.canPlaceBlock = canPlaceBlock;
 
     this.toolMode = "gun";
+    this.inventoryOpen = false;
     this.selectedSlot = 1;
     this.maxReach = 12;
-
-    this.modeBadgeEl = document.getElementById("build-mode-badge");
-    this.hotbarEl = document.getElementById("block-hotbar");
-    this.hotbarSlots = Array.from(document.querySelectorAll(".hotbar-slot"));
+    this.previewPosition = null;
+    this.previewPositions = [];
+    this.previewValid = false;
     this.slotStock = new Map();
     this.slotCountEls = new Map();
-    this.dragState = null;
+
+    this.buildHudEl = document.getElementById("build-hud");
+    this.modeBadgeEl = document.getElementById("build-mode-badge");
+    this.toolTrayEl = document.getElementById("build-tool-tray");
+    this.toolButtons = Array.from(document.querySelectorAll(".build-tool-btn"));
+    this.blockPanelEl = document.getElementById("block-panel");
+    this.blockPanelCloseEl = document.getElementById("block-panel-close");
+    this.hotbarEl = document.getElementById("block-hotbar");
+    this.selectionCardEl = document.getElementById("block-selection-card");
+    this.selectionSwatchEl = document.getElementById("block-selection-swatch");
+    this.selectionNameEl = document.getElementById("block-selection-name");
+    this.selectionSlotEl = document.getElementById("block-selection-slot");
+    this.selectionHintEl = document.getElementById("block-selection-hint");
+
+    this.hotbarSlots = [];
+    this.previewLine = this.createPlacementPreview();
+
+    this.buildHotbarSlots();
     this.initSlotStock();
-    this.applySwatchPalette();
+    this.bindToolTrayInteractions();
     this.bindHotbarInteractions();
     this.renderUi();
   }
@@ -66,43 +92,75 @@ export class BuildSystem {
     return this.toolMode;
   }
 
+  isInventoryOpen() {
+    return this.inventoryOpen;
+  }
+
+  setInventoryOpen(open) {
+    const next = Boolean(open);
+    if (this.inventoryOpen === next) {
+      this.syncAuxiliaryToolUi();
+      return this.inventoryOpen;
+    }
+    this.inventoryOpen = next;
+    this.syncAuxiliaryToolUi();
+    this.onInventoryChanged?.(this.inventoryOpen);
+    return this.inventoryOpen;
+  }
+
+  toggleInventory(forceOpen = null) {
+    const next = forceOpen === null ? !this.inventoryOpen : Boolean(forceOpen);
+    return this.setInventoryOpen(next);
+  }
+
   getSelectedType() {
     return getBlockTypeBySlot(this.selectedSlot);
   }
 
-  initSlotStock() {
-    for (const slotEl of this.hotbarSlots) {
-      const slot = Number(slotEl.dataset.slot ?? "0");
-      if (!Number.isFinite(slot) || slot <= 0) {
-        continue;
-      }
+  buildHotbarSlots() {
+    if (!this.hotbarEl) {
+      return;
+    }
 
+    this.hotbarEl.innerHTML = "";
+    this.hotbarSlots = [];
+    this.slotCountEls.clear();
+
+    BLOCK_TYPES.forEach((type, index) => {
+      const slot = index + 1;
+      const slotEl = document.createElement("button");
+      slotEl.type = "button";
+      slotEl.className = "hotbar-slot";
+      slotEl.dataset.slot = String(slot);
+      slotEl.title = `${String(slot).padStart(2, "0")} ${type.name}`;
+      slotEl.setAttribute("aria-label", `${type.name} 블록 색상`);
+
+      const swatchEl = document.createElement("span");
+      swatchEl.className = `swatch swatch-${type.key}`;
+      swatchEl.style.setProperty("--swatch-color", type.color ?? "#9aa3ad");
+      slotEl.appendChild(swatchEl);
+
+      const keyEl = document.createElement("span");
+      keyEl.className = "slot-key";
+      keyEl.textContent = String(slot);
+      slotEl.appendChild(keyEl);
+
+      const countEl = document.createElement("span");
+      countEl.className = "slot-count";
+      countEl.textContent = String(DEFAULT_SLOT_STOCK);
+      slotEl.appendChild(countEl);
+
+      this.hotbarEl.appendChild(slotEl);
+      this.hotbarSlots.push(slotEl);
+      this.slotCountEls.set(slot, countEl);
+    });
+  }
+
+  initSlotStock() {
+    for (let slot = 1; slot <= BLOCK_TYPES.length; slot += 1) {
       if (!this.slotStock.has(slot)) {
         this.slotStock.set(slot, DEFAULT_SLOT_STOCK);
       }
-
-      const countEl = slotEl.querySelector(".slot-count");
-      if (countEl) {
-        this.slotCountEls.set(slot, countEl);
-      }
-    }
-  }
-
-  applySwatchPalette() {
-    for (const slotEl of this.hotbarSlots) {
-      const slot = Number(slotEl.dataset.slot ?? "0");
-      if (!Number.isFinite(slot) || slot <= 0) {
-        continue;
-      }
-      const type = getBlockTypeBySlot(slot);
-      const swatchEl = slotEl.querySelector(".swatch");
-      if (!swatchEl) {
-        continue;
-      }
-
-      const baseColor = type?.color ?? "#9aa3ad";
-      swatchEl.style.background = baseColor;
-      swatchEl.style.boxShadow = "inset 0 0 0 1px rgba(255, 255, 255, 0.14)";
     }
   }
 
@@ -114,12 +172,11 @@ export class BuildSystem {
   }
 
   getSlotStock(slot) {
-    const key = Math.max(1, Math.min(BLOCK_TYPES.length, Math.trunc(Number(slot) || 1)));
-    return Math.max(0, Math.trunc(this.slotStock.get(key) ?? 0));
+    return Math.max(0, Math.trunc(this.slotStock.get(clampSlot(slot)) ?? 0));
   }
 
   setSlotStock(slot, value) {
-    const key = Math.max(1, Math.min(BLOCK_TYPES.length, Math.trunc(Number(slot) || 1)));
+    const key = clampSlot(slot);
     const next = Math.max(0, Math.min(MAX_SLOT_STOCK, Math.trunc(Number(value) || 0)));
     this.slotStock.set(key, next);
     const countEl = this.slotCountEls.get(key);
@@ -203,66 +260,12 @@ export class BuildSystem {
     return true;
   }
 
-  isPointInsideHotbar(clientX, clientY) {
-    if (!this.hotbarEl) {
-      return false;
-    }
-    const rect = this.hotbarEl.getBoundingClientRect();
-    return (
-      clientX >= rect.left &&
-      clientX <= rect.right &&
-      clientY >= rect.top &&
-      clientY <= rect.bottom
-    );
-  }
-
   bindHotbarInteractions() {
     if (this.hotbarSlots.length === 0) {
       return;
     }
 
-    const clearDragVisual = (drag) => {
-      if (!drag?.slotEl) {
-        return;
-      }
-      drag.slotEl.classList.remove("is-dragging");
-      drag.slotEl.style.transform = "";
-    };
-
-    const finishDrag = (event, cancelled = false) => {
-      const drag = this.dragState;
-      if (!drag || drag.pointerId !== event.pointerId) {
-        return;
-      }
-
-      const endX = Number.isFinite(event.clientX) ? event.clientX : drag.lastX;
-      const endY = Number.isFinite(event.clientY) ? event.clientY : drag.lastY;
-      const pullDownDistance = endY - drag.startY;
-      const outsideHotbar = !this.isPointInsideHotbar(endX, endY);
-      const shouldDiscard =
-        !cancelled &&
-        drag.dragging &&
-        (pullDownDistance >= DRAG_DISCARD_DISTANCE || outsideHotbar);
-
-      if (shouldDiscard) {
-        const type = getBlockTypeBySlot(drag.slot);
-        if (this.discardFromSlot(drag.slot, 1)) {
-          this.onStatus?.(`${type.name} -1 (버리기)`, false, 0.5);
-        } else {
-          this.onStatus?.("버릴 블록이 없습니다", true, 0.45);
-        }
-      }
-
-      clearDragVisual(drag);
-      if (drag.slotEl.hasPointerCapture?.(drag.pointerId)) {
-        drag.slotEl.releasePointerCapture(drag.pointerId);
-      }
-      this.dragState = null;
-      this.renderUi();
-    };
-
     for (const slotEl of this.hotbarSlots) {
-      slotEl.setAttribute("draggable", "false");
       const slot = Number(slotEl.dataset.slot ?? "0");
       if (!Number.isFinite(slot) || slot <= 0) {
         continue;
@@ -277,43 +280,218 @@ export class BuildSystem {
         }
         event.preventDefault();
         this.setSlot(slot);
-
-        this.dragState = {
-          pointerId: event.pointerId,
-          slot,
-          slotEl,
-          startX: event.clientX,
-          startY: event.clientY,
-          lastX: event.clientX,
-          lastY: event.clientY,
-          dragging: false
-        };
-        slotEl.setPointerCapture?.(event.pointerId);
       });
+    }
+  }
 
-      slotEl.addEventListener("pointermove", (event) => {
-        const drag = this.dragState;
-        if (!drag || drag.pointerId !== event.pointerId || drag.slotEl !== slotEl) {
+  bindToolTrayInteractions() {
+    for (const button of this.toolButtons) {
+      const mode = String(button.dataset.mode ?? "").trim();
+      if (!mode) {
+        continue;
+      }
+
+      button.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) {
           return;
         }
-
-        const dx = event.clientX - drag.startX;
-        const dy = event.clientY - drag.startY;
-        drag.lastX = event.clientX;
-        drag.lastY = event.clientY;
-
-        if (!drag.dragging && Math.hypot(dx, dy) >= DRAG_START_DISTANCE) {
-          drag.dragging = true;
-          slotEl.classList.add("is-dragging");
+        if (typeof this.canInteract === "function" && !this.canInteract()) {
+          return;
         }
-
-        if (drag.dragging) {
-          slotEl.style.transform = `translate(${dx}px, ${dy}px)`;
-        }
+        event.preventDefault();
+        this.setToolMode(mode);
+        this.setInventoryOpen(mode === "place");
       });
+    }
 
-      slotEl.addEventListener("pointerup", (event) => finishDrag(event, false));
-      slotEl.addEventListener("pointercancel", (event) => finishDrag(event, true));
+    this.blockPanelCloseEl?.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      if (typeof this.canInteract === "function" && !this.canInteract()) {
+        return;
+      }
+      event.preventDefault();
+      this.setInventoryOpen(false);
+    });
+  }
+
+  createPlacementPreview() {
+    const group = new THREE.Group();
+    const geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.02, 1.02, 1.02));
+    const previewCells = [];
+
+    for (let index = 0; index < LINE_BUILD_MAX; index += 1) {
+      const line = new THREE.LineSegments(
+        geometry,
+        new THREE.LineBasicMaterial({
+          color: 0x62ff9b,
+          transparent: true,
+          opacity: 0.92,
+          depthTest: false
+        })
+      );
+      line.visible = false;
+      line.renderOrder = 10;
+      previewCells.push(line);
+      group.add(line);
+    }
+
+    group.visible = false;
+    group.userData.previewCells = previewCells;
+    this.world.group.add(group);
+    return group;
+  }
+
+  hidePlacementPreview() {
+    if (!this.previewLine) {
+      return;
+    }
+    this.previewLine.visible = false;
+    for (const cell of this.previewLine.userData.previewCells ?? []) {
+      cell.visible = false;
+    }
+    this.previewPosition = null;
+    this.previewPositions = [];
+    this.previewValid = false;
+  }
+
+  resolveCanPlaceBlock(canPlaceOverride = null) {
+    if (typeof canPlaceOverride === "function") {
+      return canPlaceOverride;
+    }
+    if (typeof this.canPlaceBlock === "function") {
+      return this.canPlaceBlock;
+    }
+    return null;
+  }
+
+  resolvePlacementTarget(canPlaceOverride = null) {
+    this.raycaster.setFromCamera(CENTER, this.camera);
+    const hit = this.world.raycast(this.raycaster, this.maxReach);
+    if (!hit) {
+      return null;
+    }
+
+    const x = hit.x + Math.round(hit.normal.x);
+    const y = hit.y + Math.round(hit.normal.y);
+    const z = hit.z + Math.round(hit.normal.z);
+    const canPlace = this.resolveCanPlaceBlock(canPlaceOverride);
+    const hasStock = this.getSlotStock(this.selectedSlot) > 0;
+    const valid =
+      hasStock && !this.world.hasBlock(x, y, z) && (!canPlace || canPlace(x, y, z));
+
+    return { hit, x, y, z, valid };
+  }
+
+  resolveLineDirection(hit = null) {
+    if (!hit?.normal) {
+      return { x: 1, y: 0, z: 0 };
+    }
+
+    const normal = hit.normal;
+    const majorAxis =
+      Math.abs(normal.x) >= Math.abs(normal.y) && Math.abs(normal.x) >= Math.abs(normal.z)
+        ? "x"
+        : Math.abs(normal.y) >= Math.abs(normal.z)
+          ? "y"
+          : "z";
+    const direction = this.raycaster.ray.direction;
+    const candidateAxes =
+      majorAxis === "x" ? ["z", "y"] : majorAxis === "y" ? ["x", "z"] : ["x", "y"];
+    const axis =
+      Math.abs(direction[candidateAxes[0]]) >= Math.abs(direction[candidateAxes[1]])
+        ? candidateAxes[0]
+        : candidateAxes[1];
+    const sign = direction[axis] >= 0 ? 1 : -1;
+
+    return {
+      x: axis === "x" ? sign : 0,
+      y: axis === "y" ? sign : 0,
+      z: axis === "z" ? sign : 0
+    };
+  }
+
+  resolvePlacementChain(canPlaceOverride = null, { lineMode = false } = {}) {
+    const placement = this.resolvePlacementTarget(canPlaceOverride);
+    if (!placement) {
+      return null;
+    }
+
+    const stock = this.getSlotStock(this.selectedSlot);
+    const previewCount = lineMode ? Math.min(LINE_BUILD_MAX, Math.max(1, stock)) : 1;
+    const direction = lineMode ? this.resolveLineDirection(placement.hit) : { x: 0, y: 0, z: 0 };
+    const canPlace = this.resolveCanPlaceBlock(canPlaceOverride);
+    const placements = [];
+
+    for (let index = 0; index < previewCount; index += 1) {
+      const x = placement.x + direction.x * index;
+      const y = placement.y + direction.y * index;
+      const z = placement.z + direction.z * index;
+      const hasStock = index < stock;
+      const valid =
+        hasStock && !this.world.hasBlock(x, y, z) && (!canPlace || canPlace(x, y, z));
+
+      placements.push({ x, y, z, valid });
+      if (!valid) {
+        break;
+      }
+    }
+
+    return { hit: placement.hit, placements };
+  }
+
+  updatePlacementPreview(canPlaceOverride = null, { lineMode = false } = {}) {
+    if (!this.previewLine || !this.isPlaceMode()) {
+      this.hidePlacementPreview();
+      return;
+    }
+
+    if (typeof this.canInteract === "function" && !this.canInteract()) {
+      this.hidePlacementPreview();
+      return;
+    }
+
+    const preview = this.resolvePlacementChain(canPlaceOverride, { lineMode });
+    if (!preview || !Array.isArray(preview.placements) || preview.placements.length === 0) {
+      this.hidePlacementPreview();
+      return;
+    }
+
+    this.previewLine.visible = true;
+    this.previewPosition = { ...preview.placements[0] };
+    this.previewPositions = preview.placements.map((entry) => ({ ...entry }));
+    this.previewValid = preview.placements.every((entry) => entry.valid);
+
+    const cells = this.previewLine.userData.previewCells ?? [];
+    for (let index = 0; index < cells.length; index += 1) {
+      const cell = cells[index];
+      const placement = preview.placements[index];
+      if (!cell) {
+        continue;
+      }
+      if (!placement) {
+        cell.visible = false;
+        continue;
+      }
+      cell.position.set(placement.x + 0.5, placement.y + 0.5, placement.z + 0.5);
+      cell.material.color.setHex(placement.valid ? 0x62ff9b : 0xff5c5c);
+      cell.visible = true;
+    }
+  }
+
+  syncAuxiliaryToolUi() {
+    const blockPanelOpen = this.inventoryOpen && this.toolMode === "place";
+    const trayOpen = this.inventoryOpen && this.toolMode !== "place";
+    this.buildHudEl?.classList.toggle("is-open", this.inventoryOpen);
+    this.buildHudEl?.setAttribute("aria-hidden", this.inventoryOpen ? "false" : "true");
+    this.toolTrayEl?.classList.toggle("is-hidden", !trayOpen);
+    this.blockPanelEl?.classList.toggle("is-open", blockPanelOpen);
+    this.selectionCardEl?.classList.toggle("is-active", blockPanelOpen);
+
+    for (const button of this.toolButtons) {
+      const mode = String(button.dataset.mode ?? "").trim();
+      button.classList.toggle("is-active", mode === this.toolMode);
     }
   }
 
@@ -321,28 +499,32 @@ export class BuildSystem {
     if (mode !== "gun" && mode !== "place" && mode !== "dig") {
       return;
     }
-    if (this.toolMode === mode) {
-      return;
-    }
 
+    const changed = this.toolMode !== mode;
     this.toolMode = mode;
+    if (mode !== "place") {
+      this.hidePlacementPreview();
+    }
     this.renderUi();
-    this.onModeChanged?.(this.toolMode);
+    this.syncAuxiliaryToolUi();
+    if (changed) {
+      this.onModeChanged?.(this.toolMode);
+    }
 
     if (silentStatus) {
       return;
     }
 
     if (this.toolMode === "place") {
-      this.onStatus?.("설치 모드 (좌클릭 설치 / 슬롯 드래그 버리기)", false, 0.95);
+      const type = this.getSelectedType();
+      this.onStatus?.(`블록 모드: ${type.name}`, false, 0.75);
       return;
     }
     if (this.toolMode === "dig") {
-      this.onStatus?.("삽 모드 (좌클릭 제거 / 제거 시 블록 +1)", false, 0.95);
+      this.onStatus?.("삽 모드", false, 0.65);
       return;
     }
-
-    this.onStatus?.("총 모드 (좌클릭 사격 / 우클릭 조준)", false, 0.9);
+    this.onStatus?.("총 모드", false, 0.6);
   }
 
   setMode(mode) {
@@ -362,26 +544,26 @@ export class BuildSystem {
   }
 
   setSlot(slot) {
-    const clamped = Math.max(1, Math.min(BLOCK_TYPES.length, slot));
+    const clamped = clampSlot(slot);
     if (this.selectedSlot === clamped) {
+      this.renderSelectedPreview();
       return;
     }
 
     this.selectedSlot = clamped;
     this.renderUi();
-
     const type = this.getSelectedType();
-    this.onStatus?.(`블록 선택: ${type.name}`, false, 0.45);
+    this.onStatus?.(`블록 색상: ${type.name}`, false, 0.45);
   }
 
   cycleSlot(step) {
     const total = BLOCK_TYPES.length;
-    const next = ((this.selectedSlot - 1 + step + total) % total) + 1;
+    const next = ((this.selectedSlot - 1 + Math.trunc(Number(step) || 0) + total) % total) + 1;
     this.setSlot(next);
   }
 
   handleWheel(event) {
-    if (!this.isBuildMode()) {
+    if (!this.isPlaceMode()) {
       return false;
     }
 
@@ -398,67 +580,90 @@ export class BuildSystem {
 
     if (event.code === "Digit1") {
       this.setToolMode("place");
+      this.setInventoryOpen(true);
       return true;
     }
     if (event.code === "Digit2") {
       this.setToolMode("dig");
+      this.setInventoryOpen(false);
       return true;
     }
     if (event.code === "Digit3") {
       this.setToolMode("gun");
+      this.setInventoryOpen(false);
       return true;
     }
 
-    const numpadMatch = /^Numpad([1-8])$/.exec(event.code);
-    if (numpadMatch) {
-      this.setSlot(Number(numpadMatch[1]));
+    if (event.code === "BracketLeft") {
+      this.cycleSlot(-1);
+      return true;
+    }
+    if (event.code === "BracketRight") {
+      this.cycleSlot(1);
       return true;
     }
 
     return false;
   }
 
-  handlePointerAction(button, canPlace = null) {
+  handlePointerAction(button, canPlace = null, { lineMode = false } = {}) {
     if (!this.isBuildMode()) {
       return false;
     }
-
     if (button !== 0 && button !== 2) {
       return false;
     }
-
     if (button === 2) {
       return true;
     }
 
-    this.raycaster.setFromCamera(CENTER, this.camera);
-    const hit = this.world.raycast(this.raycaster, this.maxReach);
+    const placement = this.isPlaceMode()
+      ? this.resolvePlacementChain(canPlace, { lineMode })
+      : null;
+    const hit =
+      placement?.hit ??
+      (() => {
+        this.raycaster.setFromCamera(CENTER, this.camera);
+        return this.world.raycast(this.raycaster, this.maxReach);
+      })();
+
     if (!hit) {
-      if (this.isPlaceMode()) {
-        this.onStatus?.("설치 기준 블록이 범위 안에 없습니다", true, 0.2);
-      } else {
-        this.onStatus?.("제거할 블록이 범위 안에 없습니다", true, 0.2);
-      }
+      this.onStatus?.(this.isPlaceMode() ? "배치할 블록이 없습니다." : "제거할 블록이 없습니다.", true, 0.28);
       return true;
     }
 
     if (this.isPlaceMode()) {
       if (this.getSlotStock(this.selectedSlot) <= 0) {
-        this.onStatus?.("선택한 블록이 없습니다. 삽 모드로 블록을 회수하세요", true, 0.7);
+        this.onStatus?.("선택한 블록 재고가 없습니다.", true, 0.6);
         return true;
       }
 
-      const x = hit.x + Math.round(hit.normal.x);
-      const y = hit.y + Math.round(hit.normal.y);
-      const z = hit.z + Math.round(hit.normal.z);
       const typeId = this.getSelectedType().id;
-      const placed = this.world.placeAdjacent(hit, typeId, canPlace);
-      if (!placed) {
-        this.onStatus?.("블록을 설치할 수 없습니다", true, 0.3);
-      } else {
+      const placements = placement?.placements ?? [];
+      let placedCount = 0;
+
+      for (const entry of placements) {
+        if (!entry.valid || this.getSlotStock(this.selectedSlot) <= 0) {
+          break;
+        }
+
+        const placed = this.world.setBlock(entry.x, entry.y, entry.z, typeId);
+        if (!placed) {
+          break;
+        }
+
         this.consumeSelectedStock(1);
-        this.onBlockChanged?.({ action: "place", x, y, z, typeId });
+        this.onBlockChanged?.({ action: "place", x: entry.x, y: entry.y, z: entry.z, typeId });
+        placedCount += 1;
       }
+
+      if (placedCount <= 0) {
+        this.onStatus?.("여기에는 블록을 놓을 수 없습니다.", true, 0.35);
+      } else if (lineMode && placedCount > 1) {
+        this.onStatus?.(`블록 ${placedCount}개 설치`, false, 0.45);
+      }
+
+      this.updatePlacementPreview(canPlace, { lineMode });
       this.renderUi();
       return true;
     }
@@ -468,9 +673,14 @@ export class BuildSystem {
       const y = hit.y;
       const z = hit.z;
       const minedTypeId = hit.typeId;
+      if (this.canRemoveBlock && !this.canRemoveBlock(x, y, z, minedTypeId)) {
+        this.onStatus?.("이 블록은 제거할 수 없습니다.", true, 0.45);
+        return true;
+      }
+
       const removed = this.world.removeFromHit(hit);
       if (!removed) {
-        this.onStatus?.("블록을 제거할 수 없습니다", true, 0.3);
+        this.onStatus?.("블록 제거에 실패했습니다.", true, 0.3);
       } else {
         const gained = this.collectByTypeId(minedTypeId, 1);
         if (gained > 0) {
@@ -479,11 +689,31 @@ export class BuildSystem {
         }
         this.onBlockChanged?.({ action: "remove", x, y, z, typeId: minedTypeId });
       }
+      this.hidePlacementPreview();
       this.renderUi();
       return true;
     }
 
     return false;
+  }
+
+  renderSelectedPreview() {
+    const type = this.getSelectedType();
+    if (this.selectionSwatchEl) {
+      this.selectionSwatchEl.style.setProperty("--swatch-color", type?.color ?? "#9aa3ad");
+    }
+    if (this.selectionNameEl) {
+      this.selectionNameEl.textContent = type?.name ?? "Block";
+    }
+    if (this.selectionSlotEl) {
+      this.selectionSlotEl.textContent =
+        `${String(this.selectedSlot).padStart(2, "0")} / ${String(BLOCK_TYPES.length).padStart(2, "0")}`;
+    }
+    if (this.selectionHintEl) {
+      this.selectionHintEl.textContent = this.isPlaceMode()
+        ? "휠로 색상 변경 · Shift+클릭 일괄 설치"
+        : "블록 모드에서 색상 선택";
+    }
   }
 
   renderUi() {
@@ -500,5 +730,9 @@ export class BuildSystem {
         countEl.textContent = String(this.getSlotStock(slotValue));
       }
     }
+
+    this.renderSelectedPreview();
+    this.syncAuxiliaryToolUi();
   }
 }
+

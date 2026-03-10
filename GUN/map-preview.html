@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>CITY MAP — RECLAIM</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#06080a; overflow:hidden; font-family:'Segoe UI',sans-serif; color:#dce8f0; }
+  canvas { position:fixed; inset:0; }
+
+  /* ── Top bar ── */
+  #top {
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 28px;
+    background:linear-gradient(180deg,rgba(0,0,0,0.9) 0%,transparent 100%);
+    pointer-events:none;
+  }
+  #logo { font-size:11px; letter-spacing:4px; color:#4af5f5; font-weight:700; }
+  #mapname { font-size:11px; letter-spacing:3px; color:#7a9aaa; }
+
+  /* ── Controls help ── */
+  #help {
+    position:fixed; top:52px; right:24px; z-index:10;
+    font-size:10px; color:#2a4050; letter-spacing:1.5px;
+    line-height:2; text-align:right; pointer-events:none;
+  }
+
+  /* ── Legend bottom left ── */
+  #legend {
+    position:fixed; bottom:24px; left:28px; z-index:10;
+    pointer-events:none;
+  }
+  .leg { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+  .leg span { font-size:10px; letter-spacing:2px; color:#3a5a6a; text-transform:uppercase; }
+
+  /* ── Stats bottom right ── */
+  #mapstats {
+    position:fixed; bottom:24px; right:28px; z-index:10;
+    text-align:right; pointer-events:none;
+  }
+  #mapstats .mv { font-size:22px; font-weight:700; color:#fff; }
+  #mapstats .ml { font-size:9px; letter-spacing:2.5px; color:#3a5a6a; margin-top:1px; }
+  #mapstats > div { margin-bottom:10px; }
+
+  /* ── View toggle ── */
+  #vtoggle {
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    display:flex; gap:6px; z-index:10;
+  }
+  .vbtn {
+    padding:7px 18px; border:1px solid rgba(74,245,245,0.2);
+    background:rgba(0,0,0,0.6); color:#4a6a7a;
+    font-size:10px; letter-spacing:2px; cursor:pointer;
+    transition:all .18s; font-family:inherit;
+  }
+  .vbtn:hover { border-color:rgba(74,245,245,0.4); color:#aae0f0; }
+  .vbtn.on { background:rgba(74,245,245,0.1); border-color:#4af5f5; color:#4af5f5; }
+
+  /* ── Minimap ── */
+  #minimap {
+    position:fixed; top:54px; left:24px; z-index:10;
+    width:160px; height:160px;
+    border:1px solid rgba(74,245,245,0.2);
+    background:rgba(0,0,0,0.7);
+    overflow:hidden;
+  }
+  #minimap canvas { width:100%; height:100%; }
+  #minimap-label {
+    position:fixed; top:56px; left:28px; z-index:11;
+    font-size:8px; letter-spacing:2px; color:#4af5f5; pointer-events:none;
+  }
+</style>
+</head>
+<body>
+
+<div id="top">
+  <div id="logo">RECLAIM — MAP PREVIEW</div>
+  <div id="mapname">CITY GRID · 도시 전장</div>
+</div>
+
+<div id="help">
+  드래그 — 회전<br>
+  스크롤 — 줌<br>
+  T — 탑뷰 전환<br>
+  R — 카메라 리셋
+</div>
+
+<div id="legend">
+  <div class="leg"><div class="dot" style="background:#3a6fff"></div><span>Alpha 스폰</span></div>
+  <div class="leg"><div class="dot" style="background:#ff4a3a"></div><span>Bravo 스폰</span></div>
+  <div class="leg"><div class="dot" style="background:#ffd700"></div><span>거점 (Objective)</span></div>
+  <div class="leg"><div class="dot" style="background:#888"></div>  <span>건물</span></div>
+  <div class="leg"><div class="dot" style="background:#444"></div>  <span>도로</span></div>
+</div>
+
+<div id="mapstats">
+  <div><div class="mv">160×160</div><div class="ml">맵 크기</div></div>
+  <div><div class="mv">~48</div><div class="ml">건물 수</div></div>
+  <div><div class="mv">2F–8F</div><div class="ml">층수 범위</div></div>
+</div>
+
+<div id="vtoggle">
+  <button class="vbtn on" id="btn3d" onclick="setView('3d')">3D 뷰</button>
+  <button class="vbtn"    id="btnTop" onclick="setView('top')">탑 뷰</button>
+</div>
+
+<div id="minimap"><canvas id="mc"></canvas></div>
+<div id="minimap-label">RADAR</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// ─── Seeded RNG ────────────────────────────────────────────────────────────
+function mkRng(seed) {
+  let s = seed >>> 0;
+  return () => { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (s >>> 0) / 4294967296; };
+}
+const rng = mkRng(20260309);
+const rand = (a, b) => a + rng() * (b - a);
+const randi = (a, b) => Math.floor(rand(a, b + 1));
+
+// ─── Renderer ─────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.prepend(renderer.domElement);
+
+// ─── Scene ────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06080c);
+scene.fog = new THREE.Fog(0x06080c, 80, 220);
+
+// ─── Cameras ──────────────────────────────────────────────────────────────
+const cam3d = new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.1, 500);
+// 측면 비스듬히 — 건물 높이가 잘 보이는 각도
+cam3d.position.set(100, 45, 110);
+
+const oc = new THREE.OrbitControls(cam3d, renderer.domElement);
+oc.enableDamping = true; oc.dampingFactor = 0.07;
+oc.target.set(0, 8, 0);
+oc.minDistance = 15; oc.maxDistance = 220;
+oc.maxPolarAngle = Math.PI * 0.82;  // 거의 수평까지 허용
+cam3d.lookAt(0, 8, 0);
+
+// ─── Lights ───────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x1a202a, 3.5));
+
+const sun = new THREE.DirectionalLight(0xfff0d8, 2.8);
+sun.position.set(60, 90, 40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 350;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -110;
+sun.shadow.camera.right = sun.shadow.camera.top = 110;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0x4466aa, 0.6);
+fill.position.set(-40, 30, -60); scene.add(fill);
+const rim = new THREE.DirectionalLight(0x223344, 0.4);
+rim.position.set(0, -20, 0); scene.add(rim);
+
+// ─── Materials ────────────────────────────────────────────────────────────
+const mat = (c, r, m) => new THREE.MeshStandardMaterial({ color:c, roughness:r, metalness:m });
+
+const MAT = {
+  road:      mat(0x1a1e24, 0.95, 0.02),
+  sidewalk:  mat(0x2a2e36, 0.9,  0.03),
+  ground:    mat(0x12151a, 0.98, 0.01),
+  concrete:  mat(0x5a6070, 0.88, 0.06),
+  concrete2: mat(0x4e5560, 0.9,  0.05),
+  metal:     mat(0x5a6878, 0.35, 0.72),
+  metal2:    mat(0x4a5870, 0.3,  0.78),
+  brick:     mat(0x7a5048, 0.92, 0.04),
+  brick2:    mat(0x6a4840, 0.94, 0.03),
+  glass:     mat(0x3a5878, 0.15, 0.55),
+  rooftop:   mat(0x303840, 0.85, 0.1),
+  rubble:    mat(0x484850, 0.96, 0.04),
+  yellow:    mat(0xffd020, 0.7,  0.1),
+  alphaMat:  mat(0x2a5fff, 0.6,  0.2),
+  bravoMat:  mat(0xff3a2a, 0.6,  0.2),
+  obj:       mat(0xffd700, 0.5,  0.3),
+  barrier:   mat(0x2a3040, 0.8,  0.15),
+  stripe:    mat(0xd0d0d0, 0.85, 0.02),
+};
+
+// Emissive window material
+const winMat = new THREE.MeshStandardMaterial({
+  color: 0x223344, roughness: 0.2, metalness: 0.4,
+  emissive: 0x112233, emissiveIntensity: 0.5
+});
+const winMat2 = new THREE.MeshStandardMaterial({
+  color: 0x443322, roughness: 0.2, metalness: 0.3,
+  emissive: 0x332211, emissiveIntensity: 0.4
+});
+
+// ─── Geometry helpers ─────────────────────────────────────────────────────
+function box(w, h, d, mat, rx, ry, rz) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  if (rx) m.rotation.x = rx; if (ry) m.rotation.y = ry; if (rz) m.rotation.z = rz;
+  return m;
+}
+function place(mesh, x, y, z) {
+  mesh.position.set(x, y, z); scene.add(mesh); return mesh;
+}
+
+// ─── MAP DIMENSIONS ───────────────────────────────────────────────────────
+const STREET = 5;      // street width
+const BLOCK  = 20;     // city block size
+const CELL   = BLOCK + STREET;  // 25
+const COLS   = 6;      // columns
+const ROWS   = 5;      // rows
+const W      = COLS * CELL + STREET;  // 155
+const D      = ROWS * CELL + STREET;  // 130
+const OX     = -W / 2;   // origin X offset
+const OZ     = -D / 2;   // origin Z offset
+
+// ─── GROUND ───────────────────────────────────────────────────────────────
+place(box(W + 20, 0.4, D + 20, MAT.ground), 0, -0.2, 0);
+
+// ─── ROADS ────────────────────────────────────────────────────────────────
+// Horizontal streets (Z-direction strips)
+for (let row = 0; row <= ROWS; row++) {
+  const z = OZ + row * CELL;
+  const road = box(W, 0.1, STREET, MAT.road);
+  place(road, 0, 0.05, z + STREET / 2);
+  // Center line dashes
+  for (let i = 0; i < 12; i++) {
+    const dash = box(2.5, 0.11, 0.18, MAT.stripe);
+    place(dash, OX + 6 + i * 12.5, 0.06, z + STREET / 2);
+  }
+}
+// Vertical streets (X-direction strips)
+for (let col = 0; col <= COLS; col++) {
+  const x = OX + col * CELL;
+  const road = box(STREET, 0.1, D, MAT.road);
+  place(road, x + STREET / 2, 0.05, 0);
+  // Center line dashes
+  for (let i = 0; i < 10; i++) {
+    const dash = box(0.18, 0.11, 2.5, MAT.stripe);
+    place(dash, x + STREET / 2, 0.06, OZ + 5 + i * 12.5);
+  }
+}
+
+// Sidewalks inside each block
+for (let row = 0; row < ROWS; row++) {
+  for (let col = 0; col < COLS; col++) {
+    const bx0 = OX + col * CELL + STREET;
+    const bz0 = OZ + row * CELL + STREET;
+    const sw = box(BLOCK, 0.18, BLOCK, MAT.sidewalk);
+    place(sw, bx0 + BLOCK/2, 0.09, bz0 + BLOCK/2);
+  }
+}
+
+// ─── BUILDING TYPES ───────────────────────────────────────────────────────
+const bldMats = [MAT.concrete, MAT.concrete2, MAT.metal, MAT.metal2, MAT.brick, MAT.brick2];
+const roofMats = [MAT.rooftop, MAT.metal2, MAT.concrete2];
+
+// Build windows on a building face
+function addWindows(bw, bh, bd, cx, by, cz, ry) {
+  const cols = Math.max(1, Math.floor(bw / 3.5));
+  const floors = Math.max(1, Math.floor(bh / 3));
+  const ww = 1.4, wh = 1.2;
+  const stepX = bw / (cols + 1);
+  const stepY = bh / (floors + 1);
+  const wMat = rng() > 0.5 ? winMat : winMat2;
+
+  for (let fi = 1; fi <= floors; fi++) {
+    for (let wi = 1; wi <= cols; wi++) {
+      const wx = -bw/2 + stepX * wi;
+      const wy = -bh/2 + stepY * fi;
+      const wm = new THREE.Mesh(new THREE.BoxGeometry(ww, wh, 0.12), wMat);
+      wm.position.set(wx, wy, bd / 2 + 0.01);
+      wm.castShadow = false;
+      const grp = new THREE.Group();
+      grp.add(wm);
+      grp.position.set(cx, by, cz);
+      grp.rotation.y = ry;
+      scene.add(grp);
+    }
+  }
+}
+
+// Place a building in a city block
+function makeBuilding(bx0, bz0, blockW, blockD) {
+  const margin = 1.2;
+  const bw = blockW - margin * 2 - rand(0, 4);
+  const bd = blockD - margin * 2 - rand(0, 4);
+  const bh = rand(4, 24);
+  const cx = bx0 + blockW/2 + rand(-1.5, 1.5);
+  const cz = bz0 + blockD/2 + rand(-1.5, 1.5);
+  const mat = bldMats[randi(0, bldMats.length - 1)];
+
+  // Main body
+  const building = box(bw, bh, bd, mat);
+  place(building, cx, bh/2, cz);
+
+  // Windows on all 4 faces
+  const ry0 = 0, ryL = Math.PI/2, ry1 = Math.PI, ryR = -Math.PI/2;
+  addWindows(bw, bh, bd, cx, bh/2, cz, ry0);
+  addWindows(bw, bh, bd, cx, bh/2, cz, ry1);
+  addWindows(bd, bh, bw, cx, bh/2, cz, ryL);
+  addWindows(bd, bh, bw, cx, bh/2, cz, ryR);
+
+  // Rooftop details
+  const rMat = roofMats[randi(0, roofMats.length - 1)];
+  const roof = box(bw, 0.3, bd, rMat);
+  place(roof, cx, bh + 0.15, cz);
+
+  // AC units / rooftop structures
+  const nExtra = randi(1, 3);
+  for (let i = 0; i < nExtra; i++) {
+    const ew = rand(0.8, 2.2), eh = rand(0.6, 1.8), ed = rand(0.8, 2.2);
+    const ex = cx + rand(-bw/2 + ew, bw/2 - ew);
+    const ez = cz + rand(-bd/2 + ed, bd/2 - ed);
+    const extra = box(ew, eh, ed, rMat);
+    place(extra, ex, bh + eh/2 + 0.3, ez);
+  }
+
+  // Occasional antenna / tower on tall buildings
+  if (bh > 14 && rng() > 0.5) {
+    const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, rand(2, 5), 6), MAT.metal);
+    ant.castShadow = true;
+    place(ant, cx + rand(-1, 1), bh + 0.3 + ant.geometry.parameters.height/2, cz + rand(-1, 1));
+  }
+
+  // Ground-floor recess (open base)
+  if (bh > 8 && rng() > 0.6) {
+    const recessH = 3;
+    const recessW = rand(2.5, 4.5);
+    const recess = box(recessW, recessH + 0.2, bd + 0.2, MAT.ground);
+    place(recess, cx, recessH/2 - 0.1, cz);
+    const ceilSlab = box(recessW, 0.3, bd + 0.2, MAT.concrete2);
+    place(ceilSlab, cx, recessH + 0.15, cz);
+  }
+
+  return { cx, cz, bw, bd, bh };
+}
+
+// ─── CITY BLOCKS — special per-block logic ────────────────────────────────
+// row, col indexes → which block gets what treatment
+// Alpha base: col 0, row 2 (center row, west end)
+// Bravo base: col 5, row 2
+// Objective:  col 2-3, row 2 (center)
+
+const ALPHA_COL = 0, ALPHA_ROW = 2;
+const BRAVO_COL = 5, BRAVO_ROW = 2;
+const OBJ_COLS = [2, 3], OBJ_ROW = 2;
+
+const buildings = [];
+
+for (let row = 0; row < ROWS; row++) {
+  for (let col = 0; col < COLS; col++) {
+    const bx0 = OX + col * CELL + STREET;
+    const bz0 = OZ + row * CELL + STREET;
+
+    const isAlpha  = col === ALPHA_COL && row === ALPHA_ROW;
+    const isBravo  = col === BRAVO_COL && row === BRAVO_ROW;
+    const isObj    = OBJ_COLS.includes(col) && row === OBJ_ROW;
+    const isCenterRow = row === OBJ_ROW;
+
+    if (isAlpha || isBravo) continue;  // spawn zones — no big buildings
+    if (isObj) continue;               // plaza — no buildings
+
+    // Split some blocks into 2 smaller buildings
+    const split = rng() > 0.45;
+    if (split) {
+      if (rng() > 0.5) {
+        // side by side (X split)
+        const hw = BLOCK / 2 - 0.5;
+        buildings.push(makeBuilding(bx0, bz0, hw, BLOCK));
+        buildings.push(makeBuilding(bx0 + hw + 1, bz0, hw - 1, BLOCK));
+      } else {
+        // front/back (Z split)
+        const hd = BLOCK / 2 - 0.5;
+        buildings.push(makeBuilding(bx0, bz0, BLOCK, hd));
+        buildings.push(makeBuilding(bx0, bz0 + hd + 1, BLOCK, hd - 1));
+      }
+    } else {
+      buildings.push(makeBuilding(bx0, bz0, BLOCK, BLOCK));
+    }
+  }
+}
+
+// ─── ALPHA SPAWN ──────────────────────────────────────────────────────────
+{
+  const bx0 = OX + ALPHA_COL * CELL + STREET;
+  const bz0 = OZ + ALPHA_ROW * CELL + STREET;
+  const cx = bx0 + BLOCK/2, cz = bz0 + BLOCK/2;
+
+  // Base platform
+  place(box(BLOCK - 1, 0.3, BLOCK - 1, MAT.alphaMat), cx, 0.15, cz);
+
+  // Low perimeter walls
+  for (let i = 0; i < 4; i++) {
+    const ang = (i / 4) * Math.PI * 2 + Math.PI/4;
+    const wx = cx + Math.cos(ang) * 7.5;
+    const wz = cz + Math.sin(ang) * 7.5;
+    const wall = box(10, 2.5, 0.5, MAT.barrier);
+    wall.rotation.y = ang + Math.PI/4;
+    wall.position.set(wx, 1.25, wz);
+    scene.add(wall);
+  }
+
+  // Spawn marker pillar
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 3, 8), MAT.alphaMat);
+  pillar.castShadow = true;
+  place(pillar, cx, 1.8, cz);
+
+  // A marker
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.15, 8, 24), MAT.alphaMat);
+  ring.rotation.x = Math.PI/2;
+  place(ring, cx, 0.4, cz);
+}
+
+// ─── BRAVO SPAWN ──────────────────────────────────────────────────────────
+{
+  const bx0 = OX + BRAVO_COL * CELL + STREET;
+  const bz0 = OZ + BRAVO_ROW * CELL + STREET;
+  const cx = bx0 + BLOCK/2, cz = bz0 + BLOCK/2;
+
+  place(box(BLOCK - 1, 0.3, BLOCK - 1, MAT.bravoMat), cx, 0.15, cz);
+
+  for (let i = 0; i < 4; i++) {
+    const ang = (i / 4) * Math.PI * 2 + Math.PI/4;
+    const wx = cx + Math.cos(ang) * 7.5;
+    const wz = cz + Math.sin(ang) * 7.5;
+    const wall = box(10, 2.5, 0.5, MAT.barrier);
+    wall.rotation.y = ang + Math.PI/4;
+    wall.position.set(wx, 1.25, wz);
+    scene.add(wall);
+  }
+
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 3, 8), MAT.bravoMat);
+  pillar.castShadow = true;
+  place(pillar, cx, 1.8, cz);
+
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.15, 8, 24), MAT.bravoMat);
+  ring.rotation.x = Math.PI/2;
+  place(ring, cx, 0.4, cz);
+}
+
+// ─── OBJECTIVE PLAZA ──────────────────────────────────────────────────────
+{
+  // Two adjacent blocks merged into one plaza
+  const bx0 = OX + OBJ_COLS[0] * CELL + STREET;
+  const bz0 = OZ + OBJ_ROW * CELL + STREET;
+  const plazaW = BLOCK * 2 + STREET;
+  const cx = bx0 + plazaW/2, cz = bz0 + BLOCK/2;
+
+  // Plaza floor
+  place(box(plazaW, 0.25, BLOCK, MAT.sidewalk), cx, 0.125, cz);
+
+  // Central objective ring
+  const objRing = new THREE.Mesh(new THREE.TorusGeometry(4.5, 0.22, 10, 40), MAT.obj);
+  objRing.rotation.x = Math.PI/2;
+  place(objRing, cx, 0.38, cz);
+
+  const innerRing = new THREE.Mesh(new THREE.TorusGeometry(2.5, 0.14, 10, 36), MAT.obj);
+  innerRing.rotation.x = Math.PI/2;
+  place(innerRing, cx, 0.38, cz);
+
+  // Objective beacon
+  const beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 4, 8),
+    new THREE.MeshStandardMaterial({ color:0xffd700, roughness:0.3, metalness:0.4, emissive:0x886600, emissiveIntensity:0.5 }));
+  beacon.castShadow = true;
+  place(beacon, cx, 2.2, cz);
+
+  // Corner bollards
+  for (let i = 0; i < 4; i++) {
+    const ang = (i / 4) * Math.PI * 2 + Math.PI/4;
+    const boll = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 1.2, 8), MAT.yellow);
+    boll.castShadow = true;
+    place(boll, cx + Math.cos(ang)*5.5, 0.7, cz + Math.sin(ang)*5.5);
+  }
+
+  // Cover objects in plaza (concrete barriers)
+  const barrierPositions = [
+    [-8, -4], [-8, 4], [8, -4], [8, 4],
+    [-4, 0], [4, 0],
+  ];
+  for (const [ox, oz] of barrierPositions) {
+    const angle = rng() > 0.5 ? Math.PI/2 : 0;
+    const barrier = box(3.5, 1.2, 0.5, MAT.concrete);
+    barrier.rotation.y = angle;
+    barrier.position.set(cx + ox, 0.7, cz + oz);
+    scene.add(barrier);
+  }
+
+  // Flagpole at center
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 8, 8), MAT.metal);
+  place(pole, cx, 4.2, cz);
+  const flag = box(3, 1.6, 0.06, MAT.yellow);
+  place(flag, cx + 1.7, 7.5, cz);
+}
+
+// ─── STREET PROPS ─────────────────────────────────────────────────────────
+// Street lights along main roads
+function addStreetLight(x, z, rotY) {
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 6, 6), MAT.metal2);
+  pole.castShadow = true;
+  place(pole, x, 3.1, z);
+  const arm = box(2, 0.12, 0.12, MAT.metal2);
+  arm.rotation.y = rotY;
+  arm.position.set(x + Math.cos(rotY) * 0.8, 6.2, z + Math.sin(rotY) * 0.8);
+  scene.add(arm);
+  // Light glow
+  const light = new THREE.PointLight(0xffe8a0, 0.8, 18, 2);
+  light.position.set(x + Math.cos(rotY) * 1.5, 6.3, z + Math.sin(rotY) * 1.5);
+  scene.add(light);
+}
+
+// Place street lights along horizontal roads
+for (let col = 0; col < COLS; col++) {
+  for (let row = 0; row <= ROWS; row++) {
+    const x = OX + col * CELL + STREET + BLOCK/2;
+    const z = OZ + row * CELL + STREET/2;
+    addStreetLight(x, z, 0);
+  }
+}
+
+// Concrete barriers / cover along main avenue
+for (let col = 0; col < COLS; col++) {
+  if (OBJ_COLS.includes(col)) continue;
+  const cx = OX + col * CELL + STREET + BLOCK/2;
+  const cz = 0;
+  if (rng() > 0.4) {
+    const barr = box(2, 1, 0.5, MAT.barrier);
+    barr.position.set(cx + rand(-3, 3), 0.6, cz + rand(-1, 1));
+    scene.add(barr);
+  }
+}
+
+// Dumpsters/containers randomly placed on sidewalks
+for (let i = 0; i < 20; i++) {
+  const x = rand(OX + 5, OX + W - 5);
+  const z = rand(OZ + 5, OZ + D - 5);
+  const w = rand(1.2, 2.2), h = rand(1, 1.8), d = rand(0.8, 1.4);
+  const dumpMat = rng() > 0.5 ? MAT.metal2 : MAT.barrier;
+  const dump = box(w, h, d, dumpMat);
+  dump.rotation.y = rand(0, Math.PI);
+  dump.position.set(x, h/2, z);
+  scene.add(dump);
+}
+
+// ─── PERIMETER WALL ───────────────────────────────────────────────────────
+const wallH = 4, wallT = 0.6;
+const W2 = W + 4, D2 = D + 4;
+// North/South
+place(box(W2, wallH, wallT, MAT.concrete2), 0, wallH/2, -D/2 - wallT/2);
+place(box(W2, wallH, wallT, MAT.concrete2), 0, wallH/2,  D/2 + wallT/2);
+// East/West
+place(box(wallT, wallH, D2, MAT.concrete2), -W/2 - wallT/2, wallH/2, 0);
+place(box(wallT, wallH, D2, MAT.concrete2),  W/2 + wallT/2, wallH/2, 0);
+
+// ─── MINIMAP ──────────────────────────────────────────────────────────────
+const mmCanvas = document.getElementById('mc');
+const mmCtx = mmCanvas.getContext('2d');
+mmCanvas.width = 160; mmCanvas.height = 160;
+
+function drawMinimap() {
+  const S = 160 / Math.max(W, D);  // scale
+
+  mmCtx.clearRect(0, 0, 160, 160);
+  mmCtx.fillStyle = '#0a0d12';
+  mmCtx.fillRect(0, 0, 160, 160);
+
+  const toMM = (x, z) => [(x - OX) * S, (z - OZ) * S * (D/Math.max(W,D))];
+
+  // Roads
+  mmCtx.fillStyle = '#1a1e26';
+  for (let col = 0; col <= COLS; col++) {
+    const x = OX + col * CELL;
+    const [mx] = toMM(x, 0);
+    mmCtx.fillRect(mx, 0, STREET * S, 160);
+  }
+  for (let row = 0; row <= ROWS; row++) {
+    const z = OZ + row * CELL;
+    const [, mz] = toMM(0, z);
+    mmCtx.fillRect(0, mz, 160, STREET * S * (D/Math.max(W,D)));
+  }
+
+  // Buildings
+  mmCtx.fillStyle = '#3a4050';
+  for (const b of buildings) {
+    const [mx, mz] = toMM(b.cx - b.bw/2, b.cz - b.bd/2);
+    mmCtx.fillRect(mx, mz, b.bw * S, b.bd * S * (D/Math.max(W,D)));
+  }
+
+  // Spawns
+  {
+    const bx0 = OX + ALPHA_COL * CELL + STREET;
+    const bz0 = OZ + ALPHA_ROW * CELL + STREET;
+    const [mx, mz] = toMM(bx0 + BLOCK/2, bz0 + BLOCK/2);
+    mmCtx.fillStyle = 'rgba(40,100,255,0.7)';
+    mmCtx.beginPath(); mmCtx.arc(mx, mz, 6, 0, Math.PI*2); mmCtx.fill();
+  }
+  {
+    const bx0 = OX + BRAVO_COL * CELL + STREET;
+    const bz0 = OZ + BRAVO_ROW * CELL + STREET;
+    const [mx, mz] = toMM(bx0 + BLOCK/2, bz0 + BLOCK/2);
+    mmCtx.fillStyle = 'rgba(255,60,40,0.7)';
+    mmCtx.beginPath(); mmCtx.arc(mx, mz, 6, 0, Math.PI*2); mmCtx.fill();
+  }
+  // Objective
+  {
+    const bx0 = OX + OBJ_COLS[0] * CELL + STREET;
+    const bz0 = OZ + OBJ_ROW * CELL + STREET;
+    const plazaW = BLOCK * 2 + STREET;
+    const [mx, mz] = toMM(bx0 + plazaW/2, bz0 + BLOCK/2);
+    mmCtx.strokeStyle = 'rgba(255,215,0,0.85)';
+    mmCtx.lineWidth = 2;
+    mmCtx.beginPath(); mmCtx.arc(mx, mz, 5, 0, Math.PI*2); mmCtx.stroke();
+  }
+}
+drawMinimap();
+
+// ─── View switching ────────────────────────────────────────────────────────
+let viewMode = '3d';
+let topAnim = 0;
+
+window.setView = (mode) => {
+  viewMode = mode;
+  document.getElementById('btn3d').classList.toggle('on', mode === '3d');
+  document.getElementById('btnTop').classList.toggle('on', mode === 'top');
+
+  if (mode === 'top') {
+    oc.enabled = false;
+  } else {
+    oc.enabled = true;
+  }
+};
+
+window.addEventListener('keydown', e => {
+  if (e.key === 't' || e.key === 'T') setView(viewMode === '3d' ? 'top' : '3d');
+  if (e.key === 'r' || e.key === 'R') {
+    cam3d.position.set(-85, 75, -85);
+    oc.target.set(0, 2, 0);
+    if (viewMode === 'top') setView('3d');
+  }
+});
+
+// ─── Resize ────────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  const a = innerWidth / innerHeight;
+  cam3d.aspect = a; cam3d.updateProjectionMatrix();
+  camTop.aspect = a; camTop.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ─── Animate ───────────────────────────────────────────────────────────────
+let t = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  t += 0.016;
+
+  // Beacon pulse
+  scene.traverse(obj => {
+    if (obj.isMesh && obj.material === scene.getObjectByName?.('beacon')?.material) {
+      obj.material.emissiveIntensity = 0.3 + Math.sin(t * 2) * 0.2;
+    }
+  });
+
+  if (viewMode === 'top') {
+    const lerp = (a, b, t) => a + (b - a) * t;
+    cam3d.position.x = lerp(cam3d.position.x, 0,    0.05);
+    cam3d.position.y = lerp(cam3d.position.y, 175,  0.05);
+    cam3d.position.z = lerp(cam3d.position.z, 0.01, 0.05);
+    oc.target.x = lerp(oc.target.x, 0, 0.05);
+    oc.target.y = lerp(oc.target.y, 0, 0.05);
+    oc.target.z = lerp(oc.target.z, 0, 0.05);
+  }
+
+  oc.update();
+  renderer.render(scene, cam3d);
+}
+animate();
+</script>
+</body>
+</html>

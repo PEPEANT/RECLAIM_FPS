@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { io } from "socket.io-client";
 import { WeaponSystem } from "../src/game/WeaponSystem.js";
 import { VoxelWorld } from "../src/game/build/VoxelWorld.js";
+import { DEFAULT_WEAPON_ID, getWeaponDefinition } from "../src/shared/weaponCatalog.js";
 
 const skipBuild = process.argv.includes("--skip-build");
 
@@ -99,8 +100,14 @@ async function checkSyntax() {
     "src/game/build/BuildSystem.js",
     "src/game/build/BlockPalette.js",
     "src/game/build/VoxelWorld.js",
+    "src/game/world/MapRegistry.js",
+    "src/game/world/MapBuilder.js",
+    "src/game/world/maps/forestFrontlineMap.js",
+    "src/game/world/maps/trainingCompoundMap.js",
+    "src/shared/audioAssets.js",
     "src/shared/gameModes.js",
     "src/shared/matchConfig.js",
+    "src/shared/weaponCatalog.js",
     "server.js"
   ];
 
@@ -111,6 +118,7 @@ async function checkSyntax() {
 
 function checkWeaponSystem() {
   const weapon = new WeaponSystem();
+  const weaponDef = getWeaponDefinition(DEFAULT_WEAPON_ID);
   let shots = 0;
   const dt = 1 / 120;
   for (let t = 0; t < 1.01; t += dt) {
@@ -120,7 +128,12 @@ function checkWeaponSystem() {
     }
   }
 
-  assert(shots >= 9 && shots <= 11, `Unexpected shots in 1s: ${shots}`);
+  const expectedMin = Math.max(1, Math.floor(1 / weaponDef.shotCooldown));
+  const expectedMax = Math.max(expectedMin, Math.ceil(1 / weaponDef.shotCooldown) + 1);
+  assert(
+    shots >= expectedMin && shots <= expectedMax,
+    `Unexpected shots in 1s for ${weaponDef.id}: ${shots} (expected ${expectedMin}-${expectedMax})`
+  );
 }
 
 function checkVoxelWorld() {
@@ -148,14 +161,38 @@ function checkVoxelWorld() {
   const arenaMeta = world.getArenaMeta();
   assert(world.blockMap.size > 100000, `Unexpected terrain block count: ${world.blockMap.size}`);
   assert(
-    arenaMeta?.halfExtent >= 50 && arenaMeta?.halfExtent <= 72,
+    arenaMeta?.halfExtent >= 50 && arenaMeta?.halfExtent <= 96,
     `Unexpected arena half extent: ${JSON.stringify(arenaMeta)}`
   );
   assert(
-    Number.isFinite(arenaMeta?.alphaBase?.x) &&
+      Number.isFinite(arenaMeta?.alphaBase?.x) &&
       Number.isFinite(arenaMeta?.bravoBase?.x) &&
       Number.isFinite(arenaMeta?.mid?.x),
     `Invalid arena metadata: ${JSON.stringify(arenaMeta)}`
+  );
+  assert(
+    world.setBlock((arenaMeta?.halfExtent ?? 60) + 4, 0, (arenaMeta?.halfExtent ?? 60) + 4, 1) === true,
+    "Failed to place extra grass block after terrain generation"
+  );
+  assert(
+    world.setBlock((arenaMeta?.halfExtent ?? 60) + 5, 0, (arenaMeta?.halfExtent ?? 60) + 4, 2) === true,
+    "Failed to place extra dirt block after terrain generation"
+  );
+  assert(
+    world.setBlock((arenaMeta?.halfExtent ?? 60) + 6, 0, (arenaMeta?.halfExtent ?? 60) + 4, 3) === true,
+    "Failed to place extra stone block after terrain generation"
+  );
+
+  world.generateTerrain({ mapId: "training_compound" });
+  const trainingMeta = world.getArenaMeta();
+  assert(
+    world.blockMap.size > 25000,
+    `Unexpected training terrain block count: ${world.blockMap.size}`
+  );
+  assert(
+    trainingMeta?.trainingSpawn?.x < trainingMeta?.mid?.x &&
+      trainingMeta?.bravoBase?.x > trainingMeta?.mid?.x,
+    `Invalid training arena metadata: ${JSON.stringify(trainingMeta)}`
   );
 }
 

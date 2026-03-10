@@ -172,6 +172,51 @@ export class VoxelWorld {
     return 15000;
   }
 
+  expandBucketCapacity(bucket, minCapacity = 0) {
+    if (!bucket?.mesh) {
+      return bucket;
+    }
+
+    const previousMesh = bucket.mesh;
+    const previousCount = previousMesh.count;
+    const growthBase = Math.max(bucket.capacity + 4096, Math.ceil(bucket.capacity * 1.35));
+    const nextCapacity = Math.max(growthBase, Math.trunc(Number(minCapacity) || 0));
+    if (nextCapacity <= bucket.capacity) {
+      return bucket;
+    }
+
+    const mesh = new THREE.InstancedMesh(this.blockGeometry, previousMesh.material, nextCapacity);
+    mesh.count = previousCount;
+    mesh.castShadow = previousMesh.castShadow;
+    mesh.receiveShadow = previousMesh.receiveShadow;
+    mesh.frustumCulled = previousMesh.frustumCulled;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.userData.typeId = bucket.typeId;
+    mesh.userData.isVoxelBucket = true;
+
+    for (let index = 0; index < previousCount; index += 1) {
+      previousMesh.getMatrixAt(index, this.tmpMatrix);
+      mesh.setMatrixAt(index, this.tmpMatrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+
+    const raycastIndex = this.raycastTargets.indexOf(previousMesh);
+    if (raycastIndex >= 0) {
+      this.raycastTargets[raycastIndex] = mesh;
+    } else {
+      this.raycastTargets.push(mesh);
+    }
+
+    this.group.remove(previousMesh);
+    this.group.add(mesh);
+
+    bucket.mesh = mesh;
+    bucket.capacity = nextCapacity;
+    this.markBucketBoundsDirty(bucket);
+    this.bucketOptimizeDirty = true;
+    return bucket;
+  }
+
   setBlock(x, y, z, typeId) {
     const key = this.key(x, y, z);
     const previous = this.blockMap.get(key);
@@ -183,7 +228,13 @@ export class VoxelWorld {
       this.removeBlock(x, y, z);
     }
 
-    const bucket = this.ensureBucket(typeId);
+    let bucket = this.ensureBucket(typeId);
+    if (!bucket) {
+      return false;
+    }
+    if (bucket.mesh.count >= bucket.capacity) {
+      bucket = this.expandBucketCapacity(bucket, bucket.mesh.count + 1);
+    }
     if (!bucket || bucket.mesh.count >= bucket.capacity) {
       return false;
     }

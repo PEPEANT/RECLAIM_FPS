@@ -28,8 +28,10 @@ export class HUD {
     this.objectiveEl = document.getElementById("hud-objective");
     this.threatEl = document.getElementById("hud-threat");
     this.streakEl = document.getElementById("hud-streak");
+    this.announcementEl = document.getElementById("hud-announcement");
 
     this.crosshairEl = document.getElementById("crosshair");
+    this.scopeOverlayEl = document.getElementById("scope-overlay");
     this.hitmarkerEl = document.getElementById("hitmarker");
     this.damageOverlayEl = document.getElementById("damage-overlay");
 
@@ -39,12 +41,13 @@ export class HUD {
     this.finalScoreEl = document.getElementById("final-score");
 
     this.statusTimer = 0;
+    this.announcementTimer = 0;
     this.damageOverlayTimeout = null;
     this.hitmarkerTimeout = null;
   }
 
   update(delta, state) {
-    setText(this.healthEl, `${state.health}`);
+    setText(this.healthEl, `${Math.round(Number(state.health ?? 0))}`);
     setText(this.scoreEl, `${state.score}`);
     setText(this.ammoEl, `${state.ammo}`);
     setText(this.reserveEl, `${state.reserve}`);
@@ -57,7 +60,7 @@ export class HUD {
     const controlText = controlOwner === "alpha" ? `확보 ${controlPercent}%` : `${controlPercent}%`;
     setText(this.controlEl, controlText);
 
-    setText(this.objectiveEl, `${state.objectiveText ?? "목표: 적 깃발을 확보하세요"}`);
+    setText(this.objectiveEl, "");
 
     const hp = Math.max(0, Math.min(100, state.health));
     if (this.healthBarEl) {
@@ -78,11 +81,17 @@ export class HUD {
       setText(this.statusEl, "재장전 중...");
       this.statusEl?.classList.add("is-alert");
     } else if (this.statusTimer <= 0) {
-      setText(this.statusEl, "전투 중");
+      setText(this.statusEl, "");
       this.statusEl?.classList.remove("is-alert");
     }
 
     this.statusTimer = Math.max(0, this.statusTimer - delta);
+    if (this.announcementTimer > 0) {
+      this.announcementTimer = Math.max(0, this.announcementTimer - delta);
+      if (this.announcementTimer <= 0) {
+        this.clearAnnouncement();
+      }
+    }
   }
 
   setStatus(text, isAlert = false, duration = 0.5) {
@@ -97,6 +106,34 @@ export class HUD {
     } else {
       setText(this.streakEl, "");
     }
+  }
+
+  setAnnouncement(text, { isAlert = false, duration = 2.4 } = {}) {
+    if (!this.announcementEl) {
+      return;
+    }
+    const message = String(text ?? "").trim();
+    if (!message) {
+      this.clearAnnouncement();
+      return;
+    }
+
+    this.announcementEl.textContent = message;
+    this.announcementEl.classList.add("show");
+    this.announcementEl.classList.toggle("is-alert", Boolean(isAlert));
+    this.announcementEl.setAttribute("aria-hidden", "false");
+    this.announcementTimer = Math.max(0.2, Number(duration) || 2.4);
+  }
+
+  clearAnnouncement() {
+    if (!this.announcementEl) {
+      return;
+    }
+    this.announcementTimer = 0;
+    this.announcementEl.classList.remove("show");
+    this.announcementEl.classList.remove("is-alert");
+    this.announcementEl.setAttribute("aria-hidden", "true");
+    this.announcementEl.textContent = "";
   }
 
   showStartOverlay(visible) {
@@ -126,6 +163,24 @@ export class HUD {
     this.crosshairEl.classList.remove("pulse");
     this.crosshairEl.offsetWidth;
     this.crosshairEl.classList.add("pulse");
+  }
+
+  setCrosshairState({ scale = 1, opacity = 1 } = {}) {
+    if (!this.crosshairEl) {
+      return;
+    }
+    const safeScale = Math.max(0.72, Math.min(2.4, Number(scale) || 1));
+    const safeOpacity = Math.max(0, Math.min(1, Number(opacity) || 0));
+    this.crosshairEl.style.setProperty("--crosshair-scale", `${safeScale}`);
+    this.crosshairEl.style.setProperty("--crosshair-opacity", `${safeOpacity}`);
+  }
+
+  setScopeOverlayVisible(visible) {
+    if (!this.scopeOverlayEl) {
+      return;
+    }
+    this.scopeOverlayEl.classList.toggle("show", Boolean(visible));
+    this.scopeOverlayEl.setAttribute("aria-hidden", visible ? "false" : "true");
   }
 
   pulseHitmarker() {
@@ -159,6 +214,6 @@ export class HUD {
     this.damageOverlayTimeout = window.setTimeout(() => {
       this.damageOverlayEl?.classList.remove("show");
       this.damageOverlayTimeout = null;
-    }, 120);
+    }, 90);
   }
 }

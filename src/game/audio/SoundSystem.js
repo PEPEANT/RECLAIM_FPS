@@ -1,8 +1,24 @@
+import {
+  AWP_FIRE_AUDIO_URL,
+  LEGACY_FIRE_AUDIO_URL,
+  M4A1_FIRE_AUDIO_URL,
+  RELOAD_AUDIO_URL,
+  SHOVEL_AUDIO_URL,
+  SPAS12_FIRE_AUDIO_URL
+} from "../../shared/audioAssets.js";
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function buildClipPool(url, size, baseVolume) {
+function buildClipPool({
+  url,
+  size,
+  baseVolume,
+  startTime = 0,
+  endTime = null,
+  minIntervalMs = 0
+}) {
   const pool = [];
   for (let i = 0; i < size; i += 1) {
     const audio = new Audio(url);
@@ -14,11 +30,26 @@ function buildClipPool(url, size, baseVolume) {
   return {
     pool,
     index: 0,
-    baseVolume
+    baseVolume,
+    startTime,
+    endTime,
+    minIntervalMs,
+    lastPlayedAt: 0
   };
 }
 
+function clearScheduledStop(audio) {
+  const stopTimer = audio?.__reclaimStopTimer ?? null;
+  if (stopTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(stopTimer);
+  }
+  if (audio) {
+    audio.__reclaimStopTimer = null;
+  }
+}
+
 function safeResetAudio(audio) {
+  clearScheduledStop(audio);
   try {
     audio.pause();
   } catch {}
@@ -52,19 +83,45 @@ export class SoundSystem {
 
     this.clips.set(
       "shot",
-      buildClipPool("/assets/audio/weapons/gunshot_0.mp3", 10, 0.42)
+      buildClipPool({ url: LEGACY_FIRE_AUDIO_URL, size: 10, baseVolume: 0.42, endTime: 0.16 })
+    );
+    this.clips.set(
+      "shot:m4a1",
+      buildClipPool({
+        url: M4A1_FIRE_AUDIO_URL,
+        size: 10,
+        baseVolume: 0.86,
+        minIntervalMs: 96
+      })
+    );
+    this.clips.set(
+      "shot:spas12",
+      buildClipPool({ url: SPAS12_FIRE_AUDIO_URL, size: 4, baseVolume: 0.88, endTime: 0.52 })
+    );
+    this.clips.set(
+      "shot:awp",
+      buildClipPool({ url: AWP_FIRE_AUDIO_URL, size: 3, baseVolume: 1, endTime: 0.96 })
     );
     this.clips.set(
       "reload",
-      buildClipPool("/assets/audio/weapons/gun_reload_lock_or_click_sound.mp3", 4, 0.5)
+      buildClipPool({ url: RELOAD_AUDIO_URL, size: 4, baseVolume: 0.5 })
     );
     this.clips.set(
       "dry",
-      buildClipPool("/assets/audio/weapons/gun_reload_lock_or_click_sound.mp3", 3, 0.24)
+      buildClipPool({ url: RELOAD_AUDIO_URL, size: 3, baseVolume: 0.24 })
     );
     this.clips.set(
       "portal",
-      buildClipPool("/assets/audio/weapons/gun_reload_lock_or_click_sound.mp3", 4, 0.34)
+      buildClipPool({ url: RELOAD_AUDIO_URL, size: 4, baseVolume: 0.34 })
+    );
+    this.clips.set(
+      "shovel",
+      buildClipPool({
+        url: SHOVEL_AUDIO_URL,
+        size: 4,
+        baseVolume: 0.52,
+        minIntervalMs: 90
+      })
     );
   }
 
@@ -127,8 +184,16 @@ export class SoundSystem {
       return;
     }
 
-    const clip = this.clips.get(name);
+    const clip = this.clips.get(name) ?? this.clips.get("shot");
     if (!clip || clip.pool.length === 0) {
+      return;
+    }
+    const now =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const minIntervalMs = Math.max(0, Number(options.minIntervalMs ?? clip.minIntervalMs) || 0);
+    if (minIntervalMs > 0 && now - clip.lastPlayedAt < minIntervalMs) {
       return;
     }
 
@@ -140,8 +205,23 @@ export class SoundSystem {
     const rate = 1 + (Math.random() * 2 - 1) * rateJitter;
 
     safeResetAudio(audio);
+    try {
+      audio.currentTime = Math.max(0, Number(clip.startTime) || 0);
+    } catch {}
     audio.volume = clamp(clip.baseVolume * gain * this.effectsVolumeScale, 0, 1);
     audio.playbackRate = clamp(rate, 0.5, 2);
-    safePlayAudio(audio);
+    const played = safePlayAudio(audio);
+    if (!played) {
+      return;
+    }
+    clip.lastPlayedAt = now;
+    const stopAt = Number(clip.endTime);
+    const startAt = Math.max(0, Number(clip.startTime) || 0);
+    if (Number.isFinite(stopAt) && stopAt > startAt && typeof window !== "undefined") {
+      const stopAfterMs = ((stopAt - startAt) / audio.playbackRate) * 1000;
+      audio.__reclaimStopTimer = window.setTimeout(() => {
+        safeResetAudio(audio);
+      }, Math.max(24, stopAfterMs));
+    }
   }
 }

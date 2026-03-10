@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>PLAYER — RECLAIM</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#08090c; overflow:hidden; font-family:'Segoe UI',sans-serif; color:#dce8f0; }
+  canvas { position:fixed; inset:0; }
+
+  #top {
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 28px;
+    background:linear-gradient(180deg,rgba(0,0,0,0.88) 0%,transparent 100%);
+    pointer-events:none;
+  }
+  #logo { font-size:11px; letter-spacing:4px; color:#4af5f5; font-weight:700; }
+
+  /* 색상 선택 — 중앙 상단 */
+  #colors {
+    position:fixed; top:16px; left:50%; transform:translateX(-50%);
+    display:flex; gap:6px; z-index:10;
+  }
+  .cbtn {
+    padding:8px 18px; border:1px solid rgba(255,255,255,0.14);
+    background:rgba(0,0,0,0.6); color:#607060;
+    font-size:10px; letter-spacing:2px; cursor:pointer;
+    transition:all .18s; font-family:inherit;
+    display:flex; align-items:center; gap:8px;
+  }
+  .cbtn:hover { border-color:rgba(255,255,255,0.3); color:#ccc; }
+  .cbtn.on  { border-color:rgba(255,255,255,0.55); color:#fff; background:rgba(255,255,255,0.07); }
+  .csw { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+
+  #bot {
+    position:fixed; bottom:0; left:0; right:0; z-index:10;
+    padding:16px 32px 20px;
+    background:linear-gradient(0deg,rgba(0,0,0,0.9) 0%,transparent 100%);
+    pointer-events:none;
+    display:flex; align-items:flex-end; justify-content:space-between;
+  }
+  #ptype { font-size:10px; letter-spacing:3px; color:#4af5f5; margin-bottom:4px; }
+  #pname { font-size:26px; font-weight:800; color:#fff; }
+
+  #hint {
+    position:fixed; bottom:10px; left:50%; transform:translateX(-50%);
+    font-size:10px; color:#283840; letter-spacing:2px; z-index:10; pointer-events:none;
+  }
+</style>
+</head>
+<body>
+
+<div id="top">
+  <div id="logo">RECLAIM — PLAYER PREVIEW</div>
+</div>
+
+<div id="colors">
+  <button class="cbtn on" onclick="selColor(0)">
+    <span class="csw" style="background:#4a5c34"></span>밀리터리 그린
+  </button>
+  <button class="cbtn" onclick="selColor(1)">
+    <span class="csw" style="background:#9e8252"></span>코요테 탠
+  </button>
+</div>
+
+<div id="bot">
+  <div>
+    <div id="ptype">TACTICAL OPERATOR</div>
+    <div id="pname">밀리터리 그린</div>
+  </div>
+</div>
+<div id="hint">드래그 회전 &nbsp;|&nbsp; 스크롤 줌 &nbsp;|&nbsp; Q 그린 &nbsp;|&nbsp; E 탠</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// ── Renderer ───────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x08090c);
+scene.fog = new THREE.FogExp2(0x08090c, 0.09);
+
+// ── Camera ─────────────────────────────────────────────────────────────────
+const cam = new THREE.PerspectiveCamera(44, innerWidth / innerHeight, 0.01, 80);
+cam.position.set(0, 1.0, 3.2);
+
+const oc = new THREE.OrbitControls(cam, renderer.domElement);
+oc.enableDamping = true;
+oc.dampingFactor = 0.07;
+oc.target.set(0, 0.9, 0);
+oc.minDistance = 1.0;
+oc.maxDistance = 7;
+
+// ── Lights ─────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x18222e, 3.2));
+
+const key = new THREE.DirectionalLight(0xd8eeff, 4.5);
+key.position.set(2.5, 5, 3);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x4af5f5, 0.5);
+fill.position.set(-4, 2, -3);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0x6688bb, 0.65);
+rim.position.set(-1, -1, -5);
+scene.add(rim);
+
+// ── Floor ──────────────────────────────────────────────────────────────────
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(2.2, 40),
+  new THREE.MeshStandardMaterial({ color: 0x0e1318, roughness: 0.95 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+scene.add(new THREE.GridHelper(4.4, 8, 0x182838, 0x0f1e28));
+
+// ── Material helpers ────────────────────────────────────────────────────────
+const M  = (c,r,m) => new THREE.MeshStandardMaterial({ color:c, roughness:r, metalness:m });
+const ME = (c,r,m,e,ei) => new THREE.MeshStandardMaterial({ color:c, roughness:r, metalness:m, emissive:e, emissiveIntensity:ei });
+
+function bx(w,h,d,mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
+  m.castShadow = true; m.receiveShadow = true; return m;
+}
+function cy(rt,rb,len,seg,mat) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt,rb,len,seg), mat);
+  m.castShadow = true; m.receiveShadow = true; return m;
+}
+function put(grp, mesh, x, y, z, rx, ry, rz) {
+  mesh.position.set(x, y, z);
+  if (rx) mesh.rotation.x = rx;
+  if (ry) mesh.rotation.y = ry;
+  if (rz) mesh.rotation.z = rz;
+  grp.add(mesh);
+  return mesh;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PLAYER  (feet at y=0, top at y≈1.8)
+// ═══════════════════════════════════════════════════════════════════
+function createPlayer(cIdx) {
+  const g = new THREE.Group();
+  const tan = cIdx === 1;
+
+  // ── Palette ─────────────────────────────────────────────────────
+  const suit    = tan ? M(0x9e8252,0.85,0.07) : M(0x4a5c34,0.85,0.07);
+  const suit2   = tan ? M(0x8c7448,0.88,0.06) : M(0x3a4a28,0.88,0.06);
+  const armor   = tan ? M(0x7a6238,0.70,0.18) : M(0x2c3c1e,0.70,0.18);
+  const armor2  = tan ? M(0x8a7040,0.68,0.20) : M(0x384e24,0.68,0.20);
+  const helm    = tan ? M(0xa08448,0.65,0.14) : M(0x3c4e28,0.65,0.14);
+  const pouch   = tan ? M(0x7a6438,0.88,0.05) : M(0x2e3820,0.88,0.05);
+  const kpad    = tan ? M(0x6a5830,0.80,0.12) : M(0x283018,0.80,0.12);
+  const boot    = M(0x242018, 0.92, 0.05);
+  const glove   = M(0x181410, 0.88, 0.05);
+  const visor   = ME(0x1a3040,0.08,0.55,0x112233,0.4);
+  const metal   = M(0x585e6a, 0.20, 0.85);
+  const dark    = M(0x181410, 0.90, 0.05);
+  const sole    = M(0x060606, 0.98, 0.01);
+  const webbing = M(0x1c1e1a, 0.85, 0.10);
+
+  // ════════════════════
+  // HEAD   (headY = center of head skull)
+  // ════════════════════
+  const HY = 1.52;
+
+  put(g, bx(0.22,0.22,0.22, suit),    0, HY,      0);          // skull / balaclava
+  put(g, bx(0.22,0.09,0.20, suit2),   0, HY-0.07, 0);          // lower face darker
+  // Helmet dome + brim
+  put(g, bx(0.26,0.13,0.27, helm),    0, HY+0.165,0);
+  put(g, bx(0.30,0.034,0.29,helm),    0, HY+0.115,-0.01);
+  put(g, bx(0.25,0.075,0.06,helm),    0, HY+0.145, 0.145);     // rear extension
+  // Helmet side rails
+  put(g, bx(0.028,0.10,0.22,M(0x181a18,0.6,0.65)),  0.15, HY+0.165,0);
+  put(g, bx(0.028,0.10,0.22,M(0x181a18,0.6,0.65)), -0.15, HY+0.165,0);
+  // NVG mount
+  put(g, bx(0.09,0.034,0.034,metal),  0, HY+0.252,-0.135);
+  // Goggles
+  put(g, bx(0.185,0.062,0.030,kpad),  0, HY+0.052,-0.12);
+  put(g, bx(0.16, 0.050,0.024,visor), 0, HY+0.052,-0.133);
+  // Ear comms
+  put(g, bx(0.036,0.13,0.15,M(0x1a1a24,0.7,0.2)),  0.155, HY+0.07,0);
+  put(g, bx(0.036,0.13,0.15,M(0x1a1a24,0.7,0.2)), -0.155, HY+0.07,0);
+
+  // ════════════════════
+  // NECK
+  // ════════════════════
+  put(g, cy(0.060,0.070,0.09,8,suit), 0, 1.385, 0);
+
+  // ════════════════════
+  // TORSO
+  // ════════════════════
+  const TY = 1.06;
+  put(g, bx(0.40,0.50,0.22,suit),         0, TY,      0);      // body
+  put(g, bx(0.34,0.24,0.058,armor),       0, TY+0.10,-0.12);   // front chest plate
+  put(g, bx(0.30,0.16,0.052,armor),       0, TY-0.12,-0.12);   // front lower plate
+  put(g, bx(0.36,0.27,0.058,armor),       0, TY+0.08, 0.13);   // back plate
+  put(g, bx(0.10,0.06,0.20,armor2),       0.225, TY+0.20,0);   // shoulder R
+  put(g, bx(0.10,0.06,0.20,armor2),      -0.225, TY+0.20,0);   // shoulder L
+  // Chest pouches
+  put(g, bx(0.10,0.10,0.062,pouch),       0.12, TY+0.12,-0.15);
+  put(g, bx(0.07,0.09,0.058,pouch),      -0.10, TY+0.14,-0.15);
+  // Belt
+  put(g, bx(0.44,0.065,0.24,webbing),    0, TY-0.255, 0);
+  put(g, bx(0.052,0.05,0.026,metal),     0, TY-0.255,-0.13);   // buckle
+  // Belt pouches
+  put(g, bx(0.08,0.095,0.072,pouch),     0.13, TY-0.258,-0.12);
+  put(g, bx(0.08,0.095,0.072,pouch),    -0.13, TY-0.258,-0.12);
+  // Radio
+  put(g, bx(0.045,0.08,0.036,dark),      0.22, TY+0.19,-0.07);
+  put(g, cy(0.005,0.005,0.09,6,dark),    0.22, TY+0.27,-0.06, 0,0.2,0);  // antenna
+
+  // ════════════════════
+  // BACKPACK
+  // ════════════════════
+  put(g, bx(0.24,0.30,0.10,pouch),       0, TY+0.04, 0.18);
+  put(g, bx(0.20,0.10,0.062,pouch),      0, TY+0.22, 0.16);    // top pocket
+  put(g, bx(0.046,0.24,0.042,webbing),   0.09, TY+0.04,0.10);  // strap R
+  put(g, bx(0.046,0.24,0.042,webbing),  -0.09, TY+0.04,0.10);  // strap L
+
+  // ════════════════════
+  // HIPS
+  // ════════════════════
+  put(g, bx(0.38,0.15,0.21,suit),        0,  0.79,  0);
+  put(g, bx(0.062,0.10,0.17,armor2),     0.23, 0.79, 0);
+  put(g, bx(0.062,0.10,0.17,armor2),    -0.23, 0.79, 0);
+
+  // ════════════════════
+  // ARMS  (both sides)
+  // ════════════════════
+  for (const [sx, rzU, rzF] of [[0.24,-0.42,0], [-0.24,0.42,0]]) {
+    const upper = new THREE.Group();
+    put(upper, bx(0.11,0.27,0.11,suit),     0,  0,    0);       // upper arm
+    put(upper, bx(0.12,0.06,0.12,kpad),     0, -0.09, 0.01);    // elbow pad
+
+    const lower = new THREE.Group();
+    put(lower, bx(0.10,0.24,0.10,suit2),    0,  0,   0);        // forearm
+    put(lower, bx(0.10,0.09,0.09,glove),    0, -0.18, 0);       // glove
+
+    lower.position.set(0, -0.165, 0);
+    lower.rotation.x = -0.22;
+    upper.add(lower);
+
+    upper.position.set(sx, TY+0.20, 0);
+    upper.rotation.set(-0.35, 0, rzU);
+    g.add(upper);
+  }
+
+  // ════════════════════
+  // LEGS  (both sides)
+  // ════════════════════
+  for (const sx of [0.115, -0.115]) {
+    const leg = new THREE.Group();
+    put(leg, bx(0.14,0.30,0.14,suit),        0,  0,      0);    // thigh
+    put(leg, bx(0.11,0.11,0.072,suit2),  sx>0?0.03:-0.03,-0.04,-0.04); // cargo pocket
+    put(leg, bx(0.148,0.068,0.048,kpad),     0, -0.186,-0.072); // knee pad
+    put(leg, bx(0.12,0.27,0.12,suit2),       0, -0.305,  0);    // shin
+    put(leg, bx(0.132,0.12,0.128,boot),      0, -0.515,  0);    // boot upper
+    put(leg, bx(0.128,0.08,0.175,boot),      0, -0.548, 0.025); // boot toe
+    put(leg, bx(0.138,0.024,0.185,sole),     0, -0.588, 0.022); // sole
+    leg.position.set(sx, 0.565, 0);
+    g.add(leg);
+  }
+
+  return g;
+}
+
+// ── State & control ────────────────────────────────────────────────────────
+let cur = null, autoRot = true, lastTouch = 0, clock = 0;
+let curColor = 0;
+
+function load(cIdx) {
+  if (cur) { scene.remove(cur); cur = null; }
+  cur = createPlayer(cIdx);
+  cur.rotation.y = 0.45;
+  scene.add(cur);
+  const label = cIdx === 0 ? '밀리터리 그린' : '코요테 탠';
+  document.getElementById('pname').textContent = label;
+  document.querySelectorAll('.cbtn').forEach((b,i) => b.classList.toggle('on', i===cIdx));
+}
+
+window.selColor = i => { curColor = i; load(i); };
+
+window.addEventListener('keydown', e => {
+  if (e.key==='q'||e.key==='Q') selColor(0);
+  if (e.key==='e'||e.key==='E') selColor(1);
+});
+renderer.domElement.addEventListener('pointerdown', () => { autoRot=false; lastTouch=Date.now(); });
+renderer.domElement.addEventListener('pointerup',   () => { lastTouch=Date.now(); });
+window.addEventListener('resize', () => {
+  cam.aspect = innerWidth/innerHeight;
+  cam.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  clock += 0.016;
+  if (!autoRot && Date.now()-lastTouch > 2800) autoRot = true;
+  if (cur) {
+    if (autoRot) cur.rotation.y += 0.004;
+    cur.position.y = Math.sin(clock*0.6)*0.014;
+  }
+  oc.update();
+  renderer.render(scene, cam);
+}
+
+load(0);
+animate();
+</script>
+</body>
+</html>

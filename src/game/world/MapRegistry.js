@@ -1,10 +1,13 @@
 import { createMapBuilder } from "./MapBuilder.js";
 import { generateForestFrontlineMap } from "./maps/forestFrontlineMap.js";
+import { generateTrainingCompoundMap } from "./maps/trainingCompoundMap.js";
 
 const DEFAULT_MAP_ID = "forest_frontline";
 
 const MAP_GENERATORS = Object.freeze({
-  [DEFAULT_MAP_ID]: generateForestFrontlineMap
+  [DEFAULT_MAP_ID]: generateForestFrontlineMap,
+  forest_frontline_v2: generateForestFrontlineMap,
+  training_compound: generateTrainingCompoundMap
 });
 
 export function getDefaultMapId() {
@@ -18,4 +21,3 @@ export function buildSelectedMap(world, options = {}) {
   const result = generator(builder, options);
   return result && typeof result === "object" ? result : null;
 }
-

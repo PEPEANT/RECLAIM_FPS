@@ -158,14 +158,18 @@ function plantTree(builder, x, y, z, seed, variant = 0) {
 }
 
 function plantForest(builder, halfExtent, surfaceMap, seed) {
-  const baseOffset = 44;
+  const baseOffset = 62;
+  const outerMeadowBand = halfExtent - 24;
 
   for (let x = -halfExtent + 5; x <= halfExtent - 5; x += 2) {
     for (let z = -halfExtent + 5; z <= halfExtent - 5; z += 2) {
-      if (Math.abs(z) <= 5 && Math.abs(x) <= halfExtent - 6) {
+      if (Math.abs(z) <= 6 && Math.abs(x) <= halfExtent - 8) {
         continue;
       }
       if (Math.abs(x) <= 12 && Math.abs(z) <= 12) {
+        continue;
+      }
+      if (Math.max(Math.abs(x), Math.abs(z)) >= outerMeadowBand) {
         continue;
       }
       if ((Math.abs(x + baseOffset) <= 14 || Math.abs(x - baseOffset) <= 14) && Math.abs(z) <= 14) {
@@ -197,10 +201,12 @@ function plantForest(builder, halfExtent, surfaceMap, seed) {
   }
 }
 
-function carvePathing(builder, halfExtent) {
-  builder.fillRect(-halfExtent + 2, halfExtent - 2, -1, -1, -2, 2, BLOCK.sand);
-  builder.fillRect(-56, -24, -1, -1, -3, 3, BLOCK.sand);
-  builder.fillRect(24, 56, -1, -1, -3, 3, BLOCK.sand);
+function carvePathing(builder, halfExtent, baseOffset) {
+  builder.fillRect(-halfExtent + 3, halfExtent - 3, -1, -1, -3, 3, BLOCK.sand);
+  builder.fillRect(-baseOffset - 18, -baseOffset + 18, -1, -1, -7, 7, BLOCK.sand);
+  builder.fillRect(baseOffset - 18, baseOffset + 18, -1, -1, -7, 7, BLOCK.sand);
+  builder.fillRect(-halfExtent + 10, halfExtent - 10, -1, -1, -19, -15, BLOCK.sand);
+  builder.fillRect(-halfExtent + 10, halfExtent - 10, -1, -1, 15, 19, BLOCK.sand);
 }
 
 export function generateForestFrontlineMap(builder, options = {}) {
@@ -208,26 +214,29 @@ export function generateForestFrontlineMap(builder, options = {}) {
   const random = mulberry32(seed);
   const noise2D = createNoise2D(random);
 
-  const halfExtent = 60;
+  const halfExtent = 88;
   const minY = -8;
-  const baseOffset = 44;
+  const baseOffset = 62;
   const surfaceMap = new Map();
 
   for (let x = -halfExtent; x <= halfExtent; x += 1) {
     for (let z = -halfExtent; z <= halfExtent; z += 1) {
-      const edgeDistance = halfExtent - Math.max(Math.abs(x), Math.abs(z));
+      const axisDistance = Math.max(Math.abs(x), Math.abs(z));
+      const edgeDistance = halfExtent - axisDistance;
       const edgeAlpha = clamp((18 - edgeDistance) / 18, 0, 1);
+      const outerMeadowAlpha = clamp((axisDistance - (halfExtent - 24)) / 20, 0, 1);
 
       const n1 = noise2D(x * 0.046, z * 0.046);
       const n2 = noise2D(x * 0.117 + 31.7, z * 0.117 - 19.4);
       const ridgeNoise = Math.max(0, noise2D(x * 0.029 - 9.4, z * 0.029 + 6.8));
       const rolling = Math.round(n1 * 2.5 + n2 * 1.3);
-      const corridor = Math.exp(-(z * z) / 380);
+      const corridor = Math.exp(-(z * z) / 760);
       const corridorFlatten = Math.round(corridor * 1.5);
-      const mountainLift = Math.round(edgeAlpha * edgeAlpha * (8 + ridgeNoise * 8));
+      const mountainLift = Math.round(edgeAlpha * edgeAlpha * (4 + ridgeNoise * 4));
+      const meadowFlatten = Math.round(outerMeadowAlpha * (3 + ridgeNoise * 2));
 
-      let topY = -1 + rolling - corridorFlatten + mountainLift;
-      if (Math.abs(z) <= 2 && Math.abs(x) <= halfExtent - 6) {
+      let topY = -1 + rolling - corridorFlatten + mountainLift - meadowFlatten;
+      if (Math.abs(z) <= 3 && Math.abs(x) <= halfExtent - 8) {
         topY = Math.min(topY, -1);
       }
       if ((Math.abs(x + baseOffset) <= 11 || Math.abs(x - baseOffset) <= 11) && Math.abs(z) <= 11) {
@@ -235,6 +244,9 @@ export function generateForestFrontlineMap(builder, options = {}) {
       }
       if (Math.abs(x) <= 10 && Math.abs(z) <= 10) {
         topY = Math.min(topY, 0);
+      }
+      if (outerMeadowAlpha > 0) {
+        topY = Math.min(topY, 1 + Math.round((1 - outerMeadowAlpha) * 2));
       }
       topY = clamp(topY, -2, 14);
       surfaceMap.set(builder.key(x, z), topY);
@@ -245,14 +257,19 @@ export function generateForestFrontlineMap(builder, options = {}) {
           typeId = BLOCK.dirt;
         }
         if (y === topY) {
-          typeId = edgeAlpha > 0.62 ? (topY >= 9 ? BLOCK.ice : BLOCK.stone) : BLOCK.grass;
+          typeId =
+            edgeAlpha > 0.78 && outerMeadowAlpha < 0.2
+              ? topY >= 9
+                ? BLOCK.ice
+                : BLOCK.stone
+              : BLOCK.grass;
         }
         builder.setBlock(x, y, z, typeId);
       }
     }
   }
 
-  carvePathing(builder, halfExtent);
+  carvePathing(builder, halfExtent, baseOffset);
   buildControlHub(builder);
 
   buildFlagFortress(builder, {
@@ -276,12 +293,12 @@ export function generateForestFrontlineMap(builder, options = {}) {
 
   return {
     arenaMeta: {
-      alphaBase: { x: -35, y: 0, z: 0 },
-      bravoBase: { x: 35, y: 0, z: 0 },
+      alphaBase: { x: -54, y: 0, z: 0 },
+      bravoBase: { x: 54, y: 0, z: 0 },
       alphaFlag: { x: -baseOffset, y: 0, z: 0 },
       bravoFlag: { x: baseOffset, y: 0, z: 0 },
       mid: { x: 0, y: 0, z: 0 },
-      trainingSpawn: { x: -35, y: 0, z: 0 },
+      trainingSpawn: { x: -54, y: 0, z: 0 },
       halfExtent
     }
   };

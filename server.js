@@ -11,6 +11,11 @@ import {
   PVP_RESPAWN_MS,
   ROUND_RESTART_DELAY_MS
 } from "./src/shared/matchConfig.js";
+import {
+  DEFAULT_WEAPON_ID,
+  getWeaponDefinition,
+  sanitizeWeaponId
+} from "./src/shared/weaponCatalog.js";
 
 function parseCorsOrigins(rawValue) {
   const value = String(rawValue ?? "").trim();
@@ -141,7 +146,7 @@ async function probeExistingServer(port) {
 const DEFAULT_ROOM_CODE = "GLOBAL";
 const MAX_ROOM_PLAYERS = 50;
 const EXIT_PORTAL_TARGET_PATH = "C:\\Users\\rneet\\OneDrive\\Desktop\\Emptines";
-const PVP_DAMAGE = 34;
+const PVP_DEFAULT_DAMAGE = getWeaponDefinition(DEFAULT_WEAPON_ID).damage;
 const HAZARD_DAMAGE_MIN = 1;
 const HAZARD_DAMAGE_MAX = 2000;
 const VOID_HAZARD_MIN_DAMAGE = 100;
@@ -174,10 +179,13 @@ const DEFAULT_TEAM_FLAG_HOME = Object.freeze({
   alpha: Object.freeze({ x: -44, y: 0, z: 0 }),
   bravo: Object.freeze({ x: 44, y: 0, z: 0 })
 });
-const SPAWN_PROTECT_RADIUS = 13;
+const SPAWN_PROTECT_RADIUS = 4;
 const SPAWN_PROTECT_RADIUS_SQ = SPAWN_PROTECT_RADIUS * SPAWN_PROTECT_RADIUS;
-const SPAWN_PROTECT_MIN_Y = -8;
-const SPAWN_PROTECT_MAX_Y = 8;
+const SPAWN_PROTECT_MIN_Y = -1;
+const SPAWN_PROTECT_MAX_Y = 6;
+const BASE_FLOOR_PROTECT_RADIUS = 8;
+const BASE_FLOOR_PROTECT_RADIUS_SQ = BASE_FLOOR_PROTECT_RADIUS * BASE_FLOOR_PROTECT_RADIUS;
+const BASE_FLOOR_PROTECT_MAX_Y = -4;
 const SPAWN_PROTECT_CENTERS = Object.freeze([
   Object.freeze({ x: DEFAULT_TEAM_HOME.alpha.x, z: DEFAULT_TEAM_HOME.alpha.z }),
   Object.freeze({ x: DEFAULT_TEAM_HOME.bravo.x, z: DEFAULT_TEAM_HOME.bravo.z })
@@ -263,7 +271,7 @@ function sanitizePersistedBlockEntry(entry = {}) {
     y: Math.trunc(y),
     z: Math.trunc(z)
   };
-  if (isLobbyProtectedBlockCoord(normalized.x, normalized.y, normalized.z)) {
+  if (getProtectedBlockReason(normalized.action, normalized.x, normalized.y, normalized.z)) {
     return null;
   }
 
@@ -433,47 +441,6 @@ function flushPersistentWorldSnapshot() {
   savePersistentWorldSnapshot(room);
 }
 
-function createDefaultAdState() {
-  return {
-    phase: "idle",
-    index: 0,
-    time: 0,
-    restUntil: 0,
-    updatedAt: Date.now(),
-    byPlayerId: null
-  };
-}
-
-function normalizeAdPhase(rawPhase) {
-  const value = String(rawPhase ?? "").trim().toLowerCase();
-  if (value === "play" || value === "rest" || value === "idle") {
-    return value;
-  }
-  return "idle";
-}
-
-function sanitizeAdState(raw = null, fallback = null) {
-  const source = raw && typeof raw === "object" ? raw : {};
-  const base = fallback && typeof fallback === "object" ? fallback : createDefaultAdState();
-
-  const indexRaw = Number(source.index);
-  const timeRaw = Number(source.time);
-  const restUntilRaw = Number(source.restUntil);
-  const updatedAtRaw = Number(source.updatedAt);
-  const byPlayerIdRaw = String(source.byPlayerId ?? "").trim();
-
-  return {
-    phase: normalizeAdPhase(source.phase ?? base.phase),
-    index: Number.isFinite(indexRaw) ? Math.max(0, Math.trunc(indexRaw)) : Math.max(0, Math.trunc(base.index ?? 0)),
-    time: Number.isFinite(timeRaw) ? Math.max(0, timeRaw) : Math.max(0, Number(base.time ?? 0)),
-    restUntil: Number.isFinite(restUntilRaw)
-      ? Math.max(0, Math.trunc(restUntilRaw))
-      : Math.max(0, Math.trunc(base.restUntil ?? 0)),
-    updatedAt: Number.isFinite(updatedAtRaw) ? Math.max(0, Math.trunc(updatedAtRaw)) : Date.now(),
-    byPlayerId: byPlayerIdRaw || (base.byPlayerId ? String(base.byPlayerId) : null)
-  };
-}
-
 function normalizeStockTypeId(typeId) {
   const parsed = Math.trunc(Number(typeId));
   if (!Number.isFinite(parsed) || parsed < BLOCK_TYPE_MIN || parsed > BLOCK_TYPE_MAX) {
@@ -547,7 +514,6 @@ function createRoomState(players = new Map()) {
     players,
     blocks: new Map(),
     mode: DEFAULT_GAME_MODE,
-    ad: createDefaultAdState(),
     flags: createDefaultTeamFlags(),
     score: { alpha: 0, bravo: 0 },
     captures: { alpha: 0, bravo: 0 },
@@ -587,6 +553,9 @@ function getRoomState(room) {
     player.kills = Number.isFinite(player.kills) ? Math.max(0, Math.trunc(player.kills)) : 0;
     player.deaths = Number.isFinite(player.deaths) ? Math.max(0, Math.trunc(player.deaths)) : 0;
     player.captures = Number.isFinite(player.captures) ? Math.max(0, Math.trunc(player.captures)) : 0;
+    player.killStreak = Number.isFinite(player.killStreak)
+      ? Math.max(0, Math.trunc(player.killStreak))
+      : 0;
     if (typeof player.respawnTimer === "undefined") {
       player.respawnTimer = null;
     }
@@ -597,13 +566,6 @@ function getRoomState(room) {
   }
 
   room.state.mode = normalizeGameMode(room.state.mode);
-
-  if (!room.state.ad || typeof room.state.ad !== "object") {
-    room.state.ad = createDefaultAdState();
-  } else {
-    room.state.ad = sanitizeAdState(room.state.ad, room.state.ad);
-  }
-
   if (!room.state.flags || typeof room.state.flags !== "object") {
     room.state.flags = createDefaultTeamFlags();
   } else {
@@ -732,6 +694,8 @@ function schedulePlayerRespawn(room, player) {
     clearPlayerRespawnTimer(current);
     current.hp = 100;
     current.respawnAt = 0;
+    current.killStreak = 0;
+    current.lastShotAt = 0;
     current.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
     current.state = getSpawnStateForTeam(current.team);
 
@@ -775,6 +739,8 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null }
     player.kills = 0;
     player.deaths = 0;
     player.captures = 0;
+    player.killStreak = 0;
+    player.lastShotAt = 0;
     clearPlayerRespawnTimer(player);
     player.hp = 100;
     player.respawnAt = 0;
@@ -841,12 +807,10 @@ function endRoundAndScheduleRestart(room, { winnerTeam, byPlayerId = null } = {}
 function serializeRoomState(room) {
   const state = getRoomState(room);
   const teamFlags = cloneTeamFlagsState(state.flags);
-  const ad = sanitizeAdState(state.ad, state.ad);
   return {
     mode: normalizeGameMode(state.mode),
     revision: state.revision,
     updatedAt: state.updatedAt,
-    ad,
     targetScore: CTF_WIN_SCORE,
     blockCount: state.blocks.size,
     // Legacy compatibility for older clients/scripts expecting single `flag`.
@@ -1127,6 +1091,23 @@ function distanceXZ(a = null, b = null) {
   return Math.hypot(dx, dz);
 }
 
+function isInsideProtectedRadius(x, z, radiusSq) {
+  const cx = Number(x);
+  const cz = Number(z);
+  if (!Number.isFinite(cx) || !Number.isFinite(cz)) {
+    return false;
+  }
+
+  for (const center of SPAWN_PROTECT_CENTERS) {
+    const dx = cx - center.x;
+    const dz = cz - center.z;
+    if (dx * dx + dz * dz <= radiusSq) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isSpawnProtectedBlockCoord(x, y, z) {
   const cx = Number(x);
   const cy = Number(y);
@@ -1137,15 +1118,27 @@ function isSpawnProtectedBlockCoord(x, y, z) {
   if (cy < SPAWN_PROTECT_MIN_Y || cy > SPAWN_PROTECT_MAX_Y) {
     return false;
   }
+  return isInsideProtectedRadius(cx, cz, SPAWN_PROTECT_RADIUS_SQ);
+}
 
-  for (const center of SPAWN_PROTECT_CENTERS) {
-    const dx = cx - center.x;
-    const dz = cz - center.z;
-    if (dx * dx + dz * dz <= SPAWN_PROTECT_RADIUS_SQ) {
-      return true;
-    }
+function isBaseFloorProtectedBlockCoord(x, y, z) {
+  const cx = Number(x);
+  const cy = Number(y);
+  const cz = Number(z);
+  if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz)) {
+    return false;
   }
-  return false;
+  if (cy > BASE_FLOOR_PROTECT_MAX_Y) {
+    return false;
+  }
+  return isInsideProtectedRadius(cx, cz, BASE_FLOOR_PROTECT_RADIUS_SQ);
+}
+
+function getProtectedBlockReason(action, x, y, z) {
+  if (isLobbyProtectedBlockCoord(x, y, z)) {
+    return "lobby";
+  }
+  return null;
 }
 
 function pruneSpawnProtectedBlockChanges(room) {
@@ -1162,7 +1155,7 @@ function pruneSpawnProtectedBlockChanges(room) {
     if (!entry) {
       continue;
     }
-    if (isSpawnProtectedBlockCoord(entry.x, entry.y, entry.z)) {
+    if (getProtectedBlockReason(entry.action, entry.x, entry.y, entry.z)) {
       state.blocks.delete(key);
       changed = true;
     }
@@ -1197,7 +1190,6 @@ function serializeCtfState(room, event = null) {
     mode: state.mode,
     revision: state.revision,
     updatedAt: state.updatedAt,
-    ad: state.ad,
     targetScore: state.targetScore,
     flag: state.flag,
     flags: state.flags,
@@ -1221,7 +1213,6 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
     mode: state.mode,
     revision: state.revision,
     updatedAt: state.updatedAt,
-    ad: state.ad,
     targetScore: state.targetScore,
     blocks: serializeBlocksSnapshot(room),
     flag: state.flag,
@@ -1230,7 +1221,8 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
     captures: state.captures,
     round: state.round,
     dailyLeaderboard: serializeDailyLeaderboard(12),
-    stock: serializeBlockStock(player?.stock)
+    stock: serializeBlockStock(player?.stock),
+    weaponId: sanitizeWeaponId(player?.weaponId)
   });
 }
 
@@ -1623,7 +1615,7 @@ function clampNumber(value, min, max, fallback) {
 function sanitizePlayerState(raw = {}) {
   return {
     x: clampNumber(raw.x, -256, 256, 0),
-    y: clampNumber(raw.y, 0, 128, 1.75),
+    y: clampNumber(raw.y, -64, 128, 1.75),
     z: clampNumber(raw.z, -256, 256, 0),
     yaw: clampNumber(raw.yaw, -Math.PI, Math.PI, 0),
     pitch: clampNumber(raw.pitch, -1.55, 1.55, 0),
@@ -1672,7 +1664,9 @@ function sanitizeShootPayload(raw = {}) {
   if (!targetId) {
     return null;
   }
-  return { targetId };
+  const parsedDamage = Math.trunc(Number(raw.damage));
+  const damage = Number.isFinite(parsedDamage) && parsedDamage > 0 ? parsedDamage : null;
+  return { targetId, damage };
 }
 
 function sanitizeHazardPayload(raw = {}) {
@@ -1703,6 +1697,7 @@ function serializeRoom(room) {
     players: Array.from(state.players.values()).map((player) => ({
       id: player.id,
       name: player.name,
+      weaponId: sanitizeWeaponId(player.weaponId),
       team: player.team ?? null,
       state: player.state ?? null,
       hp: Number(player.hp ?? 100),
@@ -1711,6 +1706,7 @@ function serializeRoom(room) {
       kills: Number(player.kills ?? 0),
       deaths: Number(player.deaths ?? 0),
       captures: Number(player.captures ?? 0),
+      killStreak: Number(player.killStreak ?? 0),
       stock: serializeBlockStock(player.stock)
     })),
     state: serializeRoomState(room),
@@ -1748,17 +1744,6 @@ function updateHost(room) {
   room.hostId = state.players.keys().next().value ?? null;
 }
 
-function resetAdStateWhenRoomEmpty(state) {
-  if (!state || !(state.players instanceof Map)) {
-    return false;
-  }
-  if (state.players.size !== 0) {
-    return false;
-  }
-  state.ad = createDefaultAdState();
-  return true;
-}
-
 function pruneRoomPlayers(room) {
   if (!room || !io?.sockets?.sockets) {
     return false;
@@ -1794,7 +1779,6 @@ function pruneRoomPlayers(room) {
       state.round.winnerTeam = null;
       state.round.restartAt = 0;
       state.round.startedAt = 0;
-      resetAdStateWhenRoomEmpty(state);
     }
     if (ctfChangedTeam) {
       emitCtfUpdate(room, {
@@ -1842,7 +1826,6 @@ function leaveCurrentRoom(socket) {
     state.round.winnerTeam = null;
     state.round.restartAt = 0;
     state.round.startedAt = 0;
-    resetAdStateWhenRoomEmpty(state);
   }
   touchRoomState(room);
   if (resetTeam) {
@@ -1868,7 +1851,9 @@ function joinDefaultRoom(socket, nameOverride = null) {
   ensureDailyLeaderboardFresh();
   pruneRoomPlayers(room);
   const name = sanitizeName(nameOverride ?? socket.data.playerName);
+  const weaponId = sanitizeWeaponId(socket.data.playerWeaponId ?? DEFAULT_WEAPON_ID);
   socket.data.playerName = name;
+  socket.data.playerWeaponId = weaponId;
 
   if (socket.data.roomCode === room.code && state.players.has(socket.id)) {
     const existing = state.players.get(socket.id);
@@ -1883,6 +1868,11 @@ function joinDefaultRoom(socket, nameOverride = null) {
       emitRoomUpdate(room);
       emitRoomList();
       emitDailyLeaderboardToRoom(room);
+    }
+    if (existing && sanitizeWeaponId(existing.weaponId) !== weaponId) {
+      existing.weaponId = weaponId;
+      touchRoomState(room);
+      emitRoomUpdate(room);
     }
     emitRoomSnapshot(socket, room, "resync");
     emitDailyLeaderboard(socket);
@@ -1902,16 +1892,19 @@ function joinDefaultRoom(socket, nameOverride = null) {
   state.players.set(socket.id, {
     id: socket.id,
     name,
+    weaponId,
     team: assignedTeam,
     state: getSpawnStateForTeam(assignedTeam),
     stock: createDefaultBlockStock(),
     hp: 100,
     respawnAt: 0,
     spawnShieldUntil: Date.now() + RESPAWN_SHIELD_MS,
+    lastShotAt: 0,
     respawnTimer: null,
     kills: 0,
     deaths: 0,
-    captures: 0
+    captures: 0,
+    killStreak: 0
   });
   touchDailyLeaderboardPlayer(state.players.get(socket.id));
   room.players = state.players;
@@ -2012,6 +2005,7 @@ if (typeof dailyLeaderboardResetInterval.unref === "function") {
 io.on("connection", (socket) => {
   playerCount += 1;
   socket.data.playerName = `PLAYER_${Math.floor(Math.random() * 9000 + 1000)}`;
+  socket.data.playerWeaponId = DEFAULT_WEAPON_ID;
   socket.data.roomCode = null;
 
   console.log(`[+] player connected (${playerCount}) ${socket.id}`);
@@ -2084,6 +2078,33 @@ io.on("connection", (socket) => {
     ack(ackFn, { ok: true, name: safeName, room: serializeRoom(room) });
   });
 
+  socket.on("player:set-weapon", (payload = {}, ackFn) => {
+    const weaponId = sanitizeWeaponId(payload.weaponId ?? socket.data.playerWeaponId);
+    socket.data.playerWeaponId = weaponId;
+
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: true, weaponId });
+      return;
+    }
+
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
+    if (!player) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
+      return;
+    }
+
+    if (sanitizeWeaponId(player.weaponId) !== weaponId) {
+      player.weaponId = weaponId;
+      touchRoomState(room);
+      emitRoomUpdate(room);
+    }
+
+    ack(ackFn, { ok: true, weaponId, room: serializeRoom(room) });
+  });
+
   socket.on("player:sync", (payload = {}) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
@@ -2107,6 +2128,7 @@ io.on("connection", (socket) => {
       id: player.id,
       name: player.name,
       team: player.team ?? null,
+      weaponId: sanitizeWeaponId(player.weaponId),
       state: nextState
     });
 
@@ -2128,38 +2150,6 @@ io.on("connection", (socket) => {
         emitRoomUpdate(room);
       }
     }
-  });
-
-  socket.on("ad:sync", (payload = {}) => {
-    const roomCode = socket.data.roomCode;
-    const room = roomCode ? rooms.get(roomCode) : null;
-    if (!room) {
-      return;
-    }
-
-    const state = getRoomState(room);
-    const player = state.players.get(socket.id);
-    if (!player) {
-      return;
-    }
-    if (room.hostId && room.hostId !== socket.id) {
-      return;
-    }
-
-    const updatedAt = Date.now();
-    state.ad = sanitizeAdState(
-      {
-        ...payload,
-        updatedAt,
-        byPlayerId: socket.id
-      },
-      state.ad
-    );
-
-    io.to(room.code).emit("ad:sync", {
-      ...state.ad,
-      serverNow: updatedAt
-    });
   });
 
   socket.on("ctf:interact", (ackFn) => {
@@ -2286,16 +2276,13 @@ io.on("connection", (socket) => {
       ack(ackFn, { ok: false, error: "잘못된 블록 업데이트", stock: serializeBlockStock(playerStock) });
       return;
     }
-    if (isSpawnProtectedBlockCoord(sanitized.x, sanitized.y, sanitized.z)) {
-      ack(ackFn, {
-        ok: false,
-        error: "스폰 보호 구역은 수정할 수 없습니다",
-        roomStateRevision: state.revision,
-        stock: serializeBlockStock(playerStock)
-      });
-      return;
-    }
-    if (isLobbyProtectedBlockCoord(sanitized.x, sanitized.y, sanitized.z)) {
+    const protectedReason = getProtectedBlockReason(
+      sanitized.action,
+      sanitized.x,
+      sanitized.y,
+      sanitized.z
+    );
+    if (protectedReason === "lobby") {
       ack(ackFn, {
         ok: false,
         error: "3D 로비 보호 구역은 수정할 수 없습니다",
@@ -2434,7 +2421,26 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const nextHp = Math.max(0, currentHp - PVP_DAMAGE);
+    const weaponDef = getWeaponDefinition(shooter.weaponId ?? DEFAULT_WEAPON_ID);
+    const cadenceSeconds = Math.max(
+      Number(weaponDef.shotCooldown) || 0,
+      Number(weaponDef.magazineSize) === 1 ? Number(weaponDef.reloadDuration) || 0 : 0
+    );
+    const minShotIntervalMs = Math.max(50, Math.round(cadenceSeconds * 1000 * 0.85));
+    const previousShotAt = Number(shooter.lastShotAt) || 0;
+    if (previousShotAt > 0 && now - previousShotAt < minShotIntervalMs) {
+      return;
+    }
+    shooter.lastShotAt = now;
+    const weaponBaseDamage = Math.max(1, Math.trunc(Number(weaponDef.damage) || PVP_DEFAULT_DAMAGE));
+    const weaponMaxDamage = Math.max(
+      weaponBaseDamage,
+      Math.trunc(Number(weaponDef.pelletDamage ?? weaponBaseDamage) || weaponBaseDamage) *
+        Math.max(1, Math.trunc(Number(weaponDef.pelletCount ?? 1) || 1))
+    );
+    const requestedDamage = Math.trunc(Number(sanitized.damage ?? weaponBaseDamage) || weaponBaseDamage);
+    const appliedDamage = Math.max(1, Math.min(weaponMaxDamage, requestedDamage));
+    const nextHp = Math.max(0, currentHp - appliedDamage);
     const killed = nextHp <= 0;
     const shouldEmitRoomUpdate = killed;
     let respawnAt = 0;
@@ -2442,9 +2448,13 @@ io.on("connection", (socket) => {
     target.hp = nextHp;
     let ctfEvent = null;
     let dailyLeaderboardChanged = false;
+    let victimStreakLost = 0;
     if (killed) {
+      victimStreakLost = Math.max(0, Math.trunc(Number(target.killStreak) || 0));
       shooter.kills = (Number(shooter.kills) || 0) + 1;
+      shooter.killStreak = (Number(shooter.killStreak) || 0) + 1;
       target.deaths = (Number(target.deaths) || 0) + 1;
+      target.killStreak = 0;
       dailyLeaderboardChanged =
         touchDailyLeaderboardPlayer(shooter, { killsDelta: 1 }) ||
         touchDailyLeaderboardPlayer(target, { deathsDelta: 1 }) ||
@@ -2476,12 +2486,15 @@ io.on("connection", (socket) => {
     io.to(room.code).emit("pvp:damage", {
       attackerId: shooter.id,
       victimId: target.id,
-      damage: PVP_DAMAGE,
+      damage: appliedDamage,
       victimHealth: killed ? 0 : target.hp,
       killed,
+      weaponId: sanitizeWeaponId(shooter.weaponId),
       respawnAt,
       attackerKills: shooter.kills ?? 0,
+      attackerStreak: shooter.killStreak ?? 0,
       victimDeaths: target.deaths ?? 0,
+      victimStreakLost,
       teamScore: {
         alpha: Number(state.score.alpha ?? 0),
         bravo: Number(state.score.bravo ?? 0)
@@ -2534,10 +2547,13 @@ io.on("connection", (socket) => {
     let respawnAt = 0;
     let ctfEvent = null;
     let dailyLeaderboardChanged = false;
+    let victimStreakLost = 0;
 
     player.hp = nextHp;
     if (killed) {
+      victimStreakLost = Math.max(0, Math.trunc(Number(player.killStreak) || 0));
       player.deaths = (Number(player.deaths) || 0) + 1;
+      player.killStreak = 0;
       dailyLeaderboardChanged = touchDailyLeaderboardPlayer(player, { deathsDelta: 1 });
       respawnAt = schedulePlayerRespawn(room, player);
 
@@ -2572,6 +2588,7 @@ io.on("connection", (socket) => {
       killed,
       respawnAt,
       victimDeaths: player.deaths ?? 0,
+      victimStreakLost,
       teamScore: {
         alpha: Number(state.score.alpha ?? 0),
         bravo: Number(state.score.bravo ?? 0)
@@ -2692,39 +2709,19 @@ io.on("connection", (socket) => {
       emitRoomUpdate(room);
     }
 
-    const isHost = !room.hostId || room.hostId === socket.id;
     emitLobbyPortalEntered(room, {
       player,
       portalId: "online",
-      action: isHost ? "start" : "deploy",
+      action: "hub",
       team,
       enteredAt
     });
 
-    if (!isHost) {
-      ack(ackFn, {
-        ok: true,
-        portalId: "online",
-        action: "deploy",
-        team,
-        localStart: true,
-        startedAt: Number(state.round?.startedAt ?? 0),
-        enteredAt
-      });
-      return;
-    }
-
-    const startedAt = Date.now();
-    resetRoomRoundState(room, {
-      startedAt,
-      byPlayerId: socket.id
-    });
     ack(ackFn, {
       ok: true,
       portalId: "online",
-      action: "start",
+      action: "hub",
       team,
-      startedAt,
       enteredAt
     });
   });

@@ -6,6 +6,7 @@ const PLAYER_TARGET_HEAD_OFFSET_Y = 0.28;
 const MUZZLE_FLASH_TTL = 0.075;
 const TRACER_TTL = 0.07;
 const MAX_TRACER_POOL = 180;
+const ENEMY_EYE_HEIGHT = 1.72;
 
 export class EnemyManager {
   constructor(scene, options = {}) {
@@ -26,6 +27,7 @@ export class EnemyManager {
     this.muzzleFlashMap = options.muzzleFlashMap ?? null;
     this.canHitTarget = options.canHitTarget ?? null;
     this.isBlockedAt = options.isBlockedAt ?? null;
+    this.getSurfaceY = options.getSurfaceY ?? null;
 
     this.legGeometry = new THREE.BoxGeometry(0.34, 1.12, 0.34);
     this.shoeGeometry = new THREE.BoxGeometry(0.38, 0.22, 0.44);
@@ -95,6 +97,7 @@ export class EnemyManager {
     this._losTarget = new THREE.Vector3();
     this._losTargetHead = new THREE.Vector3();
     this._muzzlePos = new THREE.Vector3();
+    this._enemyEye = new THREE.Vector3();
   }
 
   reset() {
@@ -278,6 +281,11 @@ export class EnemyManager {
     };
   }
 
+  getGroundY(x, z, fallback = 0) {
+    const value = Number(this.getSurfaceY?.(x, z));
+    return Number.isFinite(value) ? value : fallback;
+  }
+
   isPositionBlocked(x, z, radius = 0.52) {
     if (!this.isBlockedAt) {
       return false;
@@ -299,8 +307,12 @@ export class EnemyManager {
     for (const [dx, dz] of samples) {
       const sx = x + dx;
       const sz = z + dz;
+      const groundY = this.getGroundY(sx, sz, Number.NaN);
+      if (!Number.isFinite(groundY)) {
+        return true;
+      }
       for (const h of heights) {
-        if (this.isBlockedAt(sx, h, sz)) {
+        if (this.isBlockedAt(sx, groundY + h, sz)) {
           return true;
         }
       }
@@ -309,16 +321,22 @@ export class EnemyManager {
     return false;
   }
 
-  moveEnemyWithCollision(enemy, moveX, moveZ, delta) {
+  getWorldLimit(objectiveContext = null) {
+    const halfExtent = Number(objectiveContext?.halfExtent ?? WORLD_LIMIT);
+    return Math.max(WORLD_LIMIT, halfExtent - 1);
+  }
+
+  moveEnemyWithCollision(enemy, moveX, moveZ, delta, objectiveContext = null) {
     const step = enemy.speed * delta;
     const stepX = moveX * step;
     const stepZ = moveZ * step;
+    const worldLimit = this.getWorldLimit(objectiveContext);
 
     if (Math.abs(stepX) > 0.0001) {
       const nextX = THREE.MathUtils.clamp(
         enemy.hitbox.position.x + stepX,
-        -WORLD_LIMIT,
-        WORLD_LIMIT
+        -worldLimit,
+        worldLimit
       );
       if (!this.isPositionBlocked(nextX, enemy.hitbox.position.z)) {
         enemy.hitbox.position.x = nextX;
@@ -330,8 +348,8 @@ export class EnemyManager {
     if (Math.abs(stepZ) > 0.0001) {
       const nextZ = THREE.MathUtils.clamp(
         enemy.hitbox.position.z + stepZ,
-        -WORLD_LIMIT,
-        WORLD_LIMIT
+        -worldLimit,
+        worldLimit
       );
       if (!this.isPositionBlocked(enemy.hitbox.position.x, nextZ)) {
         enemy.hitbox.position.z = nextZ;
@@ -386,6 +404,7 @@ export class EnemyManager {
     const hasEnemyBase = !!objectiveContext?.bravoBase;
     const base = hasEnemyBase ? objectiveContext.bravoBase : playerPosition;
     const playerFlagStolen = !!objectiveContext?.playerHasEnemyFlag;
+    const worldLimit = this.getWorldLimit(objectiveContext);
 
     for (let attempt = 0; attempt < 18; attempt += 1) {
       const angle = Math.random() * Math.PI * 2;
@@ -396,24 +415,28 @@ export class EnemyManager {
           : 30
         : 58;
       const radius = minRadius + Math.random() * (maxRadius - minRadius);
-      const x = THREE.MathUtils.clamp(base.x + Math.cos(angle) * radius, -WORLD_LIMIT, WORLD_LIMIT);
-      const z = THREE.MathUtils.clamp(base.z + Math.sin(angle) * radius, -WORLD_LIMIT, WORLD_LIMIT);
+      const x = THREE.MathUtils.clamp(base.x + Math.cos(angle) * radius, -worldLimit, worldLimit);
+      const z = THREE.MathUtils.clamp(base.z + Math.sin(angle) * radius, -worldLimit, worldLimit);
 
       const distToPlayer = Math.hypot(playerPosition.x - x, playerPosition.z - z);
       if (distToPlayer < 12.5) {
+        continue;
+      }
+      const groundY = this.getGroundY(x, z, Number.NaN);
+      if (!Number.isFinite(groundY)) {
         continue;
       }
       if (this.isPositionBlocked(x, z)) {
         continue;
       }
 
-      spawn.set(x, 0, z);
+      spawn.set(x, groundY, z);
       return spawn;
     }
 
-    const fallbackX = THREE.MathUtils.clamp(playerPosition.x + 24, -WORLD_LIMIT, WORLD_LIMIT);
-    const fallbackZ = THREE.MathUtils.clamp(playerPosition.z + 24, -WORLD_LIMIT, WORLD_LIMIT);
-    spawn.set(fallbackX, 0, fallbackZ);
+    const fallbackX = THREE.MathUtils.clamp(playerPosition.x + 24, -worldLimit, worldLimit);
+    const fallbackZ = THREE.MathUtils.clamp(playerPosition.z + 24, -worldLimit, worldLimit);
+    spawn.set(fallbackX, this.getGroundY(fallbackX, fallbackZ, 0), fallbackZ);
     return spawn;
   }
 
@@ -472,12 +495,48 @@ export class EnemyManager {
         playerPosition.z - enemy.hitbox.position.z
       );
       const playerDistance = this._toPlayer.length();
+      enemy.groundY = this.getGroundY(
+        enemy.hitbox.position.x,
+        enemy.hitbox.position.z,
+        enemy.groundY ?? 0
+      );
+      enemy.hitbox.position.y = enemy.groundY + 1.25;
+      this._enemyEye.set(enemy.hitbox.position.x, enemy.groundY + ENEMY_EYE_HEIGHT, enemy.hitbox.position.z);
+      this._losTarget.set(
+        playerPosition.x,
+        playerPosition.y + PLAYER_TARGET_OFFSET_Y,
+        playerPosition.z
+      );
+      this._losTargetHead.set(
+        playerPosition.x,
+        playerPosition.y + PLAYER_TARGET_HEAD_OFFSET_Y,
+        playerPosition.z
+      );
+      const clearShotCenter = this.canHitTarget
+        ? this.canHitTarget(this._enemyEye, this._losTarget)
+        : true;
+      const clearShotHead = this.canHitTarget
+        ? this.canHitTarget(this._enemyEye, this._losTargetHead)
+        : true;
+      const hasDirectSight = clearShotCenter || clearShotHead;
+      if (hasDirectSight) {
+        enemy.lastSeenAt = this.elapsed;
+        enemy.losTimer = Math.min(enemy.losTimer + delta, enemy.reactionTime + 1.4);
+        enemy.lastKnownPlayerPos.set(playerPosition.x, enemy.groundY, playerPosition.z);
+      } else {
+        enemy.losTimer = Math.max(0, enemy.losTimer - delta * 0.85);
+        enemy.burstShotsRemaining = 0;
+      }
+      const hasRecentSight =
+        this.elapsed - enemy.lastSeenAt <= enemy.memoryDuration;
       const playerHasEnemyFlag = !!objectiveContext?.playerHasEnemyFlag;
       const engagePlayer =
         playerHasEnemyFlag ||
         enemy.role !== "defender" ||
-        playerDistance <= enemy.alertRange;
-      const goal = this.resolveGoal(enemy, playerPosition, objectiveContext, engagePlayer);
+        playerDistance <= enemy.alertRange ||
+        hasRecentSight;
+      const pursuitTarget = hasRecentSight ? enemy.lastKnownPlayerPos : playerPosition;
+      const goal = this.resolveGoal(enemy, pursuitTarget, objectiveContext, engagePlayer);
 
       this._toGoal.set(
         goal.x - enemy.hitbox.position.x,
@@ -504,7 +563,7 @@ export class EnemyManager {
         } else if (playerDistance > enemy.preferredDistance) {
           forwardFactor = 1;
         } else if (playerDistance < enemy.keepDistance) {
-          forwardFactor = -0.4;
+          forwardFactor = -0.62;
         }
 
         let strafeFactor = 0;
@@ -515,18 +574,29 @@ export class EnemyManager {
         ) {
           strafeFactor = enemy.strafeDirection * enemy.strafeStrength;
         }
+        if (!hasDirectSight && hasRecentSight) {
+          forwardFactor = Math.max(forwardFactor, 0.82);
+          strafeFactor = enemy.strafeDirection * (enemy.strafeStrength + 0.18);
+          enemy.strafeTimer = Math.min(enemy.strafeTimer, 0.12);
+        }
 
         const moveX = this._toGoal.x * forwardFactor - this._toGoal.z * strafeFactor;
         const moveZ = this._toGoal.z * forwardFactor + this._toGoal.x * strafeFactor;
         const moveLen = Math.hypot(moveX, moveZ);
         if (moveLen > 0.001) {
-          this.moveEnemyWithCollision(enemy, moveX / moveLen, moveZ / moveLen, delta);
+          this.moveEnemyWithCollision(
+            enemy,
+            moveX / moveLen,
+            moveZ / moveLen,
+            delta,
+            objectiveContext
+          );
         }
 
         const look = engagePlayer ? this._toPlayer : this._toGoal;
         enemy.model.rotation.y = Math.atan2(look.x, look.z);
       }
-      enemy.model.position.set(enemy.hitbox.position.x, 0, enemy.hitbox.position.z);
+      enemy.model.position.set(enemy.hitbox.position.x, enemy.groundY, enemy.hitbox.position.z);
 
       if (enemy.muzzleFlashLife > 0) {
         const flashRatio = enemy.muzzleFlashLife / MUZZLE_FLASH_TTL;
@@ -537,45 +607,41 @@ export class EnemyManager {
       }
 
       const canFireAtPlayer =
+        hasDirectSight &&
         playerDistance <= enemy.shootRange &&
-        (engagePlayer || playerDistance <= enemy.shootRange * 0.62);
+        (engagePlayer || playerDistance <= enemy.shootRange * 0.62) &&
+        enemy.losTimer >= enemy.reactionTime;
       if (canFireAtPlayer && enemy.fireCooldown <= 0) {
-        enemy.fireCooldown = enemy.fireInterval * THREE.MathUtils.randFloat(0.82, 1.24);
+        if (enemy.burstShotsRemaining <= 0) {
+          enemy.burstShotsRemaining = THREE.MathUtils.randInt(enemy.burstMin, enemy.burstMax);
+        }
+        enemy.burstShotsRemaining = Math.max(0, enemy.burstShotsRemaining - 1);
+        const isBursting = enemy.burstShotsRemaining > 0;
+        enemy.fireCooldown =
+          (isBursting ? enemy.burstCadence : enemy.fireRecover) *
+          THREE.MathUtils.randFloat(0.84, 1.18);
         enemy.muzzleFlashLife = MUZZLE_FLASH_TTL;
         enemy.gunKick = 0.12;
         firedShots += 1;
 
         enemy.muzzleAnchor.getWorldPosition(this._muzzlePos);
-        this._losTarget.set(
-          playerPosition.x,
-          playerPosition.y + PLAYER_TARGET_OFFSET_Y,
-          playerPosition.z
-        );
-        this._losTargetHead.set(
-          playerPosition.x,
-          playerPosition.y + PLAYER_TARGET_HEAD_OFFSET_Y,
-          playerPosition.z
-        );
-        const clearShotCenter = this.canHitTarget
-          ? this.canHitTarget(this._muzzlePos, this._losTarget)
-          : true;
-        const clearShotHead = this.canHitTarget
-          ? this.canHitTarget(this._muzzlePos, this._losTargetHead)
-          : true;
-        const clearShot = clearShotCenter || clearShotHead;
-
         this._traceTarget.copy(clearShotHead && !clearShotCenter ? this._losTargetHead : this._losTarget);
 
-        const spread = Math.min(0.86, playerDistance * 0.018);
+        const focus = THREE.MathUtils.clamp(
+          enemy.losTimer / Math.max(0.001, enemy.reactionTime + 0.42),
+          0,
+          1.2
+        );
+        const spread = Math.min(0.86, playerDistance * 0.018) * THREE.MathUtils.lerp(1.08, enemy.aimSpread, focus);
         this._traceTarget.x += THREE.MathUtils.randFloatSpread(spread);
         this._traceTarget.z += THREE.MathUtils.randFloatSpread(spread);
 
         const hitChance = THREE.MathUtils.clamp(
-          0.74 - (playerDistance / enemy.shootRange) * 0.5,
-          0.2,
-          0.75
+          enemy.aimConfidence - (playerDistance / enemy.shootRange) * 0.42 + focus * 0.1,
+          0.22,
+          0.82
         );
-        const didHit = clearShot && Math.random() < hitChance;
+        const didHit = Math.random() < hitChance;
 
         if (didHit) {
           totalDamage += THREE.MathUtils.randInt(enemy.minShotDamage, enemy.maxShotDamage);
@@ -657,6 +723,7 @@ export class EnemyManager {
   spawn(playerPosition, objectiveContext = null) {
     const spawnPos = this.chooseSpawnPosition(playerPosition, objectiveContext);
     const x = spawnPos.x;
+    const groundY = Number.isFinite(spawnPos.y) ? spawnPos.y : this.getGroundY(spawnPos.x, spawnPos.z, 0);
     const z = spawnPos.z;
     const role = Math.random() < 0.44 ? "defender" : "raider";
 
@@ -669,10 +736,10 @@ export class EnemyManager {
     };
 
     const soldier = this.createSoldierModel(materials);
-    soldier.model.position.set(x, 0, z);
+    soldier.model.position.set(x, groundY, z);
 
     const hitbox = new THREE.Mesh(this.hitboxGeometry, this.hitboxMaterial);
-    hitbox.position.set(x, 1.25, z);
+    hitbox.position.set(x, groundY + 1.25, z);
 
     const enemy = {
       model: soldier.model,
@@ -704,12 +771,25 @@ export class EnemyManager {
       gunBaseZ: soldier.gunGroup.position.z,
       muzzleFlash: soldier.muzzleFlash,
       muzzleAnchor: soldier.muzzleAnchor,
+      groundY,
       role,
       guardRadius: 8 + Math.random() * 5.5,
       alertRange: 24 + Math.random() * 8,
       patrolAngle: Math.random() * Math.PI * 2,
       patrolSpeed: THREE.MathUtils.randFloat(0.015, 0.032),
       controlDuty: Math.random(),
+      lastSeenAt: -999,
+      lastKnownPlayerPos: new THREE.Vector3(playerPosition.x, groundY, playerPosition.z),
+      memoryDuration: THREE.MathUtils.randFloat(1.8, 3.8),
+      reactionTime: THREE.MathUtils.randFloat(0.09, 0.28),
+      losTimer: 0,
+      burstShotsRemaining: 0,
+      burstMin: 2,
+      burstMax: 4,
+      burstCadence: THREE.MathUtils.randFloat(0.08, 0.13),
+      fireRecover: THREE.MathUtils.randFloat(0.38, 0.72),
+      aimSpread: THREE.MathUtils.randFloat(0.48, 0.84),
+      aimConfidence: THREE.MathUtils.randFloat(0.56, 0.72),
       materials: Object.values(materials)
     };
 
@@ -721,9 +801,9 @@ export class EnemyManager {
     this.hitboxTargets.push(hitbox);
   }
 
-  handleShot(raycaster, maxDistance = Infinity) {
+  handleShot(raycaster, maxDistance = Infinity, damage = 20) {
     if (this.enemies.length === 0) {
-      return { didHit: false, didKill: false, points: 0, hitPoint: null };
+      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null };
     }
 
     const hits = raycaster.intersectObjects(this.hitboxTargets, false);
@@ -738,20 +818,21 @@ export class EnemyManager {
       return this.canHitTarget(shotOrigin, hit.point);
     });
     if (!targetHit) {
-      return { didHit: false, didKill: false, points: 0, hitPoint: null };
+      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null };
     }
 
     const target = targetHit.object.userData.enemy;
     if (!target) {
-      return { didHit: false, didKill: false, points: 0, hitPoint: null };
+      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null };
     }
 
-    target.health -= 20;
+    const appliedDamage = Math.max(1, Math.trunc(Number(damage) || 20));
+    target.health -= appliedDamage;
     target.hitFlash = 0.08;
     const hitPoint = targetHit.point.clone();
 
     if (target.health > 0) {
-      return { didHit: true, didKill: false, points: 20, hitPoint };
+      return { didHit: true, didKill: false, points: 20, hitPoint, target };
     }
 
     const index = this.enemies.indexOf(target);
@@ -761,6 +842,6 @@ export class EnemyManager {
     }
 
     this.disposeEnemy(target);
-    return { didHit: true, didKill: true, points: 100, hitPoint };
+    return { didHit: true, didKill: true, points: 100, hitPoint, target };
   }
 }

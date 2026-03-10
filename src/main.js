@@ -1,6 +1,7 @@
 import "./styles/main.css";
 import { Game } from "./game/Game.js";
 import { Chat } from "./game/Chat.js";
+import { PRELOAD_AUDIO_ASSET_URLS } from "./shared/audioAssets.js";
 
 const bootGuard =
   typeof window !== "undefined"
@@ -38,10 +39,7 @@ const uiAssetUrls = [
   "/assets/graphics/world/blocks/kenney/metal.png"
 ];
 
-const audioAssetUrls = [
-  "/assets/audio/weapons/gunshot_0.mp3",
-  "/assets/audio/weapons/gun_reload_lock_or_click_sound.mp3"
-];
+const audioAssetUrls = PRELOAD_AUDIO_ASSET_URLS;
 
 function supportsWebGL() {
   try {
@@ -136,7 +134,7 @@ const boot = async () => {
 
   try {
     if (!supportsWebGL()) {
-      throw new Error("현재 브라우저/환경에서 WebGL을 사용할 수 없습니다.");
+      throw new Error("현재 브라우저/환경에서는 WebGL을 사용할 수 없습니다.");
     }
 
     const missingIds = REQUIRED_DOM_IDS.filter((id) => !document.getElementById(id));

@@ -6,37 +6,43 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
+    <link rel="icon" href="/assets/graphics/ui/logo.svg" type="image/svg+xml" />
     <title>RECLAIM FPS</title>
   </head>
   <body>
     <div id="app"></div>
 
     <div id="hud">
-      <div class="hud-left">
-        <div id="hud-health-text">체력 <span id="hud-health">100</span></div>
-        <div class="hud-health-bar-wrap"><div id="hud-health-bar"></div></div>
-        <div>점수 <span id="hud-score">0</span></div>
-        <div>처치 <span id="hud-kills">0</span></div>
+      <div class="hud-center">
+        <span id="hud-health" class="hud-health-number">100</span>
       </div>
       <div class="hud-right">
-        <div>탄약 <span id="hud-ammo">30</span>/<span id="hud-reserve">150</span></div>
-        <div id="hud-status">준비</div>
-        <div>위협 <span id="hud-enemies">0</span></div>
-        <div>점령 <span id="hud-captures">0</span></div>
-        <div>거점 <span id="hud-control">0%</span></div>
-        <div id="hud-objective">목표: 적 거점을 제압하세요.</div>
-        <div id="hud-threat"></div>
-        <div id="hud-streak"></div>
+        <div class="hud-ammo-row">
+          <span id="hud-ammo" class="hud-ammo-cur">30</span>
+          <span class="hud-ammo-sep">/</span>
+          <span id="hud-reserve" class="hud-ammo-res">150</span>
+        </div>
+        <div id="hud-status" class="hud-status-badge"></div>
+        <div id="hud-streak" class="hud-streak"></div>
+        <div id="hud-objective" class="hud-objective"></div>
+        <div id="hud-enemies" aria-hidden="true"></div>
+        <div id="hud-captures" aria-hidden="true"></div>
+        <div id="hud-control" aria-hidden="true"></div>
+        <div id="hud-threat" aria-hidden="true"></div>
       </div>
     </div>
 
-    <div id="ctf-scoreboard" aria-hidden="true">
-      <span class="ctf-team ctf-team-alpha">블루팀 <strong id="ctf-score-alpha">0</strong></span>
-      <span class="ctf-divider">:</span>
-      <span class="ctf-team ctf-team-bravo"><strong id="ctf-score-bravo">0</strong> 레드팀</span>
+    <div id="hud-announcement" aria-live="assertive" aria-hidden="true"></div>
+    <div id="minimap-shell" class="hidden" aria-hidden="true">
+      <canvas id="minimap-canvas" width="192" height="192"></canvas>
     </div>
 
     <div id="tab-scoreboard" aria-hidden="true">
+      <div id="ctf-scoreboard" aria-hidden="true">
+        <span class="ctf-team ctf-team-alpha">블루팀 <strong id="ctf-score-alpha">0</strong></span>
+        <span class="ctf-divider">:</span>
+        <span class="ctf-team ctf-team-bravo"><strong id="ctf-score-bravo">0</strong> 레드팀</span>
+      </div>
       <div class="tab-board-shell">
         <section class="tab-team-column alpha">
           <header class="tab-team-head">
@@ -55,22 +61,27 @@
       </div>
     </div>
 
-    <div id="chat-panel" aria-label="Chat">
+    <div id="chat-panel" aria-label="채팅">
       <div class="chat-header">
-        <strong id="chat-title">Chat</strong>
-        <button id="chat-toggle-btn" type="button" aria-expanded="true" aria-pressed="true">Close</button>
+        <strong id="chat-title">채팅</strong>
+        <div class="chat-header-actions">
+          <button id="chat-expand-btn" type="button" aria-expanded="false" aria-pressed="false">
+            펼치기
+          </button>
+          <button id="chat-toggle-btn" type="button" aria-expanded="true" aria-pressed="true">닫기</button>
+        </div>
       </div>
       <div id="chat-messages" aria-live="polite"></div>
       <div class="chat-input-wrap">
         <input
           id="chat-input"
           type="text"
-          placeholder="Press T or Enter to chat"
+          placeholder="T 또는 Enter로 채팅"
           maxlength="200"
           autocomplete="off"
           spellcheck="false"
         />
-        <button id="chat-send" type="button">Send</button>
+        <button id="chat-send" type="button">전송</button>
       </div>
     </div>
     <div id="chat-live-feed" aria-live="polite">
@@ -78,74 +89,60 @@
     </div>
 
     <div id="lobby-quick-panel" aria-hidden="true">
-      <div class="lobby-quick-nick-row">
-        <label for="lobby-quick-name">닉네임</label>
-        <input
-          id="lobby-quick-name"
-          type="text"
-          maxlength="16"
-          placeholder="닉네임 수정"
-          autocomplete="off"
-        />
-        <button id="lobby-quick-name-save" type="button">적용</button>
-      </div>
       <div id="lobby-quick-count" class="lobby-quick-count">대기 인원 0/50</div>
-      <div id="lobby-quick-guide" class="lobby-quick-guide">이동 WASD · 순위 TAB · 채팅 T/Enter</div>
       <div id="lobby-quick-rank" class="lobby-quick-rank">
         <div class="lobby-quick-rank-title">실시간 순위</div>
         <div id="lobby-quick-rank-list" class="lobby-quick-rank-list"></div>
       </div>
+      <!-- kept for JS compat -->
+      <div aria-hidden="true" style="display:none">
+        <input id="lobby-quick-name" type="text" />
+        <button id="lobby-quick-name-save" type="button"></button>
+        <div id="lobby-quick-guide"></div>
+      </div>
     </div>
 
     <div id="crosshair" aria-hidden="true"></div>
+    <div id="scope-overlay" aria-hidden="true">
+      <div class="scope-ring"></div>
+      <div class="scope-line scope-line-v"></div>
+      <div class="scope-line scope-line-h"></div>
+      <div class="scope-dot"></div>
+    </div>
     <div id="hitmarker" aria-hidden="true"></div>
     <div id="damage-overlay" aria-hidden="true"></div>
     <div id="portal-transition" aria-hidden="true"></div>
     <div id="respawn-banner" aria-hidden="true"></div>
 
     <div id="build-hud" aria-hidden="true">
-      <div id="build-mode-badge">모드: 총</div>
-      <div id="block-hotbar">
-        <div class="hotbar-slot is-selected" data-slot="1" title="NumPad1 - 잔디">
-          <span class="swatch swatch-grass"></span>
-          <span class="slot-key">N1</span>
-          <span class="slot-count">32</span>
+      <div id="build-mode-badge" aria-hidden="true"></div>
+      <div id="build-tool-tray" aria-label="도구 선택">
+        <button id="build-mode-gun" class="tool-mode-btn build-tool-btn" type="button" data-mode="gun" aria-label="총">
+          <span class="tool-icon tool-icon-gun" aria-hidden="true"></span>
+        </button>
+        <button id="build-mode-place" class="tool-mode-btn build-tool-btn" type="button" data-mode="place" aria-label="블록">
+          <span class="tool-icon tool-icon-block" aria-hidden="true"></span>
+        </button>
+        <button id="build-mode-dig" class="tool-mode-btn build-tool-btn" type="button" data-mode="dig" aria-label="삽">
+          <span class="tool-icon tool-icon-shovel" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div id="block-panel" aria-label="블록 인벤토리">
+        <div id="block-selection-card" aria-live="polite">
+          <div class="block-selection-label">블록 색상</div>
+          <div class="block-selection-current">
+            <span id="block-selection-swatch" class="block-selection-swatch" aria-hidden="true"></span>
+            <div class="block-selection-meta">
+              <strong id="block-selection-name">Grass</strong>
+              <span id="block-selection-slot">01 / 08</span>
+            </div>
+          </div>
+          <div id="block-selection-hint" class="block-selection-hint"></div>
         </div>
-        <div class="hotbar-slot" data-slot="2" title="NumPad2 - 흙">
-          <span class="swatch swatch-dirt"></span>
-          <span class="slot-key">N2</span>
-          <span class="slot-count">32</span>
-        </div>
-        <div class="hotbar-slot" data-slot="3" title="NumPad3 - 돌">
-          <span class="swatch swatch-stone"></span>
-          <span class="slot-key">N3</span>
-          <span class="slot-count">32</span>
-        </div>
-        <div class="hotbar-slot" data-slot="4" title="NumPad4 - 모래">
-          <span class="swatch swatch-sand"></span>
-          <span class="slot-key">N4</span>
-          <span class="slot-count">32</span>
-        </div>
-        <div class="hotbar-slot" data-slot="5" title="NumPad5 - 점토">
-          <span class="swatch swatch-clay"></span>
-          <span class="slot-key">N5</span>
-          <span class="slot-count">32</span>
-        </div>
-        <div class="hotbar-slot" data-slot="6" title="NumPad6 - 벽돌">
-          <span class="swatch swatch-brick"></span>
-          <span class="slot-key">N6</span>
-          <span class="slot-count">32</span>
-        </div>
-        <div class="hotbar-slot" data-slot="7" title="NumPad7 - 얼음">
-          <span class="swatch swatch-ice"></span>
-          <span class="slot-key">N7</span>
-          <span class="slot-count">32</span>
-        </div>
-        <div class="hotbar-slot" data-slot="8" title="NumPad8 - 금속">
-          <span class="swatch swatch-metal"></span>
-          <span class="slot-key">N8</span>
-          <span class="slot-count">32</span>
-        </div>
+        <button id="block-panel-close" type="button" aria-label="블록 인벤토리 닫기">
+          <span class="tool-close-icon" aria-hidden="true"></span>
+        </button>
+        <div id="block-hotbar"></div>
       </div>
     </div>
 
@@ -153,16 +150,27 @@
       <button id="mobile-tab" type="button" aria-label="Scoreboard">Tab</button>
       <button id="mobile-options" type="button" aria-label="Options">옵션</button>
       <button id="mobile-chat" type="button" aria-label="Chat">채팅</button>
+      <button id="mobile-bag" class="mobile-utility-btn" type="button" aria-label="가방">
+        <span class="tool-icon tool-icon-bag" aria-hidden="true"></span>
+      </button>
       <div id="mobile-joystick" aria-label="Move joystick">
         <div class="mobile-joystick-ring"></div>
         <div id="mobile-joystick-knob"></div>
       </div>
       <div id="mobile-utility" aria-label="Mobile actions">
-        <button id="mobile-mode-place" class="mobile-utility-btn" type="button">설치</button>
-        <button id="mobile-mode-dig" class="mobile-utility-btn" type="button">삽</button>
-        <button id="mobile-mode-gun" class="mobile-utility-btn" type="button">총</button>
-        <button id="mobile-aim" class="mobile-utility-btn" type="button">조준</button>
+        <button id="mobile-mode-gun" class="mobile-utility-btn" type="button" aria-label="총">
+          <span class="tool-icon tool-icon-gun" aria-hidden="true"></span>
+        </button>
+        <button id="mobile-mode-place" class="mobile-utility-btn" type="button" aria-label="블록">
+          <span class="tool-icon tool-icon-block" aria-hidden="true"></span>
+        </button>
+        <button id="mobile-mode-dig" class="mobile-utility-btn" type="button" aria-label="삽">
+          <span class="tool-icon tool-icon-shovel" aria-hidden="true"></span>
+        </button>
       </div>
+      <button id="mobile-aim" class="mobile-circle-btn" type="button" aria-label="조준">
+        <span class="tool-icon tool-icon-crosshair" aria-hidden="true"></span>
+      </button>
       <button id="mobile-jump" class="mobile-utility-btn" type="button">점프</button>
       <button id="mobile-reload" class="mobile-utility-btn" type="button">장전</button>
       <button id="mobile-fire" type="button" aria-label="Fire">
@@ -173,140 +181,113 @@
       id="quick-settings-btn"
       class="hidden"
       type="button"
-      aria-label="Quick settings"
+      aria-label="옵션"
       aria-haspopup="true"
       aria-expanded="false"
     >
-      Quick
+      옵션
     </button>
-    <aside id="quick-settings-panel" class="hidden" aria-label="Quick settings">
-      <div class="quick-settings-title" id="quick-settings-title">빠른 설정</div>
+    <aside id="quick-settings-panel" class="hidden" aria-label="옵션">
+      <div class="quick-settings-title" id="quick-settings-title">옵션</div>
       <div class="quick-settings-row">
         <span class="quick-settings-label">그래픽</span>
         <div class="quick-quality-btns" role="group" aria-label="Graphics quality">
-          <button type="button" class="quick-quality-btn" data-quality="low">저</button>
-          <button type="button" class="quick-quality-btn is-active" data-quality="medium">중</button>
-          <button type="button" class="quick-quality-btn" data-quality="high">고</button>
+          <button type="button" class="quick-quality-btn" data-quality="low">낮음</button>
+          <button type="button" class="quick-quality-btn" data-quality="medium">보통</button>
+          <button type="button" class="quick-quality-btn is-active" data-quality="high">높음</button>
         </div>
       </div>
       <div class="quick-settings-row">
         <button id="quick-fullscreen" type="button">전체화면</button>
       </div>
-      <div class="quick-settings-row">
-        <button id="quick-open-options" type="button">상세 옵션</button>
-      </div>
     </aside>
     <button id="flag-interact-btn" type="button" aria-hidden="true">깃발 탈취</button>
 
-    <div id="start-overlay" class="overlay show overlay-start minimal-lobby">
+    <div id="start-overlay" class="overlay show overlay-start">
       <section class="start-panel">
+
+        <!-- Header: logo + title + connection status -->
         <div class="start-header">
-          <img
-            class="start-emblem"
-            src="/assets/graphics/ui/logo.svg"
-            alt="RECLAIM logo"
-            loading="eager"
-            decoding="async"
-          />
-          <p class="start-kicker">?묒쟾紐? FRONTLINE RECOVERY</p>
-          <h1>RECLAIM FPS</h1>
+          <img class="start-emblem" src="/assets/graphics/ui/logo.svg" alt="RECLAIM logo" loading="eager" decoding="async" />
+          <div class="start-title-block">
+            <h1>RECLAIM FPS</h1>
+            <p class="start-kicker">FRONTLINE RECOVERY</p>
+          </div>
+          <div class="start-header-status">
+            <span id="mp-status" class="mp-status-text">대기</span>
+            <button id="mp-refresh" class="hub-refresh-btn" type="button" aria-label="새로고침">&#x21BB;</button>
+          </div>
         </div>
 
-        <nav class="start-tabs" role="tablist" aria-label="game mode">
-          <button
-            id="mode-online"
-            class="tab-btn is-active"
-            role="tab"
-            aria-selected="true"
-            type="button"
-          >
-            온라인
-          </button>
-          <button
-            id="mode-single"
-            class="tab-btn"
-            role="tab"
-            aria-selected="false"
-            type="button"
-          >
-            훈련
-          </button>
-        </nav>
+        <div class="start-body">
 
-        <div id="online-panel" class="tab-panel" role="tabpanel">
-          <p class="start-desc">GLOBAL 방에 자동 연결됩니다. 최대 50명까지 참가할 수 있습니다.</p>
-
-          <div class="mp-nick-row">
-            <label class="mp-label" for="mp-name">닉네임</label>
-            <input
-              id="mp-name"
-              class="mp-input"
-              type="text"
-              maxlength="16"
-              placeholder="닉네임 입력"
-              autocomplete="off"
-            />
+          <!-- Nickname + online badge -->
+          <div class="start-nick-row">
+            <label class="start-label" for="mp-name">닉네임</label>
+            <input id="mp-name" class="mp-input" type="text" maxlength="16" placeholder="닉네임 입력" autocomplete="off" />
+            <span id="mp-active-room-state" class="hub-online-badge" data-state="offline">오프라인</span>
           </div>
 
-          <div class="mp-status-bar">
-            <span id="mp-status" class="mp-status-text">서버: 연결 대기</span>
-            <div class="mp-status-actions">
-              <button id="mp-refresh" class="mp-icon-btn" type="button">새로고침</button>
+          <!-- Weapon chips -->
+          <div class="start-weapon-row" aria-label="무기 선택">
+            <span class="start-label">무기</span>
+            <div class="start-weapon-chips">
+              <button class="mp-weapon-btn is-active" type="button" data-weapon-id="m4a1">M4A1</button>
+              <button class="mp-weapon-btn" type="button" data-weapon-id="spas12">SPAS-12</button>
+              <button class="mp-weapon-btn" type="button" data-weapon-id="awp">AWP</button>
             </div>
+            <span id="mp-weapon-summary" class="start-weapon-tag"></span>
           </div>
 
-          <div id="mp-room-list" class="mp-room-list">
-            <div class="mp-empty">GLOBAL 방 상태 확인 중...</div>
+          <!-- 3 main action buttons -->
+          <div class="start-action-grid">
+            <button id="mp-enter-lobby" class="start-action-btn" type="button">
+              <strong>3D 대기방</strong>
+              <span>로비 탐색</span>
+            </button>
+            <button id="mp-start" class="start-action-btn start-action-primary" type="button">
+              <strong>&#9658; 바로 참전</strong>
+              <span>온라인 CTF</span>
+            </button>
+            <button id="mp-open-training" class="start-action-btn" type="button">
+              <strong>훈련소</strong>
+              <span>AI 단독 훈련</span>
+            </button>
           </div>
 
+          <!-- 3D Lobby panel (visible when inside 3D lobby) -->
           <div id="mp-lobby" class="mp-lobby hidden">
-            <div class="mp-lobby-head">
-              <div class="mp-room-meta">
-                <div id="mp-room-title" class="mp-lobby-title">GLOBAL</div>
-                <div id="mp-room-subtitle" class="mp-room-subtitle">3D 실시간 로비</div>
-              </div>
-            </div>
-            <div id="mp-player-list" class="mp-player-list">
-              <div class="mp-empty">플레이어를 기다리는 중...</div>
-            </div>
-            <div class="mp-portal-guide">
-              <div class="mp-portal-guide-row">
-                <span class="portal-dot training" aria-hidden="true"></span>
-                <span>훈련장 포탈: 즉시 훈련 모드로 이동</span>
-              </div>
-              <div class="mp-portal-guide-row">
-                <span class="portal-dot online" aria-hidden="true"></span>
-                <span>온라인장 포탈: 온라인 경기 참가/시작</span>
-              </div>
-              <div class="mp-portal-guide-row">
-                <span class="portal-dot entry" aria-hidden="true"></span>
-                <span>사격장 포탈: (구) 사격장 구역으로 이동</span>
-              </div>
-              <div class="mp-portal-guide-row">
-                <span class="portal-dot exit" aria-hidden="true"></span>
-                <span>나가기포탈: 도시로 이동</span>
-              </div>
-              <div id="mp-portal-hint" class="mp-portal-hint">온라인장/훈련장/나가기 중 원하는 포탈로 이동하세요.</div>
-            </div>
+            <span id="mp-room-title" class="mp-lobby-title">GLOBAL</span>
+            <span id="mp-room-subtitle" class="mp-room-subtitle">대기 인원 확인 중...</span>
           </div>
-          <button id="mp-enter-lobby" class="btn-deploy mp-enter-lobby" type="button">3D 로비 입장</button>
+          <!-- JS-referenced lobby elements, not displayed -->
+          <div aria-hidden="true" style="display:none">
+            <div id="mp-player-list"></div>
+            <div id="mp-portal-hint"></div>
+          </div>
+
         </div>
 
-        <div id="single-panel" class="tab-panel hidden" role="tabpanel">
-          <p class="start-desc">훈련장에서 이동, 조준, 건설, 전투를 연습하세요.</p>
-          <div class="controls-grid">
-            <div class="ctrl-item"><kbd>W A S D</kbd><span>이동</span></div>
-            <div class="ctrl-item"><kbd>SHIFT</kbd><span>달리기</span></div>
-            <div class="ctrl-item"><kbd>SPACE</kbd><span>점프</span></div>
-            <div class="ctrl-item"><kbd>MOUSE</kbd><span>시점 조작</span></div>
-            <div class="ctrl-item"><kbd>1 / 2 / 3</kbd><span>설치 / 제거 / 총 모드</span></div>
-            <div class="ctrl-item"><kbd>LMB</kbd><span>행동(설치/제거/공격)</span></div>
-            <div class="ctrl-item"><kbd>RMB</kbd><span>총 모드 조준</span></div>
-            <div class="ctrl-item"><kbd>R / NumPad1-8</kbd><span>장전 / 블록 선택</span></div>
-            <div class="ctrl-item"><kbd>HOTBAR DRAG</kbd><span>핫바 드래그로 1칸 버리기</span></div>
-          </div>
-          <button id="start-button" class="btn-deploy" type="button">훈련 시작</button>
+        <!-- Elements required by Game.js kept but visually hidden -->
+        <div aria-hidden="true" style="display:none">
+          <button id="mode-online" type="button"></button>
+          <button id="mode-single" type="button"></button>
+          <div id="online-panel"></div>
+          <div id="single-panel"></div>
+          <button id="start-button" type="button">훈련 시작</button>
+          <button id="mp-open-simulac" type="button">시뮬라크</button>
+          <button id="mp-leave" type="button">나가기</button>
+          <button id="mp-copy-code" type="button">코드 복사</button>
+          <button id="mp-team-alpha" type="button">블루팀</button>
+          <button id="mp-team-bravo" type="button">레드팀</button>
+          <span id="mp-team-alpha-count">0</span>
+          <span id="mp-team-bravo-count">0</span>
+          <span id="mp-active-room-name">GLOBAL</span>
+          <strong id="mp-active-map-name">FOREST FRONTLINE</strong>
+          <span id="mp-active-map-desc">GLOBAL CTF</span>
+          <div id="mp-room-list"></div>
         </div>
+
       </section>
     </div>
 
@@ -325,13 +306,7 @@
           <div class="options-content">
             <section id="options-section-audio" class="options-section">
               <h3>사운드</h3>
-              <p class="options-help">배경음(MP4)과 효과음(총격/피격/장전) 크기를 각각 조절합니다.</p>
-              <div class="options-row">
-                <label id="options-bgm-label" class="options-volume-label" for="options-bgm-volume">배경음 볼륨</label>
-                <input id="options-bgm-volume" type="range" min="0" max="100" step="1" value="100" />
-                <div id="options-bgm-value" class="options-volume-value">100%</div>
-                <button id="options-bgm-mute" class="options-secondary-btn" type="button">배경음 끄기</button>
-              </div>
+              <p class="options-help">효과음(총격/피격/장전) 크기만 조절합니다.</p>
               <div class="options-row">
                 <label id="options-sfx-label" class="options-volume-label" for="options-sfx-volume">효과음 볼륨</label>
                 <input id="options-sfx-volume" type="range" min="0" max="100" step="1" value="100" />
@@ -446,8 +421,3 @@
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
-
-
-
-
-

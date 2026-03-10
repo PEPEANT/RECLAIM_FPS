@@ -3,6 +3,11 @@ dist
 .DS_Store
 Thumbs.db
 dev-all.log
+.codex-vite.log
+.vite-dev.log
+.vite-dev.err.log
+.claude/
+다운로드.jpg
 
 
 # Local Netlify folder

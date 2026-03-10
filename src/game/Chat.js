@@ -1,6 +1,11 @@
-﻿import { io } from "socket.io-client";
+import { io } from "socket.io-client";
 
 const PROD_CHAT_FALLBACK_URL = "https://reclaim-fps.onrender.com";
+const CHAT_GUARD_STATE_KEY = "reclaimChatGuard";
+const CHAT_LIVE_FEED_ENABLED = false;
+const MAX_LIVE_MSGS = 10;
+const MAX_STORED_MSGS = 180;
+const LIVE_LINE_TTL_MS = 7000;
 
 function resolveDefaultServerUrl() {
   if (typeof window === "undefined") {
@@ -26,11 +31,6 @@ function resolveDefaultServerUrl() {
   return origin;
 }
 
-const SERVER_URL = import.meta.env.VITE_CHAT_SERVER ?? resolveDefaultServerUrl();
-const MAX_MSGS = 80;
-const MAX_LIVE_MSGS = 10;
-const LIVE_LINE_TTL_MS = 7000;
-
 function isLikelyMobileUi() {
   if (typeof window === "undefined" || typeof navigator === "undefined") {
     return false;
@@ -40,37 +40,47 @@ function isLikelyMobileUi() {
   return coarse && maxTouch > 0;
 }
 
+const SERVER_URL = import.meta.env.VITE_CHAT_SERVER ?? resolveDefaultServerUrl();
+
 export class Chat {
   constructor() {
     this.playerName = `USER_${Math.floor(Math.random() * 9000 + 1000)}`;
-    this.isInputFocused = false;
     this.socket = null;
+    this.teamResolver = null;
     this.focusChangeHandler = null;
+
     this.notifiedOffline = false;
-    this._teardownBound = false;
-    this._mobileUiBound = false;
+    this.isInputFocused = false;
     this.mobileUiEnabled = false;
     this.mobileCollapsed = false;
     this.chatOpen = true;
-    this.teamResolver = null;
+    this.expanded = false;
+    this.historyGuardArmed = false;
+
+    this._teardownBound = false;
+    this._mobileUiBound = false;
+    this._historyBound = false;
 
     this.panelEl = document.getElementById("chat-panel");
     this.titleEl = document.getElementById("chat-title");
     this.messagesEl = document.getElementById("chat-messages");
     this.liveFeedEl = document.getElementById("chat-live-feed");
     this.liveLogEl = document.getElementById("chat-live-log");
+    this.liveFeedEnabled = CHAT_LIVE_FEED_ENABLED && Boolean(this.liveFeedEl && this.liveLogEl);
     this.inputEl = document.getElementById("chat-input");
     this.sendBtn = document.getElementById("chat-send");
     this.inputWrapEl = this.panelEl?.querySelector(".chat-input-wrap") ?? null;
     this.toggleBtnEl = document.getElementById("chat-toggle-btn");
+    this.expandBtnEl = document.getElementById("chat-expand-btn");
 
-    this.enabled = !!(this.messagesEl && this.inputEl && this.sendBtn && this.panelEl);
+    this.enabled = Boolean(this.panelEl && this.messagesEl && this.inputEl && this.sendBtn);
     if (!this.enabled) {
       return;
     }
 
     this.bindInput();
-    this.setupMobileUi();
+    this.bindHistoryGuard();
+    this.setupResponsiveUi();
     this.connect();
   }
 
@@ -94,19 +104,31 @@ export class Chat {
   }
 
   isConnected() {
-    return !!this.socket?.connected;
+    return Boolean(this.socket?.connected);
   }
 
   isConnecting() {
-    return !!this.socket?.active && !this.socket?.connected;
+    return Boolean(this.socket?.active && !this.socket?.connected);
   }
 
   isOpen() {
     return this.chatOpen;
   }
 
+  isExpanded() {
+    return this.expanded;
+  }
+
+  isMobileInputOpen() {
+    return this.mobileUiEnabled && this.chatOpen;
+  }
+
+  getInteractionBlockState() {
+    return this.isInputFocused || this.expanded || this.isMobileInputOpen();
+  }
+
   notifyFocusChanged() {
-    this.focusChangeHandler?.(this.isInputFocused);
+    this.focusChangeHandler?.(this.getInteractionBlockState());
   }
 
   connect() {
@@ -165,13 +187,59 @@ export class Chat {
     this._teardownBound = true;
 
     const disconnectNow = () => {
-      if (this.socket && this.socket.connected) {
+      if (this.socket?.connected) {
         this.socket.disconnect();
       }
     };
 
     window.addEventListener("pagehide", disconnectNow);
     window.addEventListener("beforeunload", disconnectNow);
+  }
+
+  bindHistoryGuard() {
+    if (this._historyBound || typeof window === "undefined") {
+      return;
+    }
+    this._historyBound = true;
+
+    window.addEventListener("popstate", () => {
+      if (!this.chatOpen && !this.expanded) {
+        this.historyGuardArmed = false;
+        return;
+      }
+
+      this.historyGuardArmed = false;
+      this.armHistoryGuard();
+      this.setOpenState(true, { focusInput: false, force: true });
+      this.setExpandedState(this.expanded, { focusInput: false, force: true });
+    });
+  }
+
+  armHistoryGuard() {
+    if (this.historyGuardArmed || typeof window === "undefined") {
+      return;
+    }
+    const historyApi = window.history;
+    if (!historyApi || typeof historyApi.pushState !== "function") {
+      return;
+    }
+
+    const baseState =
+      historyApi.state && typeof historyApi.state === "object" ? historyApi.state : {};
+
+    try {
+      historyApi.pushState(
+        {
+          ...baseState,
+          [CHAT_GUARD_STATE_KEY]: Date.now()
+        },
+        "",
+        window.location.href
+      );
+      this.historyGuardArmed = true;
+    } catch {
+      this.historyGuardArmed = false;
+    }
   }
 
   bindInput() {
@@ -192,10 +260,13 @@ export class Chat {
 
     this.inputEl.addEventListener("keydown", (event) => {
       event.stopPropagation();
+
       if (event.code === "Enter") {
         event.preventDefault();
         this.send();
+        return;
       }
+
       if (event.code === "Escape") {
         event.preventDefault();
         this.close();
@@ -205,25 +276,34 @@ export class Chat {
     this.sendBtn.addEventListener("click", () => this.send());
   }
 
-  setupMobileUi() {
+  setupResponsiveUi() {
     if (!this.enabled) {
       return;
     }
 
     const applyMode = () => {
-      const isMobileNow = isLikelyMobileUi();
-      if (isMobileNow !== this.mobileUiEnabled) {
-        this.mobileUiEnabled = isMobileNow;
-        this.chatOpen = !isMobileNow;
+      const nextMobile = isLikelyMobileUi();
+      if (nextMobile !== this.mobileUiEnabled) {
+        this.mobileUiEnabled = nextMobile;
+        if (!this.mobileUiEnabled) {
+          this.mobileCollapsed = false;
+        }
       }
+
+      this.panelEl?.classList.toggle("is-mobile", this.mobileUiEnabled);
       this.setOpenState(this.chatOpen, { focusInput: false, force: true });
+      this.setExpandedState(this.expanded, { focusInput: false, force: true });
     };
 
-    if (this.toggleBtnEl) {
-      this.toggleBtnEl.addEventListener("click", () => {
-        this.toggle({ focusInput: !this.mobileUiEnabled });
-      });
-    }
+    this.toggleBtnEl?.addEventListener("click", () => {
+      const focusInput = !this.mobileUiEnabled;
+      this.toggle({ focusInput });
+    });
+
+    this.expandBtnEl?.addEventListener("click", () => {
+      const focusInput = !this.mobileUiEnabled;
+      this.toggleExpanded({ focusInput });
+    });
 
     if (typeof window !== "undefined" && !this._mobileUiBound) {
       this._mobileUiBound = true;
@@ -232,7 +312,48 @@ export class Chat {
 
     this.mobileUiEnabled = isLikelyMobileUi();
     this.chatOpen = !this.mobileUiEnabled;
+    this.panelEl?.classList.toggle("is-mobile", this.mobileUiEnabled);
     this.setOpenState(this.chatOpen, { focusInput: false, force: true });
+    this.setExpandedState(false, { focusInput: false, force: true });
+  }
+
+  refreshHeaderButtons() {
+    if (this.titleEl) {
+      this.titleEl.textContent = this.expanded
+        ? "\uCC44\uD305 \uC804\uCCB4\uBCF4\uAE30"
+        : "\uCC44\uD305";
+    }
+
+    if (this.toggleBtnEl) {
+      const openText = this.chatOpen ? "\uB2EB\uAE30" : "\uC5F4\uAE30";
+      this.toggleBtnEl.classList.add("show");
+      this.toggleBtnEl.textContent = openText;
+      this.toggleBtnEl.setAttribute("aria-expanded", this.chatOpen ? "true" : "false");
+      this.toggleBtnEl.setAttribute("aria-pressed", this.chatOpen ? "true" : "false");
+      this.toggleBtnEl.setAttribute(
+        "aria-label",
+        this.chatOpen ? "\uCC44\uD305 \uB2EB\uAE30" : "\uCC44\uD305 \uC5F4\uAE30"
+      );
+      this.toggleBtnEl.setAttribute("aria-hidden", "false");
+    }
+
+    if (this.expandBtnEl) {
+      const canExpand = this.chatOpen;
+      this.expandBtnEl.classList.toggle("show", canExpand);
+      this.expandBtnEl.textContent = this.expanded
+        ? "\uC811\uAE30"
+        : "\uD3BC\uCE58\uAE30";
+      this.expandBtnEl.disabled = !canExpand;
+      this.expandBtnEl.setAttribute("aria-expanded", this.expanded ? "true" : "false");
+      this.expandBtnEl.setAttribute("aria-pressed", this.expanded ? "true" : "false");
+      this.expandBtnEl.setAttribute(
+        "aria-label",
+        this.expanded
+          ? "\uCC44\uD305 \uC804\uCCB4\uBCF4\uAE30 \uC811\uAE30"
+          : "\uCC44\uD305 \uC804\uCCB4\uBCF4\uAE30 \uD3BC\uCE58\uAE30"
+      );
+      this.expandBtnEl.setAttribute("aria-hidden", canExpand ? "false" : "true");
+    }
   }
 
   setOpenState(open, { focusInput = false, force = false } = {}) {
@@ -241,7 +362,12 @@ export class Chat {
     }
 
     const nextOpen = Boolean(open);
+    if (!nextOpen && this.expanded) {
+      this.expanded = false;
+    }
+
     if (!force && this.chatOpen === nextOpen) {
+      this.refreshHeaderButtons();
       this.syncLiveFeedVisibility();
       return;
     }
@@ -249,22 +375,20 @@ export class Chat {
     this.chatOpen = nextOpen;
     this.mobileCollapsed = this.mobileUiEnabled ? !nextOpen : false;
 
+    if (nextOpen) {
+      this.armHistoryGuard();
+    } else if (this.isInputFocused) {
+      this.isInputFocused = false;
+      this.notifyFocusChanged();
+    }
+    if (!nextOpen) {
+      this.historyGuardArmed = false;
+    }
+
     this.panelEl?.classList.toggle("is-mobile", this.mobileUiEnabled);
     this.panelEl?.classList.toggle("mobile-collapsed", this.mobileUiEnabled && !nextOpen);
     this.panelEl?.classList.toggle("is-collapsed", !this.mobileUiEnabled && !nextOpen);
-
-    if (this.titleEl) {
-      this.titleEl.textContent = "채팅";
-    }
-
-    if (this.toggleBtnEl) {
-      this.toggleBtnEl.classList.add("show");
-      this.toggleBtnEl.textContent = nextOpen ? "닫기" : "채팅";
-      this.toggleBtnEl.setAttribute("aria-expanded", nextOpen ? "true" : "false");
-      this.toggleBtnEl.setAttribute("aria-pressed", nextOpen ? "true" : "false");
-      this.toggleBtnEl.setAttribute("aria-label", nextOpen ? "채팅 닫기" : "채팅 열기");
-      this.toggleBtnEl.setAttribute("aria-hidden", "false");
-    }
+    this.panelEl?.classList.toggle("is-expanded", nextOpen && this.expanded);
 
     if (this.inputWrapEl) {
       this.inputWrapEl.setAttribute("aria-hidden", nextOpen ? "false" : "true");
@@ -276,20 +400,53 @@ export class Chat {
       this.inputEl?.focus();
     }
 
+    this.refreshHeaderButtons();
     this.syncLiveFeedVisibility();
+    this.notifyFocusChanged();
+  }
+
+  setExpandedState(expanded, { focusInput = false, force = false } = {}) {
+    if (!this.enabled) {
+      return;
+    }
+
+    const nextExpanded = Boolean(expanded);
+    if (nextExpanded && !this.chatOpen) {
+      this.setOpenState(true, { focusInput: false, force: true });
+    }
+
+    if (!force && this.expanded === nextExpanded) {
+      this.refreshHeaderButtons();
+      this.syncLiveFeedVisibility();
+      return;
+    }
+
+    this.expanded = nextExpanded;
+    if (nextExpanded) {
+      this.armHistoryGuard();
+    }
+
+    this.panelEl?.classList.toggle("is-expanded", this.chatOpen && nextExpanded);
+    this.refreshHeaderButtons();
+    this.syncLiveFeedVisibility();
+    this.notifyFocusChanged();
+
+    if (this.messagesEl && nextExpanded) {
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    }
+    if (focusInput && this.chatOpen) {
+      this.inputEl?.focus();
+    }
   }
 
   syncLiveFeedVisibility() {
     if (!this.liveFeedEl) {
       return;
     }
-    const visible = !this.chatOpen;
+
+    const visible = this.liveFeedEnabled && !this.chatOpen && !this.expanded;
     this.liveFeedEl.classList.toggle("hidden", !visible);
     this.liveFeedEl.setAttribute("aria-hidden", visible ? "false" : "true");
-  }
-
-  isMobileInputOpen() {
-    return this.mobileUiEnabled && this.chatOpen;
   }
 
   open(options = {}) {
@@ -304,6 +461,7 @@ export class Chat {
     if (!this.enabled) {
       return;
     }
+    this.setExpandedState(false, { focusInput: false, force: true });
     this.setOpenState(false, { focusInput: false });
   }
 
@@ -311,8 +469,22 @@ export class Chat {
     if (!this.enabled) {
       return;
     }
+
     const focusInput = options?.focusInput ?? !this.mobileUiEnabled;
-    this.setOpenState(!this.chatOpen, { focusInput: Boolean(focusInput) });
+    const nextOpen = !this.chatOpen;
+    if (!nextOpen) {
+      this.setExpandedState(false, { focusInput: false, force: true });
+    }
+    this.setOpenState(nextOpen, { focusInput: Boolean(focusInput) });
+  }
+
+  toggleExpanded(options = {}) {
+    if (!this.enabled) {
+      return;
+    }
+
+    const focusInput = options?.focusInput ?? false;
+    this.setExpandedState(!this.expanded, { focusInput: Boolean(focusInput) });
   }
 
   send() {
@@ -325,7 +497,7 @@ export class Chat {
       return;
     }
 
-    if (!this.socket || !this.socket.connected) {
+    if (!this.socket?.connected) {
       this.append(this.playerName, text, "player");
       this.inputEl.value = "";
       return;
@@ -342,14 +514,18 @@ export class Chat {
     this.append(null, text, level);
   }
 
-  clear() {
+  clear({ preserveHistory = true } = {}) {
     if (!this.enabled) {
       return;
     }
-    this.messagesEl.innerHTML = "";
+
+    if (!preserveHistory) {
+      this.messagesEl.innerHTML = "";
+    }
     if (this.liveLogEl) {
       this.liveLogEl.innerHTML = "";
     }
+    this.syncLiveFeedVisibility();
   }
 
   createMessageElement(name, text, type, meta = {}) {
@@ -399,8 +575,7 @@ export class Chat {
 
     const el = this.createMessageElement(name, messageText, type, meta);
     this.messagesEl.appendChild(el);
-
-    while (this.messagesEl.children.length > MAX_MSGS) {
+    while (this.messagesEl.children.length > MAX_STORED_MSGS) {
       this.messagesEl.removeChild(this.messagesEl.firstChild);
     }
 
@@ -408,24 +583,28 @@ export class Chat {
       this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     }
 
-    if (this.liveLogEl) {
-      const liveLine = el.cloneNode(true);
-      liveLine.classList.add("live");
-      this.liveLogEl.appendChild(liveLine);
-      while (this.liveLogEl.children.length > MAX_LIVE_MSGS) {
-        this.liveLogEl.removeChild(this.liveLogEl.firstChild);
-      }
-      this.liveLogEl.scrollTop = this.liveLogEl.scrollHeight;
-
-      window.setTimeout(() => {
-        if (!liveLine.isConnected) {
-          return;
-        }
-        liveLine.classList.add("fade-out");
-        window.setTimeout(() => {
-          liveLine.remove();
-        }, 480);
-      }, LIVE_LINE_TTL_MS);
+    if (!this.liveFeedEnabled || !this.liveLogEl) {
+      return;
     }
+
+    const liveLine = el.cloneNode(true);
+    liveLine.classList.add("live");
+    this.liveLogEl.appendChild(liveLine);
+    while (this.liveLogEl.children.length > MAX_LIVE_MSGS) {
+      this.liveLogEl.removeChild(this.liveLogEl.firstChild);
+    }
+    this.liveLogEl.scrollTop = this.liveLogEl.scrollHeight;
+    this.syncLiveFeedVisibility();
+
+    window.setTimeout(() => {
+      if (!liveLine.isConnected) {
+        return;
+      }
+      liveLine.classList.add("fade-out");
+      window.setTimeout(() => {
+        liveLine.remove();
+        this.syncLiveFeedVisibility();
+      }, 480);
+    }, LIVE_LINE_TTL_MS);
   }
 }
