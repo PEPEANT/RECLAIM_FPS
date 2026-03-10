@@ -2,7 +2,7 @@ import { io } from "socket.io-client";
 
 const PROD_CHAT_FALLBACK_URL = "https://reclaim-fps.onrender.com";
 const CHAT_GUARD_STATE_KEY = "reclaimChatGuard";
-const CHAT_LIVE_FEED_ENABLED = false;
+const CHAT_LIVE_FEED_ENABLED = true;
 const MAX_LIVE_MSGS = 10;
 const MAX_STORED_MSGS = 180;
 const LIVE_LINE_TTL_MS = 7000;
@@ -470,7 +470,13 @@ export class Chat {
       return;
     }
 
-    const visible = this.liveFeedEnabled && !this.chatOpen && !this.expanded;
+    const hasLiveLines = Boolean(this.liveLogEl?.childElementCount);
+    const visible =
+      this.liveFeedEnabled &&
+      this.mobileUiEnabled &&
+      !this.chatOpen &&
+      !this.expanded &&
+      hasLiveLines;
     this.liveFeedEl.classList.toggle("hidden", !visible);
     this.liveFeedEl.setAttribute("aria-hidden", visible ? "false" : "true");
   }

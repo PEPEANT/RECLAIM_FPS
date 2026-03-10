@@ -3088,6 +3088,39 @@ kbd {
   grid-column: 1 / -1;
 }
 
+.options-row-quality {
+  grid-template-columns: minmax(90px, 130px) 1fr;
+}
+
+.options-quality-btns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.options-quality-btn {
+  min-height: 32px;
+  border: 1px solid rgba(160, 214, 255, 0.26);
+  border-radius: 8px;
+  background: rgba(14, 32, 50, 0.65);
+  color: rgba(226, 243, 255, 0.92);
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.options-quality-btn.is-active {
+  border-color: rgba(164, 246, 207, 0.72);
+  background: linear-gradient(140deg, rgba(32, 80, 60, 0.84), rgba(17, 45, 34, 0.88));
+  color: rgba(228, 255, 243, 0.98);
+}
+
+.options-quality-btn:active {
+  transform: scale(0.98);
+}
+
 .options-volume-label {
   font-size: 0.76rem;
   letter-spacing: 0.03em;
@@ -3215,6 +3248,14 @@ kbd {
   }
 
   .options-row .options-volume-label {
+    grid-column: 1 / -1;
+  }
+
+  .options-row-quality {
+    grid-template-columns: 1fr;
+  }
+
+  .options-quality-btns {
     grid-column: 1 / -1;
   }
 
@@ -3630,6 +3671,26 @@ kbd {
     display: none !important;
   }
 
+  #block-panel {
+    top: auto;
+    right: auto;
+    left: 50%;
+    bottom: calc(122px + env(safe-area-inset-bottom, 0px));
+    width: min(332px, calc(100vw - 18px));
+    max-height: min(58vh, 256px);
+    transform: translateX(-50%);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 2px;
+  }
+
+  #block-panel.is-open {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: start;
+  }
+
   #chat-panel {
     width: min(176px, 44vw);
     bottom: calc(102px + env(safe-area-inset-bottom, 0px));
@@ -3759,7 +3820,7 @@ body.ui-mode-build .hud-right {
 
   .hud-center {
     position: fixed;
-    top: calc(4px + env(safe-area-inset-top, 0px));
+    top: calc(env(safe-area-inset-top, 0px) + 1px);
     bottom: auto;
     left: 50%;
     min-width: auto;
@@ -3789,11 +3850,24 @@ body.ui-mode-build .hud-right {
     font-size: 1.04rem;
     letter-spacing: 0.04em;
   }
+
+  .hud-right {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 2px);
+    right: max(10px, env(safe-area-inset-right, 0px));
+    bottom: auto;
+    padding: 0;
+    gap: 3px;
+    background: transparent;
+    border: 0;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
 }
 
 @media (max-height: 500px) and (orientation: landscape) {
   .hud-center {
-    top: calc(2px + env(safe-area-inset-top, 0px));
+    top: env(safe-area-inset-top, 0px);
   }
 
   .hud-health-shell {
@@ -3806,6 +3880,10 @@ body.ui-mode-build .hud-right {
 
   .hud-health-label {
     font-size: 0.58rem;
+  }
+
+  .hud-right {
+    top: env(safe-area-inset-top, 0px);
   }
 }
 
@@ -4261,8 +4339,14 @@ body.ui-mode-build .hud-right {
   }
 
   #chat-live-feed {
-    width: min(220px, 62vw);
-    bottom: calc(188px + env(safe-area-inset-bottom, 0px));
+    left: auto;
+    right: max(12px, env(safe-area-inset-right, 0px));
+    width: min(220px, 58vw);
+    bottom: calc(192px + env(safe-area-inset-bottom, 0px));
+    padding: 0;
+    border: 0;
+    background: transparent;
+    backdrop-filter: none;
   }
 
   #chat-panel.is-expanded {
@@ -4276,6 +4360,9 @@ body.ui-mode-build .hud-right {
 
   #chat-live-log {
     max-height: min(14vh, 120px);
+    padding: 0;
+    border: 0;
+    background: transparent;
   }
 
   #hud-announcement {
@@ -4289,9 +4376,17 @@ body.ui-mode-build .hud-right {
   #mobile-chat {
     top: max(8px, env(safe-area-inset-top, 0px));
     right: calc(max(8px, env(safe-area-inset-right, 0px)) + 56px);
-    min-width: 52px;
+    min-width: 38px;
+    width: 38px;
     height: 28px;
-    font-size: 0.62rem;
+    font-size: 0;
+  }
+
+  #mobile-chat::before {
+    content: "...";
+    font-size: 0.7rem;
+    font-weight: 900;
+    letter-spacing: 0.04em;
   }
 
   #quick-settings-btn {
@@ -4323,16 +4418,28 @@ body.ui-mode-build .hud-right {
   }
 
   #chat-live-feed {
-    width: min(188px, 44vw);
-    bottom: calc(118px + env(safe-area-inset-bottom, 0px));
+    left: auto;
+    right: max(10px, env(safe-area-inset-right, 0px));
+    width: min(184px, 42vw);
+    bottom: calc(124px + env(safe-area-inset-bottom, 0px));
+    padding: 0;
+    border: 0;
+    background: transparent;
   }
 
   #mobile-chat {
     top: max(6px, env(safe-area-inset-top, 0px));
     right: calc(max(8px, env(safe-area-inset-right, 0px)) + 52px);
-    min-width: 48px;
+    min-width: 34px;
+    width: 34px;
     height: 26px;
-    font-size: 0.58rem;
+    font-size: 0;
+  }
+
+  #mobile-chat::before {
+    content: "...";
+    font-size: 0.64rem;
+    font-weight: 900;
   }
 
   #quick-settings-btn {

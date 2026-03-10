@@ -488,6 +488,9 @@ export class Game {
         this.syncCursorVisibility();
       },
       onInventoryChanged: (open) => {
+        if (this.mobileEnabled && open) {
+          this.mobileBuildMenuOpen = false;
+        }
         if (!this.mobileEnabled) {
           if (open) {
             this.mouseLookEnabled = false;
@@ -560,6 +563,7 @@ export class Game {
     this.currentPlayerHeight = PLAYER_HEIGHT;
     this.isCrouching = false;
     this.mobileCrouchToggle = false;
+    this.mobileBuildMenuOpen = false;
     this.isAiming = false;
     this.rightMouseAiming = false;
     this.leftMouseDown = false;
@@ -653,6 +657,7 @@ export class Game {
     this.optionsMobileChatHeaderValueEl = document.getElementById("options-mobile-chat-header-value");
     this.optionsMobileChatHeaderToggleBtn = document.getElementById("options-mobile-chat-header-toggle");
     this.optionsNavButtons = Array.from(document.querySelectorAll(".options-nav-btn"));
+    this.optionsQualityButtons = Array.from(document.querySelectorAll(".options-quality-btn"));
     this._optionsNavBound = false;
     this.quickSettingsBtnEl = document.getElementById("quick-settings-btn");
     this.quickSettingsPanelEl = document.getElementById("quick-settings-panel");
@@ -3502,6 +3507,7 @@ export class Game {
     setText("options-sfx-label", "효과음 볼륨");
     setText("options-sfx-mute", "효과음 끄기");
     setText("options-mobile-look-label", "모바일 감도");
+    setText("options-quality-label", "그래픽 품질");
     setText("options-mobile-chat-header-label", "모바일 채팅 상단 버튼");
     setText("options-mobile-chat-header-value", "숨김");
     setText("options-mobile-chat-header-toggle", "상단 버튼 보이기");
@@ -3522,6 +3528,7 @@ export class Game {
     this.optionsMobileChatHeaderValueEl = document.getElementById("options-mobile-chat-header-value");
     this.optionsMobileChatHeaderToggleBtn = document.getElementById("options-mobile-chat-header-toggle");
     this.optionsNavButtons = Array.from(document.querySelectorAll(".options-nav-btn"));
+    this.optionsQualityButtons = Array.from(document.querySelectorAll(".options-quality-btn"));
     this.mobileChatBtn = document.getElementById("mobile-chat");
     this.quickSettingsBtnEl = document.getElementById("quick-settings-btn");
     this.quickSettingsPanelEl = document.getElementById("quick-settings-panel");
@@ -3529,6 +3536,16 @@ export class Game {
     this.quickFullscreenBtnEl = document.getElementById("quick-fullscreen");
     this.quickOpenOptionsBtnEl = document.getElementById("quick-open-options");
     for (const button of this.quickQualityButtons) {
+      const mode = normalizeRenderQuality(button?.dataset?.quality);
+      if (mode === "low") {
+        button.textContent = "낮음";
+      } else if (mode === "high") {
+        button.textContent = "높음";
+      } else {
+        button.textContent = "보통";
+      }
+    }
+    for (const button of this.optionsQualityButtons) {
       const mode = normalizeRenderQuality(button?.dataset?.quality);
       if (mode === "low") {
         button.textContent = "낮음";
@@ -3663,15 +3680,19 @@ export class Game {
   }
 
   syncQuickSettingsQualityUi() {
-    if (!Array.isArray(this.quickQualityButtons)) {
-      return;
-    }
-    for (const button of this.quickQualityButtons) {
-      const mode = normalizeRenderQuality(button?.dataset?.quality);
-      const active = mode === this.renderQualityMode;
-      button?.classList.toggle("is-active", active);
-      button?.setAttribute("aria-pressed", active ? "true" : "false");
-    }
+    const applyToButtons = (buttons) => {
+      if (!Array.isArray(buttons)) {
+        return;
+      }
+      for (const button of buttons) {
+        const mode = normalizeRenderQuality(button?.dataset?.quality);
+        const active = mode === this.renderQualityMode;
+        button?.classList.toggle("is-active", active);
+        button?.setAttribute("aria-pressed", active ? "true" : "false");
+      }
+    };
+    applyToButtons(this.quickQualityButtons);
+    applyToButtons(this.optionsQualityButtons);
   }
 
   getRenderQualityProfile(mode = this.renderQualityMode) {
@@ -3915,7 +3936,10 @@ export class Game {
     this._quickSettingsBound = true;
 
     this.quickSettingsBtnEl?.addEventListener("click", () => {
-      this.toggleQuickSettingsPanel();
+      if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
+        return;
+      }
+      this.openOptionsMenu();
     });
 
     this.quickFullscreenBtnEl?.addEventListener("click", () => {
@@ -7663,6 +7687,7 @@ export class Game {
     this.mobileControlsEl.classList.toggle("chat-open", visible && chatPanelOpen);
 
     if (!visible || chatPanelOpen) {
+      this.mobileBuildMenuOpen = false;
       this.mobileState.moveForward = 0;
       this.mobileState.moveStrafe = 0;
       this.mobileState.stickPointerId = null;
@@ -7747,6 +7772,23 @@ export class Game {
       return false;
     }
 
+    if (this.mobileEnabled) {
+      if (this.buildSystem.isInventoryOpen()) {
+        this.buildSystem.setInventoryOpen(false);
+        this.mobileBuildMenuOpen = true;
+        this.syncMobileUtilityButtons();
+        return true;
+      }
+
+      const nextOpen = forceOpen === null ? !this.mobileBuildMenuOpen : Boolean(forceOpen);
+      this.mobileBuildMenuOpen = nextOpen;
+      if (!nextOpen) {
+        this.buildSystem.setInventoryOpen(false);
+      }
+      this.syncMobileUtilityButtons();
+      return nextOpen;
+    }
+
     const nextOpen =
       forceOpen === null ? !this.buildSystem.isInventoryOpen() : Boolean(forceOpen);
     const open = this.buildSystem.setInventoryOpen(nextOpen);
@@ -7775,13 +7817,14 @@ export class Game {
   syncMobileUtilityButtons() {
     const mode = this.buildSystem?.getToolMode?.() ?? "gun";
     const inventoryOpen = Boolean(this.buildSystem?.isInventoryOpen?.());
+    const toolMenuOpen = this.mobileBuildMenuOpen || inventoryOpen;
     const chatOpen = Boolean(this.chat?.isOpen?.());
     const lobbyActive = this.isLobby3DActive();
     const hideCombatButtons = lobbyActive && !this.isRunning;
     const placePanelOpen = inventoryOpen && mode === "place";
-    const showToolTray = inventoryOpen && !hideCombatButtons && !placePanelOpen;
-    const showGunControls = !hideCombatButtons && !inventoryOpen && mode === "gun";
-    this.mobileFireButtonEl?.classList.toggle("hidden", hideCombatButtons || inventoryOpen);
+    const showToolTray = this.mobileBuildMenuOpen && !hideCombatButtons && !placePanelOpen;
+    const showGunControls = !hideCombatButtons && !toolMenuOpen && mode === "gun";
+    this.mobileFireButtonEl?.classList.toggle("hidden", hideCombatButtons || toolMenuOpen);
     this.mobileUtilityEl?.classList.toggle("hidden", !showToolTray);
     this.mobileBagBtn?.classList.toggle("hidden", hideCombatButtons);
     this.mobileModePlaceBtn?.classList.toggle("hidden", !showToolTray);
@@ -7789,7 +7832,7 @@ export class Game {
     this.mobileModeGunBtn?.classList.toggle("hidden", !showToolTray);
     this.mobileAimBtn?.classList.toggle("hidden", !showGunControls);
     this.mobileReloadBtn?.classList.toggle("hidden", !showGunControls);
-    this.mobileFireButtonEl && (this.mobileFireButtonEl.disabled = hideCombatButtons || inventoryOpen);
+    this.mobileFireButtonEl && (this.mobileFireButtonEl.disabled = hideCombatButtons || toolMenuOpen);
     this.mobileBagBtn && (this.mobileBagBtn.disabled = hideCombatButtons);
     this.mobileModePlaceBtn && (this.mobileModePlaceBtn.disabled = !showToolTray);
     this.mobileModeDigBtn && (this.mobileModeDigBtn.disabled = !showToolTray);
@@ -7805,8 +7848,8 @@ export class Game {
     this.mobileModePlaceBtn?.classList.toggle("is-active", mode === "place");
     this.mobileModeDigBtn?.classList.toggle("is-active", mode === "dig");
     this.mobileModeGunBtn?.classList.toggle("is-active", mode === "gun");
-    this.mobileBagBtn?.classList.toggle("is-active", inventoryOpen);
-    this.mobileBagBtn?.setAttribute("aria-pressed", inventoryOpen ? "true" : "false");
+    this.mobileBagBtn?.classList.toggle("is-active", toolMenuOpen);
+    this.mobileBagBtn?.setAttribute("aria-pressed", toolMenuOpen ? "true" : "false");
     this.mobileAimBtn?.classList.toggle(
       "is-active",
       mode === "gun" && (this.isAiming || this.rightMouseAiming)
@@ -7933,6 +7976,7 @@ export class Game {
       if (this.isLobby3DActive() && !this.isRunning) {
         return;
       }
+      this.mobileBuildMenuOpen = false;
       this.buildSystem.setToolMode("place");
       this.buildSystem.setInventoryOpen(true);
       this.syncMobileUtilityButtons();
@@ -7941,6 +7985,7 @@ export class Game {
       if (this.isLobby3DActive() && !this.isRunning) {
         return;
       }
+      this.mobileBuildMenuOpen = false;
       this.buildSystem.setToolMode("dig");
       this.buildSystem.setInventoryOpen(false);
       this.syncMobileUtilityButtons();
@@ -7949,6 +7994,7 @@ export class Game {
       if (this.isLobby3DActive() && !this.isRunning) {
         return;
       }
+      this.mobileBuildMenuOpen = false;
       this.buildSystem.setToolMode("gun");
       this.buildSystem.setInventoryOpen(false);
       this.syncMobileUtilityButtons();
@@ -8008,7 +8054,7 @@ export class Game {
       if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver) {
         return;
       }
-      this.toggleQuickSettingsPanel();
+      this.openOptionsMenu();
     });
     if (this.mobileChatBtn) {
       bindUtilityTap(this.mobileChatBtn, () => {
@@ -8024,6 +8070,17 @@ export class Game {
         this.syncCursorVisibility();
       });
     }
+
+    this.buildSystem.blockPanelCloseEl?.addEventListener("pointerdown", (event) => {
+      if (!acceptPointer(event) || event.button !== 0) {
+        return;
+      }
+      if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
+        return;
+      }
+      this.mobileBuildMenuOpen = true;
+      this.syncMobileUtilityButtons();
+    });
 
     if (this.flagInteractBtnEl) {
       this.flagInteractBtnEl.addEventListener("pointerdown", (event) => {
@@ -8861,6 +8918,12 @@ export class Game {
         persist: true
       });
     });
+    for (const button of this.optionsQualityButtons ?? []) {
+      button?.addEventListener("click", () => {
+        const mode = normalizeRenderQuality(button?.dataset?.quality);
+        this.applyRenderQualityMode(mode, { persist: true, announce: true });
+      });
+    }
   }
 
   onChatFocusChanged(focused) {
