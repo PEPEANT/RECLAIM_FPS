@@ -433,7 +433,9 @@ export class Game {
     this.weaponViewKeyLight.position.set(0.38, 0.26, -0.46);
     this.weaponViewFillLight = new THREE.PointLight(0xa9bfd9, 2.1, 5.2, 1.6);
     this.weaponViewFillLight.position.set(-0.24, -0.08, -0.22);
-    this.weaponView = this.createWeaponView();
+    this.weaponViewCache = new Map();
+    this.weaponView = this.getWeaponViewFromCache(this.selectedWeaponId);
+    this.bindWeaponViewEffects(this.weaponView);
     this.shovelView = this.createShovelView();
     this.blockView = this.createBlockView();
     this.lastBlockViewTypeId = "";
@@ -450,6 +452,7 @@ export class Game {
     this.isGameOver = false;
     this.pointerLocked = false;
     this.pointerLockFallbackTimer = null;
+    this.pointerLockAutoMenuUntil = 0;
 
     this.state = {
       health: 100,
@@ -921,11 +924,22 @@ export class Game {
       parent.remove(previousView);
     }
 
-    this.weaponView = this.createWeaponView();
-    this.camera.add(this.weaponView);
+    this.weaponView = this.getWeaponViewFromCache(this.selectedWeaponId);
+    this.weaponView.visible = false;
+    this.bindWeaponViewEffects(this.weaponView);
+    if (parent) {
+      parent.add(this.weaponView);
+    }
+  }
 
-    if (previousView) {
-      this.disposeWeaponView(previousView);
+  bindWeaponViewEffects(group = null) {
+    this.weaponFlash = group?.userData?.weaponFlash ?? null;
+    this.weaponFlashLight = group?.userData?.weaponFlashLight ?? null;
+    if (this.weaponFlash) {
+      this.weaponFlash.material.opacity = 0;
+    }
+    if (this.weaponFlashLight) {
+      this.weaponFlashLight.intensity = 0;
     }
   }
 
@@ -1149,14 +1163,6 @@ export class Game {
         color: 0xc7d0d2,
         x: centerX + portalOffsetX,
         z: centerZ + 0.1
-      },
-      {
-        id: "entry",
-        label: "사격장",
-        action: "entry",
-        color: 0xaeb6c0,
-        x: centerX,
-        z: centerZ + portalOffsetZ
       },
       {
         id: "exit",
@@ -1909,7 +1915,7 @@ export class Game {
       );
     }
 
-    const deskZ = centerZ;
+    const deskZ = centerZ + Math.max(6.2, LOBBY3D_HALF_Z - 3.6);
     this.lobby3d.infoDesk = {
       x: centerX,
       z: deskZ,
@@ -2893,7 +2899,7 @@ export class Game {
       return;
     }
     this.mpPortalHintEl.textContent =
-      "온라인 포탈: 2D 온라인 허브 | 훈련장: 즉시 이동 | 사격장: 구 사격장 이동 | 나가기: 도시 이동";
+      "온라인 포탈: 2D 온라인 허브 | 훈련장: 즉시 이동 | 안내데스크: 전면 안내 구역 | 나가기: 도시 이동";
   }
 
   createSkyCloudTexture() {
@@ -3298,7 +3304,7 @@ export class Game {
       portalGuideRows[1].textContent = "온라인 허브 포탈: 2D 온라인 활성화방 열기";
     }
     if (portalGuideRows[2]) {
-      portalGuideRows[2].textContent = "사격장 포탈: (구) 사격장 구역으로 이동";
+      portalGuideRows[2].textContent = "안내데스크: 전면 안내 구역 장식";
     }
     if (portalGuideRows[3]) {
       portalGuideRows[3].textContent = "시뮬라크 월드 포탈: 외부 월드로 이동";
@@ -4803,9 +4809,10 @@ export class Game {
     this.state.objectiveText = this.getObjectiveText();
   }
 
-  createWeaponView() {
-    const weaponDef = this.selectedWeaponDef ?? getWeaponDefinition(this.selectedWeaponId);
-    const { group, muzzleFlash, muzzleLight } = createWeaponViewModel(this.selectedWeaponId, {
+  createWeaponView(weaponId = this.selectedWeaponId) {
+    const safeWeaponId = sanitizeWeaponId(weaponId);
+    const weaponDef = getWeaponDefinition(safeWeaponId);
+    const { group, muzzleFlash, muzzleLight } = createWeaponViewModel(safeWeaponId, {
       muzzleFlashMap: this.graphics.muzzleFlashMap
     });
     group.scale.setScalar(Math.max(0.001, Number(weaponDef.viewScale ?? 1)));
@@ -4814,13 +4821,18 @@ export class Game {
     group.position.set(hipOffset.x, hipOffset.y, hipOffset.z);
     group.rotation.set(hipRotation.x, hipRotation.y, hipRotation.z);
     group.visible = false;
-    this.weaponFlash = muzzleFlash;
-    this.weaponFlashLight = muzzleLight;
-    if (this.weaponFlash) {
-      this.weaponFlash.material.opacity = 0;
-    }
-    if (this.weaponFlashLight) {
-      this.weaponFlashLight.intensity = 0;
+    group.userData.weaponId = safeWeaponId;
+    group.userData.weaponFlash = muzzleFlash ?? null;
+    group.userData.weaponFlashLight = muzzleLight ?? null;
+    return group;
+  }
+
+  getWeaponViewFromCache(weaponId = this.selectedWeaponId) {
+    const safeWeaponId = sanitizeWeaponId(weaponId);
+    let group = this.weaponViewCache.get(safeWeaponId);
+    if (!group) {
+      group = this.createWeaponView(safeWeaponId);
+      this.weaponViewCache.set(safeWeaponId, group);
     }
     return group;
   }
@@ -7701,6 +7713,7 @@ export class Game {
     });
 
     document.addEventListener("pointerlockchange", () => {
+      const wasPointerLocked = this.pointerLocked;
       const active = document.pointerLockElement === this.renderer.domElement;
       this.pointerLocked = active;
       if (!active) {
@@ -7751,6 +7764,14 @@ export class Game {
 
       if (this.allowUnlockedLook) {
         this.mouseLookEnabled = true;
+        this.hud.showPauseOverlay(false);
+        this.syncCursorVisibility();
+        return;
+      }
+
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (!wasPointerLocked || now < this.pointerLockAutoMenuUntil) {
+        this.mouseLookEnabled = false;
         this.hud.showPauseOverlay(false);
         this.syncCursorVisibility();
         return;
@@ -7887,9 +7908,8 @@ export class Game {
       if (this.buildSystem.isBuildMode()) {
         if (event.button === 0 || event.button === 2) {
           this.buildSystem.handlePointerAction(event.button, (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z), {
-            lineMode:
-              this.buildSystem.isPlaceMode() &&
-              (event.shiftKey || this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"))
+            // Only allow line placement when Shift is actively held on the click itself.
+            lineMode: this.buildSystem.isPlaceMode() && event.button === 0 && event.shiftKey
           });
           return;
         }
@@ -8170,6 +8190,8 @@ export class Game {
     this.requestMobileFullscreen();
     this.sound.unlock();
     this.isGameOver = false;
+    this.pointerLockAutoMenuUntil =
+      (typeof performance !== "undefined" ? performance.now() : Date.now()) + 1200;
     this.mouseLookEnabled = this.mobileEnabled ? true : this.allowUnlockedLook;
     this.updateVisualMode(this.buildSystem.getToolMode());
     this.syncCursorVisibility();
@@ -8238,6 +8260,7 @@ export class Game {
       window.clearTimeout(this.pointerLockFallbackTimer);
       this.pointerLockFallbackTimer = null;
     }
+    this.pointerLockAutoMenuUntil = 0;
 
     this.keys.clear();
     this.remoteSyncClock = 0;
@@ -9782,7 +9805,7 @@ export class Game {
     if (this.lobbyQuickGuideEl) {
       let guideText = "";
       if (!connected) {
-        guideText = "연결 후 포탈(훈련장/온라인장/사격장/나가기) 사용 가능";
+        guideText = "연결 후 포탈(훈련장/온라인 허브/시뮬라크 월드) 사용 가능";
       } else if (!inRoom) {
         guideText = "GLOBAL 참가 대기 중 · 이동 WASD · 순위 TAB · 채팅 T/Enter";
       } else {

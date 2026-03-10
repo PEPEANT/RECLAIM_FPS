@@ -883,8 +883,8 @@ canvas {
     radial-gradient(
       circle at 50% 50%,
       rgba(0, 0, 0, 0) 0,
-      rgba(0, 0, 0, 0) min(18vw, 175px),
-      rgba(0, 0, 0, 0.92) calc(min(18vw, 175px) + 1px)
+      rgba(0, 0, 0, 0) min(20vw, 200px),
+      rgba(0, 0, 0, 0.92) calc(min(20vw, 200px) + 1px)
     );
 }
 
@@ -896,8 +896,8 @@ canvas {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: min(36vw, 350px);
-  height: min(36vw, 350px);
+  width: min(40vw, 400px);
+  height: min(40vw, 400px);
   transform: translate(-50%, -50%);
   border: 2px solid rgba(208, 220, 235, 0.88);
   border-radius: 50%;
@@ -916,11 +916,11 @@ canvas {
 
 #scope-overlay .scope-line-v {
   width: 2px;
-  height: min(36vw, 350px);
+  height: min(40vw, 400px);
 }
 
 #scope-overlay .scope-line-h {
-  width: min(36vw, 350px);
+  width: min(40vw, 400px);
   height: 2px;
 }
 
@@ -934,6 +934,36 @@ canvas {
   border-radius: 50%;
   background: rgba(255, 86, 86, 0.95);
   box-shadow: 0 0 10px rgba(255, 86, 86, 0.52);
+}
+
+@media (min-width: 1100px) {
+  #scope-overlay::before {
+    background:
+      radial-gradient(
+        circle at 50% 50%,
+        rgba(0, 0, 0, 0) 0,
+        rgba(0, 0, 0, 0) min(22vw, 248px),
+        rgba(0, 0, 0, 0.92) calc(min(22vw, 248px) + 1px)
+      );
+  }
+
+  #scope-overlay .scope-ring {
+    width: min(44vw, 500px);
+    height: min(44vw, 500px);
+  }
+
+  #scope-overlay .scope-line-v {
+    height: min(44vw, 500px);
+  }
+
+  #scope-overlay .scope-line-h {
+    width: min(44vw, 500px);
+  }
+
+  #scope-overlay .scope-dot {
+    width: 8px;
+    height: 8px;
+  }
 }
 
 #hitmarker {
