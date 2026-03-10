@@ -1,10 +1,10 @@
 const BLOCK_TYPE_DATA = [
   ["grass", "Grass", "#5fae45"],
-  ["dirt", "Dirt", "#7b5a3b"],
+  ["dirt", "Dirt", "#916b47"],
   ["stone", "Stone", "#9ea7b2"],
   ["sand", "Sand", "#cfbe7e"],
-  ["clay", "Clay", "#a67957"],
-  ["brick", "Brick", "#9b4d3f"],
+  ["clay", "Clay", "#bc8d67"],
+  ["brick", "Brick", "#b66556"],
   ["ice", "White", "#f2f5fb"],
   ["metal", "Road", "#505965"]
 ];

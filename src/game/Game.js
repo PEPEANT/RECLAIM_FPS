@@ -1271,6 +1271,7 @@ export class Game {
     this.lineBuildDragActive = false;
     this.lineBuildDragMoved = false;
     this.lineBuildDragMotion = 0;
+    this.buildSystem?.clearLineAnchor?.();
   }
 
   setupLobby3D() {
@@ -8596,6 +8597,13 @@ export class Game {
           const wantsLineDrag =
             event.button === 0 && this.buildSystem.isPlaceMode() && event.shiftKey;
           if (wantsLineDrag) {
+            const anchor = this.buildSystem.captureLineAnchor(
+              (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z)
+            );
+            if (!anchor?.valid) {
+              this.resetLineBuildDrag();
+              return;
+            }
             this.lineBuildDragActive = true;
             this.lineBuildDragMoved = false;
             this.lineBuildDragMotion = 0;
@@ -9844,9 +9852,8 @@ export class Game {
     this.buildSystem.updatePlacementPreview(
       (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z),
       {
-        lineMode:
-          this.buildSystem.isPlaceMode() &&
-          (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"))
+        lineMode: this.buildSystem.isPlaceMode() && this.lineBuildDragActive && this.lineBuildDragMoved,
+        anchor: this.lineBuildDragActive ? this.buildSystem.getLineAnchor?.() ?? null : null
       }
     );
 

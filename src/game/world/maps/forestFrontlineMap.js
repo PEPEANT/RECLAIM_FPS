@@ -106,10 +106,11 @@ function buildFlagFortress(
 
 function buildControlHub(builder) {
   builder.fillRect(-8, 8, -1, 0, -8, 8, BLOCK.dirt);
-  builder.fillRect(-4, 4, 0, 0, -4, 4, BLOCK.clay);
+  builder.fillRect(-6, 6, 0, 0, -6, 6, BLOCK.clay);
+  builder.fillRect(-4, 4, 1, 1, -4, 4, BLOCK.brick);
 
-  builder.fillRect(-1, 1, 1, 3, -1, 1, BLOCK.brick);
-  clearRectVolume(builder, 0, 0, 1, 2, 0, 0);
+  builder.fillRect(-1, 1, 1, 5, -1, 1, BLOCK.brick);
+  clearRectVolume(builder, 0, 0, 1, 4, 0, 0);
 
   const pillarCoords = [
     [-6, -6],
@@ -118,8 +119,15 @@ function buildControlHub(builder) {
     [6, 6]
   ];
   for (const [x, z] of pillarCoords) {
-    builder.fillRect(x - 1, x + 1, 1, 5, z - 1, z + 1, BLOCK.brick);
+    builder.fillRect(x - 1, x + 1, 1, 7, z - 1, z + 1, BLOCK.brick);
   }
+
+  builder.fillRect(-6, 6, 6, 6, -1, 1, BLOCK.brick);
+  builder.fillRect(-1, 1, 6, 6, -6, 6, BLOCK.brick);
+
+  builder.fillRect(-7, 7, 7, 7, -7, 7, BLOCK.clay);
+  builder.fillRect(-5, 5, 8, 8, -5, 5, BLOCK.brick);
+  clearRectVolume(builder, -1, 1, 7, 8, -1, 1);
 }
 
 function plantTree(builder, x, y, z, seed, variant = 0) {

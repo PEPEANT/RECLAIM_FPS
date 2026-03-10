@@ -58,6 +58,7 @@ export class BuildSystem {
     this.previewPosition = null;
     this.previewPositions = [];
     this.previewValid = false;
+    this.lineAnchor = null;
     this.slotStock = new Map();
     this.slotCountEls = new Map();
     this.digTargetKey = "";
@@ -386,6 +387,29 @@ export class BuildSystem {
     this.previewValid = false;
   }
 
+  clearLineAnchor() {
+    this.lineAnchor = null;
+  }
+
+  getLineAnchor() {
+    return this.lineAnchor ? { ...this.lineAnchor } : null;
+  }
+
+  captureLineAnchor(canPlaceOverride = null) {
+    const placement = this.resolvePlacementTarget(canPlaceOverride);
+    if (!placement) {
+      this.lineAnchor = null;
+      return null;
+    }
+    this.lineAnchor = {
+      x: placement.x,
+      y: placement.y,
+      z: placement.z,
+      valid: placement.valid
+    };
+    return { ...this.lineAnchor };
+  }
+
   resolveCanPlaceBlock(canPlaceOverride = null) {
     if (typeof canPlaceOverride === "function") {
       return canPlaceOverride;
@@ -442,22 +466,54 @@ export class BuildSystem {
     };
   }
 
-  resolvePlacementChain(canPlaceOverride = null, { lineMode = false } = {}) {
+  resolvePlacementChain(canPlaceOverride = null, { lineMode = false, anchor = null } = {}) {
     const placement = this.resolvePlacementTarget(canPlaceOverride);
-    if (!placement) {
+    const stock = this.getSlotStock(this.selectedSlot);
+    const canPlace = this.resolveCanPlaceBlock(canPlaceOverride);
+    const baseAnchor = anchor ?? this.lineAnchor ?? null;
+
+    if (lineMode && !placement && !baseAnchor) {
+      return null;
+    }
+    if (!lineMode && !placement && !baseAnchor) {
       return null;
     }
 
-    const stock = this.getSlotStock(this.selectedSlot);
-    const previewCount = lineMode ? Math.min(LINE_BUILD_MAX, Math.max(1, stock)) : 1;
-    const direction = lineMode ? this.resolveLineDirection(placement.hit) : { x: 0, y: 0, z: 0 };
-    const canPlace = this.resolveCanPlaceBlock(canPlaceOverride);
+    const origin = baseAnchor ?? placement;
+    if (!origin) {
+      return null;
+    }
+
+    let direction = { x: 0, y: 0, z: 0 };
+    let previewCount = 1;
+
+    if (lineMode && placement && baseAnchor) {
+      const deltaX = placement.x - baseAnchor.x;
+      const deltaY = placement.y - baseAnchor.y;
+      const deltaZ = placement.z - baseAnchor.z;
+      const absX = Math.abs(deltaX);
+      const absY = Math.abs(deltaY);
+      const absZ = Math.abs(deltaZ);
+
+      if (absX >= absY && absX >= absZ && absX > 0) {
+        direction = { x: deltaX >= 0 ? 1 : -1, y: 0, z: 0 };
+        previewCount = absX + 1;
+      } else if (absY >= absZ && absY > 0) {
+        direction = { x: 0, y: deltaY >= 0 ? 1 : -1, z: 0 };
+        previewCount = absY + 1;
+      } else if (absZ > 0) {
+        direction = { x: 0, y: 0, z: deltaZ >= 0 ? 1 : -1 };
+        previewCount = absZ + 1;
+      }
+    }
+
+    previewCount = Math.min(LINE_BUILD_MAX, Math.max(1, previewCount), Math.max(1, stock));
     const placements = [];
 
     for (let index = 0; index < previewCount; index += 1) {
-      const x = placement.x + direction.x * index;
-      const y = placement.y + direction.y * index;
-      const z = placement.z + direction.z * index;
+      const x = origin.x + direction.x * index;
+      const y = origin.y + direction.y * index;
+      const z = origin.z + direction.z * index;
       const hasStock = index < stock;
       const valid =
         hasStock && !this.world.hasBlock(x, y, z) && (!canPlace || canPlace(x, y, z));
@@ -468,10 +524,10 @@ export class BuildSystem {
       }
     }
 
-    return { hit: placement.hit, placements };
+    return { hit: placement?.hit ?? null, placements };
   }
 
-  updatePlacementPreview(canPlaceOverride = null, { lineMode = false } = {}) {
+  updatePlacementPreview(canPlaceOverride = null, { lineMode = false, anchor = null } = {}) {
     if (!this.previewLine || !this.isPlaceMode()) {
       this.hidePlacementPreview();
       return;
@@ -482,7 +538,7 @@ export class BuildSystem {
       return;
     }
 
-    const preview = this.resolvePlacementChain(canPlaceOverride, { lineMode });
+    const preview = this.resolvePlacementChain(canPlaceOverride, { lineMode, anchor });
     if (!preview || !Array.isArray(preview.placements) || preview.placements.length === 0) {
       this.hidePlacementPreview();
       return;
@@ -536,6 +592,7 @@ export class BuildSystem {
       this.resetDigProgress();
     }
     if (mode !== "place") {
+      this.clearLineAnchor();
       this.hidePlacementPreview();
     }
     this.renderUi();
@@ -652,8 +709,12 @@ export class BuildSystem {
     }
 
     const placement = this.isPlaceMode()
-      ? this.resolvePlacementChain(canPlace, { lineMode })
+      ? this.resolvePlacementChain(canPlace, { lineMode, anchor: this.lineAnchor })
       : null;
+    const hasPlaceTarget =
+      this.isPlaceMode() &&
+      Array.isArray(placement?.placements) &&
+      placement.placements.length > 0;
     const hit =
       placement?.hit ??
       (() => {
@@ -661,7 +722,7 @@ export class BuildSystem {
         return this.world.raycast(this.raycaster, this.maxReach);
       })();
 
-    if (!hit) {
+    if (!hit && !hasPlaceTarget) {
       this.resetDigProgress();
       this.onStatus?.(this.isPlaceMode() ? "배치할 블록이 없습니다." : "제거할 블록이 없습니다.", true, 0.28);
       return true;
@@ -698,7 +759,8 @@ export class BuildSystem {
         this.onStatus?.(`블록 ${placedCount}개 설치`, false, 0.45);
       }
 
-      this.updatePlacementPreview(canPlace, { lineMode });
+      this.clearLineAnchor();
+      this.updatePlacementPreview(canPlace, { lineMode: false });
       this.renderUi();
       return true;
     }
