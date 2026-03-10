@@ -1603,6 +1603,15 @@ canvas {
   display: block;
 }
 
+#mobile-controls.chat-open {
+  z-index: 35;
+}
+
+#mobile-controls.chat-open > :not(#mobile-chat) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 #mobile-options {
   display: none !important;
   position: absolute;
@@ -1810,8 +1819,8 @@ canvas {
 
 #mobile-reload {
   position: absolute;
-  top: calc(max(10px, env(safe-area-inset-top, 0px)) + 36px);
-  right: max(10px, env(safe-area-inset-right, 0px));
+  right: max(14px, env(safe-area-inset-right, 0px));
+  bottom: calc(144px + env(safe-area-inset-bottom, 0px));
   z-index: 27;
   min-width: 58px;
   height: 30px;
@@ -3355,8 +3364,9 @@ kbd {
   }
 
   #mobile-reload {
-    top: calc(max(8px, env(safe-area-inset-top, 0px)) + 32px);
+    top: auto;
     right: max(8px, env(safe-area-inset-right, 0px));
+    bottom: calc(142px + env(safe-area-inset-bottom, 0px));
     min-width: 50px;
     height: 28px;
     font-size: 0.6rem;
@@ -3407,14 +3417,34 @@ kbd {
     display: none;
   }
 
+  .overlay-start {
+    place-content: start;
+    justify-items: center;
+    padding: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
   .start-panel {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
     padding: 20px 16px 18px;
   }
 
   .start-layout {
     grid-template-columns: 1fr;
     gap: 12px;
-    width: min(420px, calc(100vw - 28px));
+    width: 100%;
+    min-height: 100dvh;
+    max-width: 460px;
+    padding:
+      max(16px, env(safe-area-inset-top, 0px))
+      max(14px, env(safe-area-inset-right, 0px))
+      max(24px, env(safe-area-inset-bottom, 0px))
+      max(14px, env(safe-area-inset-left, 0px));
+    align-content: start;
   }
 
   .host-command-panel {
@@ -3584,7 +3614,8 @@ kbd {
   }
 
   #mobile-reload {
-    top: calc(max(6px, env(safe-area-inset-top, 0px)) + 30px);
+    top: auto;
+    bottom: calc(100px + env(safe-area-inset-bottom, 0px));
     min-width: 46px;
     height: 26px;
     font-size: 0.56rem;
@@ -3697,6 +3728,7 @@ body.ui-mode-build .hud-right {
     left: max(10px, env(safe-area-inset-left, 0px));
     right: max(10px, env(safe-area-inset-right, 0px));
     bottom: calc(126px + env(safe-area-inset-bottom, 0px));
+    min-height: 0;
   }
 
   .hud-center,
@@ -3705,22 +3737,30 @@ body.ui-mode-build .hud-right {
   }
 
   .hud-center {
-    min-width: 78px;
-    padding: 8px 14px;
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    bottom: auto;
+    left: 50%;
+    min-width: 72px;
+    padding: 7px 12px;
+    transform: translateX(-50%);
+    background: rgba(8, 14, 22, 0.7);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   }
 
   .hud-health-number {
-    font-size: 1.32rem;
+    font-size: 1.2rem;
   }
 }
 
 @media (max-height: 500px) and (orientation: landscape) {
   .hud-center {
-    padding: 7px 12px;
+    top: calc(6px + env(safe-area-inset-top, 0px));
+    padding: 6px 10px;
   }
 
   .hud-health-number {
-    font-size: 1.18rem;
+    font-size: 1.08rem;
   }
 }
 
@@ -3757,6 +3797,10 @@ body.ui-mode-build .hud-right {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+#chat-panel.hide-mobile-chat-toggle #chat-toggle-btn {
+  display: none !important;
 }
 
 #chat-title {
@@ -4049,9 +4093,13 @@ body.ui-mode-build .hud-right {
   touch-action: none;
 }
 
+#mobile-controls.chat-open #mobile-chat {
+  z-index: 36;
+}
+
 #quick-settings-btn {
   position: fixed;
-  bottom: calc(144px + env(safe-area-inset-bottom, 0px));
+  top: calc(max(10px, env(safe-area-inset-top, 0px)) + 36px);
   right: max(14px, env(safe-area-inset-right, 0px));
   z-index: 33;
   min-width: 58px;
@@ -4066,7 +4114,7 @@ body.ui-mode-build .hud-right {
 
 #quick-settings-panel {
   position: fixed;
-  bottom: calc(180px + env(safe-area-inset-bottom, 0px));
+  top: calc(max(10px, env(safe-area-inset-top, 0px)) + 72px);
   right: max(14px, env(safe-area-inset-right, 0px));
   z-index: 34;
   width: min(230px, calc(100vw - 28px));
@@ -4171,7 +4219,8 @@ body.ui-mode-build .hud-right {
   }
 
   #quick-settings-btn {
-    bottom: calc(142px + env(safe-area-inset-bottom, 0px));
+    top: calc(max(8px, env(safe-area-inset-top, 0px)) + 32px);
+    bottom: auto;
     right: max(8px, env(safe-area-inset-right, 0px));
     min-width: 54px;
     height: 28px;
@@ -4179,7 +4228,8 @@ body.ui-mode-build .hud-right {
   }
 
   #quick-settings-panel {
-    bottom: calc(174px + env(safe-area-inset-bottom, 0px));
+    top: calc(max(8px, env(safe-area-inset-top, 0px)) + 64px);
+    bottom: auto;
     right: max(8px, env(safe-area-inset-right, 0px));
     width: min(206px, calc(100vw - 16px));
   }
@@ -4210,14 +4260,16 @@ body.ui-mode-build .hud-right {
   }
 
   #quick-settings-btn {
-    bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+    top: calc(max(6px, env(safe-area-inset-top, 0px)) + 30px);
+    bottom: auto;
     min-width: 52px;
     height: 26px;
     font-size: 0.58rem;
   }
 
   #quick-settings-panel {
-    bottom: calc(130px + env(safe-area-inset-bottom, 0px));
+    top: calc(max(6px, env(safe-area-inset-top, 0px)) + 58px);
+    bottom: auto;
     width: min(188px, calc(100vw - 16px));
   }
 

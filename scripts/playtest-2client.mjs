@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { io } from "socket.io-client";
 import { CTF_WIN_SCORE } from "../src/shared/matchConfig.js";
-import { getOnlineMapConfig } from "../src/shared/onlineMapRotation.js";
+import { getNextOnlineMapId, getOnlineMapConfig } from "../src/shared/onlineMapRotation.js";
 
 const HOST = "127.0.0.1";
 const START_PORT = 3301;
@@ -277,6 +277,9 @@ async function scenarioCombatAndCtfInteraction(url) {
     let pickupCount = 0;
     let captureCount = 0;
     let sawMatchEnd = false;
+    let matchEndRestartAt = 0;
+    let roomStartedCount = 0;
+    let latestRestartMapId = "";
 
     a.on("pvp:damage", (payload = {}) => {
       if (String(payload.attackerId ?? "") === String(a.id) && String(payload.victimId ?? "") === String(b.id)) {
@@ -309,7 +312,16 @@ async function scenarioCombatAndCtfInteraction(url) {
       const winnerTeam = String(payload?.winnerTeam ?? "");
       if (winnerTeam === "alpha") {
         sawMatchEnd = true;
+        matchEndRestartAt = Math.max(0, Number(payload?.restartAt ?? 0));
       }
+    });
+    a.on("room:started", (payload = {}) => {
+      roomStartedCount += 1;
+      latestRestartMapId = String(payload?.mapId ?? "");
+    });
+    b.on("room:started", (payload = {}) => {
+      roomStartedCount += 1;
+      latestRestartMapId = String(payload?.mapId ?? "");
     });
 
     const combatBlockPos = makeRunCoord(-8, -8);
@@ -362,6 +374,18 @@ async function scenarioCombatAndCtfInteraction(url) {
       await sleep(80);
     }
     await waitFor(() => sawMatchEnd, 4500);
+    const expectedNextMapId = getNextOnlineMapId(ctfSnapshot?.snapshot?.mapId);
+    assert(matchEndRestartAt > Date.now(), "match:end restartAt missing or stale");
+    await waitFor(() => roomStartedCount >= 2, 12000);
+    assert(
+      latestRestartMapId === expectedNextMapId,
+      `Expected next map ${expectedNextMapId}, got ${latestRestartMapId || "none"}`
+    );
+    const rotatedSnapshot = await emitAck(a, "room:request-snapshot");
+    assert(
+      rotatedSnapshot?.snapshot?.mapId === expectedNextMapId,
+      `Expected rotated snapshot map ${expectedNextMapId}, got ${JSON.stringify(rotatedSnapshot?.snapshot?.mapId)}`
+    );
   } finally {
     a.disconnect();
     b.disconnect();

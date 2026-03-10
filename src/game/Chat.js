@@ -62,6 +62,7 @@ export class Chat {
     this.chatOpen = true;
     this.expanded = false;
     this.historyGuardArmed = false;
+    this.mobileHeaderToggleVisible = false;
 
     this._teardownBound = false;
     this._mobileUiBound = false;
@@ -323,12 +324,23 @@ export class Chat {
     this.setExpandedState(false, { focusInput: false, force: true });
   }
 
+  setMobileHeaderToggleVisible(visible) {
+    this.mobileHeaderToggleVisible = Boolean(visible);
+    this.refreshHeaderButtons();
+  }
+
   refreshHeaderButtons() {
     if (this.titleEl) {
       this.titleEl.textContent = this.expanded
         ? "\uCC44\uD305 \uC804\uCCB4\uBCF4\uAE30"
         : "\uCC44\uD305";
     }
+
+    const showMobileHeaderToggle = !this.mobileUiEnabled || this.mobileHeaderToggleVisible;
+    this.panelEl?.classList.toggle(
+      "hide-mobile-chat-toggle",
+      this.mobileUiEnabled && !showMobileHeaderToggle
+    );
 
     if (this.toggleBtnEl) {
       const openText = this.chatOpen ? "\uB2EB\uAE30" : "\uC5F4\uAE30";
@@ -340,7 +352,9 @@ export class Chat {
         "aria-label",
         this.chatOpen ? "\uCC44\uD305 \uB2EB\uAE30" : "\uCC44\uD305 \uC5F4\uAE30"
       );
-      this.toggleBtnEl.setAttribute("aria-hidden", "false");
+      this.toggleBtnEl.setAttribute("aria-hidden", showMobileHeaderToggle ? "false" : "true");
+      this.toggleBtnEl.disabled = !showMobileHeaderToggle;
+      this.toggleBtnEl.tabIndex = showMobileHeaderToggle ? 0 : -1;
     }
 
     if (this.expandBtnEl) {
