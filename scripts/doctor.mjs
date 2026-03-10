@@ -84,18 +84,29 @@ async function main() {
   checkFile("public/assets/audio/weapons/gunshot_0.mp3");
   checkIndexEntry();
 
-  const chatUp = await pingLocalServer("http://localhost:3001/health");
-  if (chatUp) {
-    pass("chat server is reachable on http://localhost:3001/health");
+  const localServerCandidates = [
+    { label: "primary", url: "http://localhost:3001/health" },
+    { label: "fallback", url: "http://localhost:3002/health" }
+  ];
+  let reachableServer = null;
+  for (const candidate of localServerCandidates) {
+    if (await pingLocalServer(candidate.url)) {
+      reachableServer = candidate;
+      break;
+    }
+  }
+  if (reachableServer) {
+    pass(`chat server is reachable on ${reachableServer.url}`);
   } else {
-    warn("chat server is not running on localhost:3001 (online lobby/chat will be offline)");
+    warn("chat server is not running on localhost:3001 or localhost:3002 (online lobby/chat will be offline)");
   }
 
   console.log("");
   console.log("Run sequence:");
   console.log("1) npm install");
   console.log("2) npm run dev:all");
-  console.log("3) open http://localhost:5173");
+  console.log("3) open http://localhost:4173");
+  console.log("   preview mode only: http://localhost:4174 (same server port 3001)");
 
   if (warnings.length > 0) {
     console.log("");

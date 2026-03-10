@@ -70,12 +70,23 @@ function safePlayAudio(audio) {
   }
 }
 
+function getAudioContextClass() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.AudioContext ?? window.webkitAudioContext ?? null;
+}
+
 export class SoundSystem {
   constructor() {
     this.enabled = typeof Audio !== "undefined";
     this.unlocked = false;
     this.clips = new Map();
     this.effectsVolumeScale = 1;
+    this.audioContext = null;
+    this.lastHitCueAt = 0;
+    this.lastBlockBreakCueAt = 0;
+    this.lastBlockImpactCueAt = 0;
 
     if (!this.enabled) {
       return;
@@ -130,6 +141,7 @@ export class SoundSystem {
       return;
     }
     this.unlocked = true;
+    this.audioContext?.resume?.().catch?.(() => {});
 
     for (const clip of this.clips.values()) {
       const audio = clip.pool[0];
@@ -177,6 +189,188 @@ export class SoundSystem {
 
   getEffectsVolumeScale() {
     return this.effectsVolumeScale;
+  }
+
+  getAudioContext() {
+    if (!this.enabled || this.effectsVolumeScale <= 0) {
+      return null;
+    }
+    if (!this.audioContext) {
+      const AudioContextClass = getAudioContextClass();
+      if (!AudioContextClass) {
+        return null;
+      }
+      try {
+        this.audioContext = new AudioContextClass();
+      } catch {
+        this.audioContext = null;
+      }
+    }
+    this.audioContext?.resume?.().catch?.(() => {});
+    return this.audioContext;
+  }
+
+  playHitCue(kind = "body") {
+    const ctx = this.getAudioContext();
+    if (!ctx) {
+      return;
+    }
+    const nowMs =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    if (nowMs - this.lastHitCueAt < 28) {
+      return;
+    }
+    this.lastHitCueAt = nowMs;
+
+    const isHeadshot = String(kind ?? "").trim().toLowerCase() === "head";
+    const startTime = ctx.currentTime + 0.004;
+    const outputGain = ctx.createGain();
+    outputGain.gain.value = Math.max(0.0001, this.effectsVolumeScale);
+    outputGain.connect(ctx.destination);
+
+    const playTone = (frequency, type, gainValue, delay, duration) => {
+      const osc = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      const toneStart = startTime + delay;
+      const toneEnd = toneStart + duration;
+
+      osc.type = type;
+      osc.frequency.setValueAtTime(frequency, toneStart);
+      gainNode.gain.setValueAtTime(0.0001, toneStart);
+      gainNode.gain.linearRampToValueAtTime(gainValue, toneStart + 0.008);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, toneEnd);
+
+      osc.connect(gainNode);
+      gainNode.connect(outputGain);
+      osc.start(toneStart);
+      osc.stop(toneEnd + 0.01);
+    };
+
+    if (isHeadshot) {
+      playTone(1240, "square", 0.12, 0, 0.05);
+      playTone(1780, "triangle", 0.07, 0.028, 0.06);
+    } else {
+      playTone(760, "triangle", 0.09, 0, 0.06);
+    }
+  }
+
+  playBlockBreakCue(kind = "default") {
+    const ctx = this.getAudioContext();
+    if (!ctx) {
+      return;
+    }
+    const nowMs =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    if (nowMs - this.lastBlockBreakCueAt < 40) {
+      return;
+    }
+    this.lastBlockBreakCueAt = nowMs;
+
+    const normalizedKind = String(kind ?? "default").trim().toLowerCase();
+    const startTime = ctx.currentTime + 0.003;
+    const outputGain = ctx.createGain();
+    outputGain.gain.value = Math.max(0.0001, this.effectsVolumeScale);
+    outputGain.connect(ctx.destination);
+
+    const tone = ctx.createOscillator();
+    const toneGain = ctx.createGain();
+    const baseFrequency =
+      normalizedKind === "metal" ? 210 : normalizedKind === "stone" || normalizedKind === "brick" ? 168 : 122;
+    tone.type = normalizedKind === "metal" ? "square" : "triangle";
+    tone.frequency.setValueAtTime(baseFrequency, startTime);
+    tone.frequency.exponentialRampToValueAtTime(baseFrequency * 0.72, startTime + 0.1);
+    toneGain.gain.setValueAtTime(0.0001, startTime);
+    toneGain.gain.linearRampToValueAtTime(0.12, startTime + 0.006);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.12);
+    tone.connect(toneGain);
+    toneGain.connect(outputGain);
+    tone.start(startTime);
+    tone.stop(startTime + 0.14);
+
+    const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * 0.09));
+    const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const channel = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i += 1) {
+      const decay = 1 - i / bufferSize;
+      channel[i] = (Math.random() * 2 - 1) * decay;
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = normalizedKind === "metal" ? "highpass" : "lowpass";
+    filter.frequency.setValueAtTime(normalizedKind === "metal" ? 1400 : 900, startTime);
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.0001, startTime);
+    noiseGain.gain.linearRampToValueAtTime(normalizedKind === "metal" ? 0.08 : 0.12, startTime + 0.004);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.08);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(outputGain);
+    noise.start(startTime);
+    noise.stop(startTime + 0.09);
+  }
+
+  playBlockImpactCue(kind = "default", strength = 1) {
+    const ctx = this.getAudioContext();
+    if (!ctx) {
+      return;
+    }
+    const nowMs =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    if (nowMs - this.lastBlockImpactCueAt < 24) {
+      return;
+    }
+    this.lastBlockImpactCueAt = nowMs;
+
+    const normalizedKind = String(kind ?? "default").trim().toLowerCase();
+    const power = clamp(Number(strength) || 1, 0.35, 1.4);
+    const startTime = ctx.currentTime + 0.002;
+    const outputGain = ctx.createGain();
+    outputGain.gain.value = Math.max(0.0001, this.effectsVolumeScale);
+    outputGain.connect(ctx.destination);
+
+    const tone = ctx.createOscillator();
+    const toneGain = ctx.createGain();
+    const baseFrequency =
+      normalizedKind === "metal" ? 240 : normalizedKind === "stone" || normalizedKind === "brick" ? 178 : 136;
+    tone.type = normalizedKind === "metal" ? "square" : "triangle";
+    tone.frequency.setValueAtTime(baseFrequency, startTime);
+    tone.frequency.exponentialRampToValueAtTime(baseFrequency * 0.82, startTime + 0.06);
+    toneGain.gain.setValueAtTime(0.0001, startTime);
+    toneGain.gain.linearRampToValueAtTime(0.05 * power, startTime + 0.004);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.075);
+    tone.connect(toneGain);
+    toneGain.connect(outputGain);
+    tone.start(startTime);
+    tone.stop(startTime + 0.09);
+
+    const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * 0.05));
+    const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const channel = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i += 1) {
+      const decay = 1 - i / bufferSize;
+      channel[i] = (Math.random() * 2 - 1) * decay;
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = normalizedKind === "metal" ? "bandpass" : "lowpass";
+    filter.frequency.setValueAtTime(normalizedKind === "metal" ? 1700 : 1100, startTime);
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.0001, startTime);
+    noiseGain.gain.linearRampToValueAtTime(0.06 * power, startTime + 0.003);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.05);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(outputGain);
+    noise.start(startTime);
+    noise.stop(startTime + 0.055);
   }
 
   play(name, options = {}) {

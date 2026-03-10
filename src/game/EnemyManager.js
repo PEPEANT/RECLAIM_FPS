@@ -46,7 +46,8 @@ export class EnemyManager {
     this.gunStockGeometry = new THREE.BoxGeometry(0.1, 0.18, 0.36);
     this.gunScopeGeometry = new THREE.BoxGeometry(0.08, 0.1, 0.26);
 
-    this.hitboxGeometry = new THREE.CapsuleGeometry(0.66, 1.06, 4, 8);
+    this.hitboxGeometry = new THREE.BoxGeometry(0.92, 1.72, 0.58);
+    this.headHitboxGeometry = new THREE.BoxGeometry(0.56, 0.56, 0.56);
     this.hitboxMaterial = new THREE.MeshBasicMaterial({
       color: 0xff0000,
       transparent: true,
@@ -127,6 +128,7 @@ export class EnemyManager {
   disposeEnemy(enemy) {
     this.group.remove(enemy.model);
     this.group.remove(enemy.hitbox);
+    this.group.remove(enemy.headHitbox);
 
     for (const material of enemy.materials) {
       material.dispose();
@@ -500,16 +502,20 @@ export class EnemyManager {
         enemy.hitbox.position.z,
         enemy.groundY ?? 0
       );
-      enemy.hitbox.position.y = enemy.groundY + 1.25;
+      enemy.hitbox.position.y = enemy.groundY + 1.28;
+      enemy.headHitbox.position.set(enemy.hitbox.position.x, enemy.groundY + 2.48, enemy.hitbox.position.z);
       this._enemyEye.set(enemy.hitbox.position.x, enemy.groundY + ENEMY_EYE_HEIGHT, enemy.hitbox.position.z);
+      const playerCrouched = Boolean(objectiveContext?.playerCrouched);
+      const centerOffsetY = playerCrouched ? -0.58 : PLAYER_TARGET_OFFSET_Y;
+      const headOffsetY = playerCrouched ? -0.06 : PLAYER_TARGET_HEAD_OFFSET_Y;
       this._losTarget.set(
         playerPosition.x,
-        playerPosition.y + PLAYER_TARGET_OFFSET_Y,
+        playerPosition.y + centerOffsetY,
         playerPosition.z
       );
       this._losTargetHead.set(
         playerPosition.x,
-        playerPosition.y + PLAYER_TARGET_HEAD_OFFSET_Y,
+        playerPosition.y + headOffsetY,
         playerPosition.z
       );
       const clearShotCenter = this.canHitTarget
@@ -739,11 +745,14 @@ export class EnemyManager {
     soldier.model.position.set(x, groundY, z);
 
     const hitbox = new THREE.Mesh(this.hitboxGeometry, this.hitboxMaterial);
-    hitbox.position.set(x, groundY + 1.25, z);
+    hitbox.position.set(x, groundY + 1.28, z);
+    const headHitbox = new THREE.Mesh(this.headHitboxGeometry, this.hitboxMaterial);
+    headHitbox.position.set(x, groundY + 2.48, z);
 
     const enemy = {
       model: soldier.model,
       hitbox,
+      headHitbox,
       speed: 2 + Math.random() * 1.4,
       health: 40,
       fireCooldown: 0.3 + Math.random() * 0.36,
@@ -794,16 +803,21 @@ export class EnemyManager {
     };
 
     enemy.hitbox.userData.enemy = enemy;
+    enemy.hitbox.userData.hitZone = "body";
+    enemy.headHitbox.userData.enemy = enemy;
+    enemy.headHitbox.userData.hitZone = "head";
 
     this.group.add(enemy.model);
     this.group.add(enemy.hitbox);
+    this.group.add(enemy.headHitbox);
     this.enemies.push(enemy);
     this.hitboxTargets.push(hitbox);
+    this.hitboxTargets.push(headHitbox);
   }
 
-  handleShot(raycaster, maxDistance = Infinity, damage = 20) {
+  handleShot(raycaster, maxDistance = Infinity, damage = 20, damageResolver = null) {
     if (this.enemies.length === 0) {
-      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null };
+      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null, hitZone: "body" };
     }
 
     const hits = raycaster.intersectObjects(this.hitboxTargets, false);
@@ -818,30 +832,39 @@ export class EnemyManager {
       return this.canHitTarget(shotOrigin, hit.point);
     });
     if (!targetHit) {
-      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null };
+      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null, hitZone: "body" };
     }
 
     const target = targetHit.object.userData.enemy;
     if (!target) {
-      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null };
+      return { didHit: false, didKill: false, points: 0, hitPoint: null, target: null, hitZone: "body" };
     }
+    const hitZone = String(targetHit.object.userData.hitZone ?? "body");
 
-    const appliedDamage = Math.max(1, Math.trunc(Number(damage) || 20));
+    const resolvedDamage =
+      typeof damageResolver === "function"
+        ? damageResolver(damage, targetHit.distance, targetHit, hitZone)
+        : damage;
+    const appliedDamage = Math.max(1, Math.round(Number(resolvedDamage) || Number(damage) || 20));
     target.health -= appliedDamage;
     target.hitFlash = 0.08;
     const hitPoint = targetHit.point.clone();
 
     if (target.health > 0) {
-      return { didHit: true, didKill: false, points: 20, hitPoint, target };
+      return { didHit: true, didKill: false, points: 20, hitPoint, target, hitZone };
     }
 
     const index = this.enemies.indexOf(target);
     if (index >= 0) {
-      this.hitboxTargets.splice(index, 1);
       this.enemies.splice(index, 1);
+    }
+    for (let i = this.hitboxTargets.length - 1; i >= 0; i -= 1) {
+      if (this.hitboxTargets[i]?.userData?.enemy === target) {
+        this.hitboxTargets.splice(i, 1);
+      }
     }
 
     this.disposeEnemy(target);
-    return { didHit: true, didKill: true, points: 100, hitPoint, target };
+    return { didHit: true, didKill: true, points: 100, hitPoint, target, hitZone };
   }
 }

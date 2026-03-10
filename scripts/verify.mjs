@@ -3,7 +3,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import * as THREE from "three";
 import { io } from "socket.io-client";
 import { WeaponSystem } from "../src/game/WeaponSystem.js";
+import { Game } from "../src/game/Game.js";
 import { VoxelWorld } from "../src/game/build/VoxelWorld.js";
+import { getOnlineMapConfig } from "../src/shared/onlineMapRotation.js";
 import { DEFAULT_WEAPON_ID, getWeaponDefinition } from "../src/shared/weaponCatalog.js";
 
 const skipBuild = process.argv.includes("--skip-build");
@@ -194,6 +196,103 @@ function checkVoxelWorld() {
       trainingMeta?.bravoBase?.x > trainingMeta?.mid?.x,
     `Invalid training arena metadata: ${JSON.stringify(trainingMeta)}`
   );
+
+  world.generateTerrain({ mapId: "city_frontline" });
+  const cityMeta = world.getArenaMeta();
+  assert(
+    world.blockMap.size > 180000,
+    `Unexpected city terrain block count: ${world.blockMap.size}`
+  );
+  assert(
+    cityMeta?.halfExtent > arenaMeta?.halfExtent &&
+      cityMeta?.alphaBase?.x < arenaMeta?.alphaBase?.x &&
+      cityMeta?.bravoFlag?.x > arenaMeta?.bravoFlag?.x,
+    `Invalid city arena metadata: ${JSON.stringify(cityMeta)}`
+  );
+  assert(
+    world.setBlock((cityMeta?.halfExtent ?? 100) + 4, 0, (cityMeta?.halfExtent ?? 100) + 4, 6) === true,
+    "Failed to place extra city block after terrain generation"
+  );
+}
+
+function checkLargeCollapseGrouping() {
+  const scene = new THREE.Scene();
+  const textureLoader = {
+    load() {
+      return new THREE.Texture();
+    }
+  };
+  const world = new VoxelWorld(scene, textureLoader);
+
+  world.setBlock(0, 0, 0, 3);
+  for (let y = 1; y <= 5; y += 1) {
+    world.setBlock(0, y, 0, 6);
+  }
+  for (let x = 0; x < 10; x += 1) {
+    for (let z = 0; z < 10; z += 1) {
+      world.setBlock(x, 6, z, 6);
+    }
+  }
+
+  const removed = world.removeBlock(0, 5, 0);
+  assert(removed === true, "Failed to remove collapse support block");
+
+  const fakeGame = {
+    voxelWorld: world,
+    isLobby3DProtectedBlockCoord() {
+      return false;
+    }
+  };
+  fakeGame.isCollapseAnchorBlock = Game.prototype.isCollapseAnchorBlock.bind(fakeGame);
+  fakeGame.collectCollapseGroupFrom = Game.prototype.collectCollapseGroupFrom.bind(fakeGame);
+  fakeGame.collectCollapsibleGroups = Game.prototype.collectCollapsibleGroups.bind(fakeGame);
+
+  const groups = fakeGame.collectCollapsibleGroups(0, 5, 0);
+  assert(Array.isArray(groups) && groups.length >= 1, "Expected at least one collapsible group");
+  assert(
+    groups.some((group) => Array.isArray(group) && group.length >= 100),
+    `Expected large floating collapse group, got: ${JSON.stringify(groups.map((group) => group.length))}`
+  );
+}
+
+function checkLobbyLookRecovery() {
+  let pointerLockRequests = 0;
+  let lastPointerLockOptions = null;
+  const fakeGame = {
+    isRunning: false,
+    isGameOver: false,
+    optionsMenuOpen: false,
+    mobileEnabled: false,
+    pointerLockSupported: true,
+    pointerLocked: false,
+    allowUnlockedLook: true,
+    mouseLookEnabled: true,
+    buildSystem: {
+      isInventoryOpen() {
+        return false;
+      }
+    },
+    isLobby3DActive() {
+      return true;
+    },
+    isUiInputFocused() {
+      return false;
+    },
+    tryPointerLock(options = {}) {
+      pointerLockRequests += 1;
+      lastPointerLockOptions = options;
+    }
+  };
+
+  const restored = Game.prototype.restoreGameplayLookState.call(fakeGame, {
+    preferPointerLock: true
+  });
+  assert(restored === true, "Expected restoreGameplayLookState to resume lobby look state");
+  assert(pointerLockRequests === 1, "Expected lobby recovery to request pointer lock");
+  assert(
+    lastPointerLockOptions?.fallbackUnlockedLook === true,
+    `Expected pointer lock fallback to stay enabled, got: ${JSON.stringify(lastPointerLockOptions)}`
+  );
 }
 
 async function checkSocketServer() {
@@ -328,6 +427,9 @@ async function checkSocketServer() {
         typeof snapshotAck.snapshot.round === "object",
       `snapshot round metadata missing: ${JSON.stringify(snapshotAck)}`
     );
+    const roundMap = getOnlineMapConfig(snapshotAck?.snapshot?.mapId);
+    const alphaHome = roundMap.alphaBase ?? { x: -35, y: 0, z: 0 };
+    const bravoFlagAt = snapshotAck?.snapshot?.flags?.bravo?.at ?? roundMap.bravoFlag ?? { x: 44, y: 0, z: 0 };
     await waitFor(() => snapshotReceived, 3000);
 
     const baselineTypeId = 6;
@@ -360,12 +462,12 @@ async function checkSocketServer() {
       `stock did not recover after remove: ${JSON.stringify(stockRemoveAck)}`
     );
 
-    c1.emit("player:sync", { x: 44, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    c1.emit("player:sync", { x: bravoFlagAt.x, y: 1.75, z: bravoFlagAt.z, yaw: 0, pitch: 0 });
     await sleep(80);
     const pickupAck = await emitWithAck(c1, "ctf:interact");
     assert(pickupAck?.ok === true, `ctf:interact failed: ${JSON.stringify(pickupAck)}`);
     await waitFor(() => ctfPickupSeen, 4000);
-    c1.emit("player:sync", { x: -35, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+    c1.emit("player:sync", { x: alphaHome.x, y: 1.75, z: alphaHome.z, yaw: 0, pitch: 0 });
     await waitFor(() => ctfCaptureSeen, 4000);
 
     const left = await emitWithAck(c2, "room:leave");
@@ -420,6 +522,12 @@ async function main() {
 
   console.log("[verify] voxel smoke...");
   checkVoxelWorld();
+
+  console.log("[verify] collapse grouping...");
+  checkLargeCollapseGrouping();
+
+  console.log("[verify] lobby look recovery...");
+  checkLobbyLookRecovery();
 
   console.log("[verify] socket/lobby/chat smoke...");
   await checkSocketServer();

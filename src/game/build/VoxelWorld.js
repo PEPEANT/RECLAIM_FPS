@@ -15,6 +15,8 @@ export class VoxelWorld {
 
     this.blockGeometry = new THREE.BoxGeometry(1, 1, 1);
     this.tmpMatrix = new THREE.Matrix4();
+    this.tmpColor = new THREE.Color();
+    this.damageTintColor = new THREE.Color(0x2a1414);
     this.blockMap = new Map();
     this.buckets = new Map();
     this.surfaceCache = new Map();
@@ -101,6 +103,7 @@ export class VoxelWorld {
     const bucket = {
       typeId,
       capacity,
+      baseColor: new THREE.Color(baseColor),
       mesh,
       keys: [],
       indexByKey: new Map()
@@ -245,7 +248,11 @@ export class VoxelWorld {
 
     this.tmpMatrix.makeTranslation(x + 0.5, y + 0.5, z + 0.5);
     bucket.mesh.setMatrixAt(index, this.tmpMatrix);
+    bucket.mesh.setColorAt(index, bucket.baseColor);
     bucket.mesh.instanceMatrix.needsUpdate = true;
+    if (bucket.mesh.instanceColor) {
+      bucket.mesh.instanceColor.needsUpdate = true;
+    }
     this.markBucketBoundsDirty(bucket);
 
     bucket.keys[index] = key;
@@ -291,6 +298,10 @@ export class VoxelWorld {
       const lastKey = bucket.keys[lastIndex];
       bucket.mesh.getMatrixAt(lastIndex, this.tmpMatrix);
       bucket.mesh.setMatrixAt(removeIndex, this.tmpMatrix);
+      if (bucket.mesh.instanceColor) {
+        bucket.mesh.getColorAt(lastIndex, this.tmpColor);
+        bucket.mesh.setColorAt(removeIndex, this.tmpColor);
+      }
       bucket.keys[removeIndex] = lastKey;
       bucket.indexByKey.set(lastKey, removeIndex);
     }
@@ -300,6 +311,9 @@ export class VoxelWorld {
     bucket.mesh.count = lastIndex;
     this.bucketOptimizeDirty = true;
     bucket.mesh.instanceMatrix.needsUpdate = true;
+    if (bucket.mesh.instanceColor) {
+      bucket.mesh.instanceColor.needsUpdate = true;
+    }
     this.markBucketBoundsDirty(bucket);
     this.blockMap.delete(key);
 
@@ -314,6 +328,38 @@ export class VoxelWorld {
 
   hasBlock(x, y, z) {
     return this.blockMap.has(this.key(x, y, z));
+  }
+
+  getBlock(x, y, z) {
+    return this.blockMap.get(this.key(x, y, z)) ?? null;
+  }
+
+  setBlockDamageTint(x, y, z, damageRatio = 0) {
+    const block = this.getBlock(x, y, z);
+    if (!block) {
+      return false;
+    }
+
+    const bucket = this.buckets.get(block.typeId);
+    if (!bucket?.mesh) {
+      return false;
+    }
+
+    const index = bucket.indexByKey.get(this.key(x, y, z));
+    if (index === undefined) {
+      return false;
+    }
+
+    const ratio = THREE.MathUtils.clamp(Number(damageRatio) || 0, 0, 1);
+    this.tmpColor.copy(bucket.baseColor);
+    if (ratio > 0) {
+      this.tmpColor.lerp(this.damageTintColor, ratio * 0.72);
+    }
+    bucket.mesh.setColorAt(index, this.tmpColor);
+    if (bucket.mesh.instanceColor) {
+      bucket.mesh.instanceColor.needsUpdate = true;
+    }
+    return true;
   }
 
   hasBlockAtWorld(worldX, worldY, worldZ) {

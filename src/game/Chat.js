@@ -18,10 +18,16 @@ function resolveDefaultServerUrl() {
     /^10\./.test(hostname) ||
     /^192\.168\./.test(hostname) ||
     /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
-  const isDevPort = port === "5173" || port === "4173";
+  const localServerPortByClientPort = Object.freeze({
+    "4174": "3001",
+    "4173": "3001",
+    "5173": "3001"
+  });
+  const resolvedLocalServerPort = localServerPortByClientPort[port] ?? "3001";
+  const isDevPort = Object.hasOwn(localServerPortByClientPort, port);
 
   if (isLocalHost || isPrivateIpv4 || isDevPort) {
-    return `${protocol}//${hostname}:3001`;
+    return `${protocol}//${hostname}:${resolvedLocalServerPort}`;
   }
 
   if (hostname.endsWith(".netlify.app") || hostname.endsWith(".vercel.app")) {
@@ -40,7 +46,7 @@ function isLikelyMobileUi() {
   return coarse && maxTouch > 0;
 }
 
-const SERVER_URL = import.meta.env.VITE_CHAT_SERVER ?? resolveDefaultServerUrl();
+const SERVER_URL = String(import.meta.env.VITE_CHAT_SERVER ?? resolveDefaultServerUrl()).trim();
 
 export class Chat {
   constructor() {

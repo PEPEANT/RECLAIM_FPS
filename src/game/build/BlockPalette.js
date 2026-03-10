@@ -1,12 +1,12 @@
 const BLOCK_TYPE_DATA = [
-  ["grass", "잔디", "#5fae45"],
-  ["dirt", "흙", "#7b5a3b"],
-  ["stone", "돌", "#858d95"],
-  ["sand", "모래", "#cfbe7e"],
-  ["clay", "점토", "#a67957"],
-  ["brick", "벽돌", "#9b4d3f"],
-  ["ice", "얼음", "#9fd9ff"],
-  ["metal", "금속", "#6d7685"]
+  ["grass", "Grass", "#5fae45"],
+  ["dirt", "Dirt", "#7b5a3b"],
+  ["stone", "Stone", "#9ea7b2"],
+  ["sand", "Sand", "#cfbe7e"],
+  ["clay", "Clay", "#a67957"],
+  ["brick", "Brick", "#9b4d3f"],
+  ["ice", "White", "#f2f5fb"],
+  ["metal", "Road", "#505965"]
 ];
 
 export const BLOCK_TYPES = Object.freeze(

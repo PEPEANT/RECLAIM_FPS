@@ -8,7 +8,13 @@ import { SoundSystem } from "./audio/SoundSystem.js";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../shared/gameModes.js";
 import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
 import {
+  getInitialOnlineMapId,
+  getOnlineMapConfig,
+  normalizeOnlineMapId
+} from "../shared/onlineMapRotation.js";
+import {
   DEFAULT_WEAPON_ID,
+  WEAPON_CATALOG,
   getWeaponDefinition,
   sanitizeWeaponId
 } from "../shared/weaponCatalog.js";
@@ -22,6 +28,9 @@ import { createWeaponViewModel } from "./weapons/weaponModels.js";
 import { CollapseSystem } from "./world/CollapseSystem.js";
 
 const PLAYER_HEIGHT = 1.75;
+const PLAYER_CROUCH_HEIGHT = 1.18;
+const PLAYER_CROUCH_SPEED_MULTIPLIER = 0.68;
+const PLAYER_CROUCH_EDGE_LOCK_DROP = 0.12;
 const DEFAULT_FOV = 75;
 const AIM_FOV = 48;
 const PLAYER_SPEED = 7.9;
@@ -36,7 +45,7 @@ const MOBILE_LOOK_SENSITIVITY_Y = 0.0041;
 const MOBILE_AIM_LOOK_SCALE = 0.78;
 const ONLINE_ROOM_CODE = "GLOBAL";
 const ONLINE_MAX_PLAYERS = 50;
-const ONLINE_MAP_ID = "forest_frontline";
+const ONLINE_MAP_ID = getInitialOnlineMapId();
 const TRAINING_MAP_ID = "training_compound";
 const REMOTE_SYNC_INTERVAL = 1 / 12;
 const REMOTE_NAME_TAG_DISTANCE = 72;
@@ -78,7 +87,19 @@ const LOCAL_DEATH_OFFSET_Y = 0.92;
 const LOCAL_DEATH_PITCH = 0.52;
 const LOCAL_DEATH_ROLL = -0.68;
 const SHOVEL_SWING_DURATION = 0.18;
-const COLUMN_COLLAPSE_MAX_HEIGHT = 32;
+const DIG_HOLD_REPEAT_INTERVAL = 0.16;
+const COLLAPSE_GROUP_MAX_BLOCKS = 256;
+const COLLAPSE_GROUP_OVERFLOW_LIMIT = 320;
+const COLLAPSE_ANCHOR_MAX_Y = 0;
+const COLLAPSE_ANCHOR_TYPE_IDS = Object.freeze(new Set([1, 2, 3, 4, 5]));
+const COLLAPSE_NEIGHBOR_OFFSETS = Object.freeze([
+  [1, 0, 0],
+  [-1, 0, 0],
+  [0, 1, 0],
+  [0, -1, 0],
+  [0, 0, 1],
+  [0, 0, -1]
+]);
 const REMOTE_DEATH_FALL_MS = 320;
 const REMOTE_DEATH_OFFSET_Y = 0.56;
 const REMOTE_DEATH_ROLL = -1.18;
@@ -88,6 +109,13 @@ const REMOTE_CARRIER_FLAG_HEIGHT_OFFSET = 1.02;
 const PVP_REMOTE_HITBOX_HALF_WIDTH = 0.46;
 const PVP_REMOTE_HITBOX_FOOT_OFFSET = -0.06;
 const PVP_REMOTE_HITBOX_TOP_OFFSET = 0.34;
+const PVP_REMOTE_BODY_TOP_OFFSET = 1.22;
+const PVP_REMOTE_HEAD_HALF_WIDTH = 0.24;
+const PVP_REMOTE_HEAD_MIN_OFFSET = 1.14;
+const PVP_REMOTE_HEAD_MAX_OFFSET = 1.98;
+const PVP_REMOTE_CROUCH_BODY_TOP_OFFSET = 0.88;
+const PVP_REMOTE_CROUCH_HEAD_MIN_OFFSET = 0.82;
+const PVP_REMOTE_CROUCH_HEAD_MAX_OFFSET = 1.42;
 const SPAWN_CORE_PROTECT_RADIUS = 4;
 const SPAWN_CORE_PROTECT_RADIUS_SQ = SPAWN_CORE_PROTECT_RADIUS * SPAWN_CORE_PROTECT_RADIUS;
 const SPAWN_CORE_PROTECT_MIN_Y = -1;
@@ -96,6 +124,18 @@ const BASE_FLOOR_PROTECT_RADIUS = 8;
 const BASE_FLOOR_PROTECT_RADIUS_SQ = BASE_FLOOR_PROTECT_RADIUS * BASE_FLOOR_PROTECT_RADIUS;
 const BASE_FLOOR_PROTECT_MAX_Y = -4;
 const SHOT_BREAKABLE_TYPE_IDS = Object.freeze(new Set([1, 2, 3, 4, 5, 6, 7, 8]));
+const SHOT_BLOCK_HEALTH_BY_TYPE_ID = Object.freeze(
+  new Map([
+    [1, 4], // grass
+    [2, 5], // dirt
+    [3, 9], // stone
+    [4, 4], // sand
+    [5, 6], // clay
+    [6, 7], // brick
+    [7, 5], // ice
+    [8, 10] // metal
+  ])
+);
 const BASE_SUPPORT_RADIUS = 8.5;
 const BASE_SUPPORT_RADIUS_SQ = BASE_SUPPORT_RADIUS * BASE_SUPPORT_RADIUS;
 const BASE_SUPPORT_HEAL_PER_SEC = 12;
@@ -164,12 +204,16 @@ const LOBBY_EXIT_TARGET_URL =
   "https://emptines-chat-2.onrender.com/?zone=lobby&returnPortal=fps&from=fps";
 const MAP_DISPLAY_META = Object.freeze({
   forest_frontline: Object.freeze({
-    name: "FOREST FRONTLINE",
-    description: "GLOBAL CTF 메인 전장"
+    name: getOnlineMapConfig("forest_frontline").name,
+    description: getOnlineMapConfig("forest_frontline").description
   }),
   forest_frontline_v2: Object.freeze({
-    name: "FOREST FRONTLINE",
-    description: "GLOBAL CTF 메인 전장"
+    name: getOnlineMapConfig("forest_frontline").name,
+    description: getOnlineMapConfig("forest_frontline").description
+  }),
+  city_frontline: Object.freeze({
+    name: getOnlineMapConfig("city_frontline").name,
+    description: getOnlineMapConfig("city_frontline").description
   }),
   training_compound: Object.freeze({
     name: "TRAINING COMPOUND",
@@ -382,6 +426,9 @@ export class Game {
           this.isAiming = false;
           this.handlePrimaryActionUp();
         }
+        if (this.isRunning && !this.optionsMenuOpen && !this.buildSystem.isInventoryOpen()) {
+          this.restoreGameplayLookState({ preferPointerLock: false });
+        }
         this.updateVisualMode(mode);
         this.syncMobileUtilityButtons();
         this.syncCursorVisibility();
@@ -391,13 +438,24 @@ export class Game {
           if (open) {
             this.mouseLookEnabled = false;
           } else if (this.isRunning && !this.isGameOver && !this.optionsMenuOpen) {
-            this.tryPointerLock();
+            this.tryPointerLock({ fallbackUnlockedLook: true });
           }
         }
         this.syncMobileUtilityButtons();
         this.syncCursorVisibility();
       },
       onBlockChanged: (change) => this.handleLocalBlockChanged(change),
+      onDigAction: ({ blockKey, completed }) => {
+        this.shovelSwingTimer = SHOVEL_SWING_DURATION;
+        this.sound.play("shovel", {
+          gain: completed ? 0.82 : 0.68,
+          rateJitter: 0.05,
+          minIntervalMs: 70
+        });
+        if (completed) {
+          this.sound.playBlockBreakCue(blockKey ?? "default");
+        }
+      },
       onStatus: (text, isAlert = false, duration = 0.5) =>
         this.hud.setStatus(text, isAlert, duration),
       canPlaceBlock: (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z),
@@ -418,6 +476,8 @@ export class Game {
     this.pitch = 0;
     this.pendingMouseLookX = 0;
     this.pendingMouseLookY = 0;
+    this.unlockedLookLastClientX = null;
+    this.unlockedLookLastClientY = null;
     this.keys = new Set();
     this.moveForwardVec = new THREE.Vector3();
     this.moveRightVec = new THREE.Vector3();
@@ -442,9 +502,16 @@ export class Game {
     this.weaponRecoil = 0;
     this.weaponBobClock = 0;
     this.shovelSwingTimer = 0;
+    this.primaryActionRepeatTimer = 0;
+    this.currentPlayerHeight = PLAYER_HEIGHT;
+    this.isCrouching = false;
+    this.mobileCrouchToggle = false;
     this.isAiming = false;
     this.rightMouseAiming = false;
     this.leftMouseDown = false;
+    this.lineBuildDragActive = false;
+    this.lineBuildDragMoved = false;
+    this.lineBuildDragMotion = 0;
     this.aimBlend = 0;
     this.hitSparks = [];
 
@@ -453,6 +520,7 @@ export class Game {
     this.pointerLocked = false;
     this.pointerLockFallbackTimer = null;
     this.pointerLockAutoMenuUntil = 0;
+    this.unlockLookOnNextPointerLockFailure = false;
 
     this.state = {
       health: 100,
@@ -495,6 +563,7 @@ export class Game {
     this.mobileModeGunBtn = document.getElementById("mobile-mode-gun");
     this.mobileAimBtn = document.getElementById("mobile-aim");
     this.mobileJumpBtn = document.getElementById("mobile-jump");
+    this.mobileCrouchBtn = document.getElementById("mobile-crouch");
     this.mobileReloadBtn = document.getElementById("mobile-reload");
     this.mobileTabBtn = document.getElementById("mobile-tab");
     this.mobileOptionsBtn = document.getElementById("mobile-options");
@@ -536,12 +605,20 @@ export class Game {
     this.renderQualityMode = readStoredRenderQuality();
     this._lobbyPerfBudgetActive = false;
     this._lastAppliedPixelRatioCap = this.pixelRatioCap;
+    this.startLayoutEl = document.querySelector(".start-layout");
     this.mpStatusEl = document.getElementById("mp-status");
     this.mpCreateBtn = document.getElementById("mp-create");
     this.mpJoinBtn = document.getElementById("mp-join");
     this.mpStartBtn = document.getElementById("mp-start");
     this.mpOpenTrainingBtn = document.getElementById("mp-open-training");
     this.mpOpenSimulacBtn = document.getElementById("mp-open-simulac");
+    this.hostCommandPanelEl = document.getElementById("host-command-panel");
+    this.hostCommandStateEl = document.getElementById("host-command-state");
+    this.hostStartForestBtn = document.getElementById("host-start-forest");
+    this.hostStartCityBtn = document.getElementById("host-start-city");
+    this.hostOpenLobbyBtn = document.getElementById("host-open-lobby");
+    this.hostOpenTrainingBtn = document.getElementById("host-open-training");
+    this.hostOpenSimulacBtn = document.getElementById("host-open-simulac");
     this.mpRefreshBtn = document.getElementById("mp-refresh");
     this.mpNameInput = document.getElementById("mp-name");
     this.mpCodeInput = document.getElementById("mp-code");
@@ -608,7 +685,8 @@ export class Game {
       roomCode: null,
       hostId: null,
       players: [],
-      selectedTeam: null
+      selectedTeam: null,
+      state: null
     };
     this.lobby3d = {
       active: false,
@@ -656,9 +734,13 @@ export class Game {
     this._pvpBoxMin = new THREE.Vector3();
     this._pvpBoxMax = new THREE.Vector3();
     this._pvpHitPoint = new THREE.Vector3();
+    this._pvpHeadHitPoint = new THREE.Vector3();
+    this._pvpBodyHitPoint = new THREE.Vector3();
     this.pendingRemoteBlocks = new Map();
     this.dynamicBlockState = new Map();
+    this.shotBlockDamageState = new Map();
     this.latestRoomSnapshot = null;
+    this.lastAppliedRoomSnapshotKey = "";
     this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: true });
 
     this.objective = {
@@ -723,7 +805,8 @@ export class Game {
     this.optionsMenuOpen = false;
 
     this._initialized = false;
-    this.mapId = ONLINE_MAP_ID;
+    this.onlineMapId = ONLINE_MAP_ID;
+    this.mapId = this.onlineMapId ?? ONLINE_MAP_ID;
     this.skyDome = null;
     this.skyCloudSprites = [];
     this.skyCloudTexture = null;
@@ -762,6 +845,7 @@ export class Game {
     this.mount.appendChild(this.renderer.domElement);
     this.scene.add(this.camera);
     this.camera.add(this.weaponView);
+    this.prewarmWeaponViewCache();
     this.camera.add(this.shovelView);
     this.camera.add(this.blockView);
     this.camera.add(this.weaponViewKeyLight);
@@ -828,7 +912,7 @@ export class Game {
   }
 
   getMapIdForMode(mode = this.activeMatchMode) {
-    return mode === "online" ? ONLINE_MAP_ID : TRAINING_MAP_ID;
+    return mode === "online" ? this.onlineMapId ?? ONLINE_MAP_ID : TRAINING_MAP_ID;
   }
 
   getOnlineConnectionUiState() {
@@ -919,16 +1003,27 @@ export class Game {
 
   rebuildWeaponViewModel() {
     const previousView = this.weaponView ?? null;
-    const parent = previousView?.parent ?? this.camera;
-    if (previousView && parent) {
-      parent.remove(previousView);
+    if (previousView) {
+      previousView.visible = false;
     }
-
     this.weaponView = this.getWeaponViewFromCache(this.selectedWeaponId);
+    if (this.weaponView.parent !== this.camera) {
+      this.camera.add(this.weaponView);
+    }
     this.weaponView.visible = false;
     this.bindWeaponViewEffects(this.weaponView);
-    if (parent) {
-      parent.add(this.weaponView);
+  }
+
+  prewarmWeaponViewCache() {
+    if (!this.camera) {
+      return;
+    }
+    for (const weapon of WEAPON_CATALOG) {
+      const view = this.getWeaponViewFromCache(weapon.id);
+      view.visible = false;
+      if (view.parent !== this.camera) {
+        this.camera.add(view);
+      }
     }
   }
 
@@ -1091,6 +1186,25 @@ export class Game {
       return true;
     }
     return Boolean(activeEl.isContentEditable);
+  }
+
+  clearUiInputFocus() {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const activeEl = document.activeElement;
+    if (activeEl instanceof HTMLElement && activeEl !== document.body) {
+      activeEl.blur?.();
+    }
+    this.chat?.inputEl?.blur?.();
+    this.mpNameInput?.blur?.();
+    this.lobbyQuickNameInput?.blur?.();
+  }
+
+  resetLineBuildDrag() {
+    this.lineBuildDragActive = false;
+    this.lineBuildDragMoved = false;
+    this.lineBuildDragMotion = 0;
   }
 
   setupLobby3D() {
@@ -2213,13 +2327,12 @@ export class Game {
     this.joinDefaultRoom({ force: true });
     this.hud.showStartOverlay(false);
     this.optionsMenuOpen = false;
-    this.mouseLookEnabled = this.mobileEnabled || this.allowUnlockedLook;
+    this.clearUiInputFocus();
+    this.mouseLookEnabled = this.mobileEnabled || this.pointerLocked;
     this.setLobby3DActive(true, { reposition: true });
-    this.syncCursorVisibility();
     this.updateLobbyControls();
-    if (!this.mobileEnabled && !this.mouseLookEnabled && !this.isUiInputFocused()) {
-      this.tryPointerLock();
-    }
+    this.restoreGameplayLookState({ preferPointerLock: true });
+    this.syncCursorVisibility();
   }
 
   leaveOnlineLobby3DToMenu() {
@@ -2362,10 +2475,10 @@ export class Game {
       return true;
     }
     if (this.isLobby3DActive() && !this.optionsMenuOpen && !this.isUiInputFocused()) {
-      this.tryPointerLock();
-    } else {
-      this.syncCursorVisibility();
+      this.clearUiInputFocus();
+      this.restoreGameplayLookState({ preferPointerLock: true });
     }
+    this.syncCursorVisibility();
     return true;
   }
 
@@ -3274,6 +3387,7 @@ export class Game {
     this.mobileBagBtn?.setAttribute("aria-label", "가방");
     this.mobileAimBtn?.setAttribute("aria-label", "조준");
     setText("mobile-jump", "점프");
+    setText("mobile-crouch", "웅크");
     setText("mobile-reload", "장전");
     setText("mobile-tab", "탭");
     setText("mobile-options", "옵션");
@@ -3760,7 +3874,26 @@ export class Game {
       return;
     }
 
-    if (this.mobileEnabled || this.allowUnlockedLook) {
+    if (resume && this.isLobby3DActive()) {
+      this.restoreGameplayLookState({ preferPointerLock: true });
+      this.syncCursorVisibility();
+      return;
+    }
+
+    if (resume) {
+      if (this.mobileEnabled || this.allowUnlockedLook) {
+        this.mouseLookEnabled = true;
+        this.syncCursorVisibility();
+        return;
+      }
+
+      this.mouseLookEnabled = false;
+      this.syncCursorVisibility();
+      this.tryPointerLock({ fallbackUnlockedLook: true });
+      return;
+    }
+
+    if (this.mobileEnabled || this.pointerLocked || this.allowUnlockedLook) {
       this.mouseLookEnabled = true;
       this.syncCursorVisibility();
       return;
@@ -3768,9 +3901,6 @@ export class Game {
 
     this.mouseLookEnabled = false;
     this.syncCursorVisibility();
-    if (resume) {
-      this.tryPointerLock();
-    }
   }
 
   exitOnlineMatchToLobby3D() {
@@ -3803,16 +3933,9 @@ export class Game {
     this.updateFlagInteractUi();
     this.refreshOnlineStatus();
     this.updateOptionsExitUi();
-
-    if (this.mobileEnabled || this.allowUnlockedLook) {
-      this.mouseLookEnabled = true;
-      this.syncCursorVisibility();
-      return;
-    }
-
-    this.mouseLookEnabled = false;
+    this.clearUiInputFocus();
+    this.restoreGameplayLookState({ preferPointerLock: true });
     this.syncCursorVisibility();
-    this.tryPointerLock();
   }
 
   exitToStartMenu() {
@@ -3827,7 +3950,7 @@ export class Game {
     this.handlePrimaryActionUp();
     this.resetMobileStick();
     this.chat?.close?.();
-    this.mapId = ONLINE_MAP_ID;
+    this.mapId = this.onlineMapId ?? ONLINE_MAP_ID;
     this.setRespawnBanner("", false);
     this.setTabScoreboardVisible(false);
     this.mouseLookEnabled = false;
@@ -4233,8 +4356,19 @@ export class Game {
 
   applyRoomSnapshot(payload = {}) {
     this.applyDailyLeaderboardPayload(payload.dailyLeaderboard ?? null);
+    const incomingMapId = normalizeOnlineMapId(
+      payload.mapId ?? payload.state?.mapId ?? this.lobbyState.state?.mapId ?? this.onlineMapId
+    );
+    this.onlineMapId = incomingMapId;
+    if (!this.isRunning || this.activeMatchMode === "online") {
+      this.mapId = incomingMapId;
+    }
     const roundStartedAt = Math.max(0, Number(payload.round?.startedAt ?? 0) || 0);
     const roundEnded = Boolean(payload.round?.ended);
+    const snapshotRevision = Math.max(0, Math.trunc(Number(payload.revision) || 0));
+    const snapshotUpdatedAt = Math.max(0, Math.trunc(Number(payload.updatedAt) || 0));
+    const blocks = Array.isArray(payload.blocks) ? payload.blocks : null;
+    const snapshotKey = `${incomingMapId}|${snapshotRevision}|${snapshotUpdatedAt}|${roundStartedAt}|${blocks?.length ?? -1}`;
     if (roundStartedAt > 0) {
       this.lastRoomStartedAt = Math.max(this.lastRoomStartedAt, roundStartedAt);
     }
@@ -4246,7 +4380,6 @@ export class Game {
       this.start({ mode: "online" });
       return;
     }
-    const blocks = Array.isArray(payload.blocks) ? payload.blocks : null;
     if (payload.weaponId) {
       this.applySelectedWeapon(payload.weaponId, {
         persist: true,
@@ -4255,6 +4388,13 @@ export class Game {
         announce: false
       });
     }
+    if (snapshotKey === this.lastAppliedRoomSnapshotKey) {
+      this.latestRoomSnapshot = payload;
+      this.applyInventorySnapshot(payload.stock, { quiet: true });
+      this.applyOnlineStatePayload(payload, { showEvent: false });
+      return;
+    }
+    this.lastAppliedRoomSnapshotKey = snapshotKey;
     this.latestRoomSnapshot = payload;
     this.resetDynamicBlockState(blocks ?? []);
     if (!blocks) {
@@ -4266,6 +4406,7 @@ export class Game {
     }
     this.applyInventorySnapshot(payload.stock, { quiet: true });
 
+    this.mapId = incomingMapId;
     this.voxelWorld.generateTerrain({ mapId: this.mapId });
     for (const entry of blocks) {
       const update = this.normalizeDynamicBlockUpdate(entry);
@@ -4340,6 +4481,26 @@ export class Game {
     return this.dynamicBlockState.get(toBlockKey(Math.trunc(x), Math.trunc(y), Math.trunc(z))) ?? null;
   }
 
+  clearShotBlockDamageState(x, y, z) {
+    this.shotBlockDamageState.delete(toBlockKey(Math.trunc(x), Math.trunc(y), Math.trunc(z)));
+  }
+
+  getShotBlockHealth(typeId) {
+    const normalizedTypeId = Math.trunc(Number(typeId) || 0);
+    return SHOT_BLOCK_HEALTH_BY_TYPE_ID.get(normalizedTypeId) ?? 6;
+  }
+
+  getShotBlockImpactPower(weaponDef = this.selectedWeaponDef) {
+    const weaponId = String(weaponDef?.id ?? "").trim().toLowerCase();
+    if (weaponId === "awp") {
+      return 2.4;
+    }
+    if (weaponId === "spas12") {
+      return 0.65;
+    }
+    return 1;
+  }
+
   setDynamicBlockEntry(key, entry = null) {
     if (!key) {
       return;
@@ -4357,6 +4518,8 @@ export class Game {
       return null;
     }
     const key = toBlockKey(normalized.x, normalized.y, normalized.z);
+    this.shotBlockDamageState.delete(key);
+    this.voxelWorld.setBlockDamageTint(normalized.x, normalized.y, normalized.z, 0);
     if (normalized.action === "remove") {
       this.dynamicBlockState.set(key, {
         action: "remove",
@@ -4373,6 +4536,7 @@ export class Game {
 
   resetDynamicBlockState(blocks = []) {
     this.dynamicBlockState.clear();
+    this.shotBlockDamageState.clear();
     for (const entry of blocks) {
       this.applyDynamicBlockUpdate(entry);
     }
@@ -4564,6 +4728,49 @@ export class Game {
     const dx = from.x - to.x;
     const dz = from.z - to.z;
     return Math.hypot(dx, dz);
+  }
+
+  getWeaponDamageAtDistance(weaponDef, baseDamage, distance = 0) {
+    const parsedBaseDamage = Math.max(1, Number(baseDamage) || 1);
+    const falloffStart = Math.max(0, Number(weaponDef?.damageFalloffStart) || 0);
+    const falloffEnd = Math.max(falloffStart, Number(weaponDef?.damageFalloffEnd) || falloffStart);
+    if (falloffEnd <= falloffStart) {
+      return Math.round(parsedBaseDamage);
+    }
+    const minDamageScale = THREE.MathUtils.clamp(
+      Number(weaponDef?.minDamageScale ?? 1) || 1,
+      0.05,
+      1
+    );
+    const normalizedDistance = THREE.MathUtils.clamp(
+      (Number(distance) - falloffStart) / (falloffEnd - falloffStart),
+      0,
+      1
+    );
+    const easedDistance = normalizedDistance * normalizedDistance * (3 - 2 * normalizedDistance);
+    return Math.max(
+      1,
+      Math.round(THREE.MathUtils.lerp(parsedBaseDamage, parsedBaseDamage * minDamageScale, easedDistance))
+    );
+  }
+
+  getWeaponHitDamage(weaponDef, baseDamage, distance = 0, hitZone = "body") {
+    const distanceDamage = this.getWeaponDamageAtDistance(weaponDef, baseDamage, distance);
+    const normalizedHitZone = String(hitZone ?? "body").trim().toLowerCase();
+    const hitMultiplier =
+      normalizedHitZone === "head"
+        ? Math.max(1, Number(weaponDef?.headshotMultiplier ?? 1) || 1)
+        : 1;
+    return Math.max(1, Math.round(distanceDamage * hitMultiplier));
+  }
+
+  promoteHitZone(currentZone = "", nextZone = "") {
+    const current = String(currentZone ?? "").trim().toLowerCase();
+    const next = String(nextZone ?? "").trim().toLowerCase();
+    if (next === "head") {
+      return "head";
+    }
+    return current || next || "body";
   }
 
   getLocalSupportBasePoint() {
@@ -5586,24 +5793,37 @@ export class Game {
       shoulderPatchR,
       chestPatch,
       backpack,
+      torso,
+      chestRig,
       backpackBaseY: backpack.position.y,
       headPivot,
       headPivotBaseY: headPivot.position.y,
+      torsoBaseY: torso.position.y,
+      chestRigBaseY: chestRig.position.y,
       armL,
       armR,
       armLBaseX: armL.rotation.x,
       armRBaseX: armR.rotation.x,
+      armLBaseY: armL.position.y,
+      armRBaseY: armR.position.y,
       handL,
       handR,
+      handLBaseY: handL.position.y,
+      handRBaseY: handR.position.y,
       weaponAnchor,
       legL,
       legR,
+      legLBaseY: legL.position.y,
+      legRBaseY: legR.position.y,
       shoeL,
       shoeR,
+      shoeLBaseY: shoeL.position.y,
+      shoeRBaseY: shoeR.position.y,
       targetPosition: new THREE.Vector3(),
       targetYaw: 0,
       yaw: 0,
       hasValidState: false,
+      crouched: false,
       prevPosition: new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN),
       walkPhase: 0,
       isDowned: false,
@@ -5707,28 +5927,66 @@ export class Game {
     x,
     z,
     referenceY = Number.NaN,
-    { maxDrop = 4.5, maxRise = 1.25, fallbackToGlobalSurface = true } = {}
+    { maxDrop = 4.5, maxRise = 1.25, fallbackToGlobalSurface = true, playerHeight = this.currentPlayerHeight ?? PLAYER_HEIGHT } = {}
   ) {
     if (!Number.isFinite(x) || !Number.isFinite(z)) {
       return Number.NaN;
     }
 
-    let surfaceY = Number.NaN;
-    if (Number.isFinite(referenceY)) {
-      const feetY = referenceY - PLAYER_HEIGHT;
-      surfaceY = this.voxelWorld.getSurfaceYAt(
-        x,
-        z,
-        Math.floor(feetY - Math.max(0.5, maxDrop)),
-        Math.ceil(feetY + Math.max(0.25, maxRise))
-      );
+    const feetY = Number.isFinite(referenceY) ? referenceY - playerHeight : Number.NaN;
+    const minBlockY = Number.isFinite(feetY)
+      ? Math.floor(feetY - Math.max(0.5, maxDrop))
+      : -32;
+    const maxBlockY = Number.isFinite(feetY)
+      ? Math.ceil(feetY + Math.max(0.25, maxRise))
+      : 48;
+    let bestSupportY = Number.NaN;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let blockY = maxBlockY; blockY >= minBlockY; blockY -= 1) {
+      if (!this.voxelWorld.hasBlockAtWorld(x, blockY, z)) {
+        continue;
+      }
+
+      const candidateSupportY = blockY + 1 + playerHeight;
+      if (Number.isFinite(referenceY)) {
+        const offset = candidateSupportY - referenceY;
+        if (offset < -maxDrop - 0.001 || offset > maxRise + 0.001) {
+          continue;
+        }
+      }
+
+      if (this.isPlayerCollidingAt(x, candidateSupportY, z)) {
+        continue;
+      }
+
+      const distance = Number.isFinite(referenceY)
+        ? Math.abs(candidateSupportY - referenceY)
+        : Math.abs(candidateSupportY);
+      if (
+        distance < bestDistance - 0.0001 ||
+        (Math.abs(distance - bestDistance) <= 0.0001 &&
+          candidateSupportY < bestSupportY)
+      ) {
+        bestSupportY = candidateSupportY;
+        bestDistance = distance;
+      }
     }
 
-    if (!Number.isFinite(surfaceY) && fallbackToGlobalSurface) {
-      surfaceY = this.voxelWorld.getSurfaceYAt(x, z);
+    if (Number.isFinite(bestSupportY)) {
+      return bestSupportY;
     }
 
-    return Number.isFinite(surfaceY) ? surfaceY + PLAYER_HEIGHT : Number.NaN;
+    if (!fallbackToGlobalSurface) {
+      return Number.NaN;
+    }
+
+    const surfaceY = this.voxelWorld.getSurfaceYAt(x, z);
+    if (!Number.isFinite(surfaceY)) {
+      return Number.NaN;
+    }
+    const fallbackSupportY = surfaceY + playerHeight;
+    return this.isPlayerCollidingAt(x, fallbackSupportY, z, { playerHeight }) ? Number.NaN : fallbackSupportY;
   }
 
   syncLobbyPlayerStateFromPayload(id, patch = {}) {
@@ -5774,6 +6032,8 @@ export class Game {
     const y = Number(state.y);
     const z = Number(state.z);
     const yaw = Number(state.yaw);
+    const crouched = Boolean(state.crouched);
+    const remotePlayerHeight = crouched ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       return;
     }
@@ -5781,7 +6041,8 @@ export class Game {
     const supportedPlayerY = this.getSupportedPlayerY(x, z, y, {
       maxDrop: snap ? 5 : 2.25,
       maxRise: snap ? 1.4 : 0.7,
-      fallbackToGlobalSurface: true
+      fallbackToGlobalSurface: true,
+      playerHeight: remotePlayerHeight
     });
     let resolvedY = y;
     if (Number.isFinite(supportedPlayerY)) {
@@ -5794,8 +6055,10 @@ export class Game {
       }
     }
 
-    remote.targetPosition.set(x, resolvedY - PLAYER_HEIGHT, z);
+    remote.targetPosition.set(x, resolvedY - remotePlayerHeight, z);
     remote.targetYaw = Number.isFinite(yaw) ? yaw : 0;
+    remote.crouched = crouched;
+    this.applyRemoteCrouchPose(remote, crouched);
     remote.hasValidState = true;
     remote.group.visible = true;
 
@@ -5806,6 +6069,54 @@ export class Game {
       remote.group.rotation.y = remote.yaw;
       remote.prevPosition.copy(remote.group.position);
       remote.group.updateMatrixWorld(true);
+    }
+  }
+
+  applyRemoteCrouchPose(remote, crouched = false) {
+    if (!remote) {
+      return;
+    }
+    const crouchBlend = crouched ? 1 : 0;
+    if (remote.torso) {
+      remote.torso.position.y = (remote.torsoBaseY ?? remote.torso.position.y) - 0.28 * crouchBlend;
+    }
+    if (remote.chestRig) {
+      remote.chestRig.position.y = (remote.chestRigBaseY ?? remote.chestRig.position.y) - 0.24 * crouchBlend;
+    }
+    if (remote.backpack) {
+      remote.backpack.position.y = (remote.backpackBaseY ?? remote.backpack.position.y) - 0.26 * crouchBlend;
+    }
+    if (remote.headPivot) {
+      remote.headPivot.position.y = (remote.headPivotBaseY ?? remote.headPivot.position.y) - 0.36 * crouchBlend;
+    }
+    if (remote.armL) {
+      remote.armL.position.y = (remote.armLBaseY ?? remote.armL.position.y) - 0.22 * crouchBlend;
+    }
+    if (remote.armR) {
+      remote.armR.position.y = (remote.armRBaseY ?? remote.armR.position.y) - 0.22 * crouchBlend;
+    }
+    if (remote.handL) {
+      remote.handL.position.y = (remote.handLBaseY ?? remote.handL.position.y) - 0.2 * crouchBlend;
+    }
+    if (remote.handR) {
+      remote.handR.position.y = (remote.handRBaseY ?? remote.handR.position.y) - 0.2 * crouchBlend;
+    }
+    if (remote.legL) {
+      remote.legL.position.y = (remote.legLBaseY ?? remote.legL.position.y) - 0.04 * crouchBlend;
+      remote.legL.rotation.x = crouched ? -0.88 : 0;
+    }
+    if (remote.legR) {
+      remote.legR.position.y = (remote.legRBaseY ?? remote.legR.position.y) - 0.04 * crouchBlend;
+      remote.legR.rotation.x = crouched ? 0.88 : 0;
+    }
+    if (remote.shoeL) {
+      remote.shoeL.position.y = (remote.shoeLBaseY ?? remote.shoeL.position.y) + 0.04 * crouchBlend;
+    }
+    if (remote.shoeR) {
+      remote.shoeR.position.y = (remote.shoeRBaseY ?? remote.shoeR.position.y) + 0.04 * crouchBlend;
+    }
+    if (remote.nameTag) {
+      remote.nameTag.position.y = crouched ? 2.36 : 2.72;
     }
   }
 
@@ -5838,10 +6149,7 @@ export class Game {
     if (remote.group) {
       remote.group.rotation.z = 0;
     }
-    if (remote.legL && remote.legR) {
-      remote.legL.rotation.x = 0;
-      remote.legR.rotation.x = 0;
-    }
+    this.applyRemoteCrouchPose(remote, remote.crouched);
     if (remote.shoeL && remote.shoeR) {
       remote.shoeL.rotation.x = 0;
       remote.shoeR.rotation.x = 0;
@@ -5853,16 +6161,6 @@ export class Game {
     if (remote.handL && remote.handR) {
       remote.handL.rotation.x = 0;
       remote.handR.rotation.x = 0;
-    }
-    if (remote.headPivot) {
-      remote.headPivot.position.y = Number.isFinite(remote.headPivotBaseY)
-        ? remote.headPivotBaseY
-        : remote.headPivot.position.y;
-    }
-    if (remote.backpack) {
-      remote.backpack.position.y = Number.isFinite(remote.backpackBaseY)
-        ? remote.backpackBaseY
-        : remote.backpack.position.y;
     }
   }
 
@@ -6075,9 +6373,11 @@ export class Game {
         remote.walkPhase += effectiveDelta * (6 + moveRatio * 8);
       }
       const swing = Math.sin(remote.walkPhase) * 0.55 * moveRatio;
+      const crouchBlend = remote.crouched ? 1 : 0;
       if (remote.legL && remote.legR) {
-        remote.legL.rotation.x = swing;
-        remote.legR.rotation.x = -swing;
+        const crouchLegBase = 0.88 * crouchBlend;
+        remote.legL.rotation.x = crouchLegBase + swing * (1 - crouchBlend * 0.7);
+        remote.legR.rotation.x = -crouchLegBase - swing * (1 - crouchBlend * 0.7);
       }
       if (remote.shoeL && remote.shoeR) {
         remote.shoeL.rotation.x = swing * 0.45;
@@ -6095,17 +6395,19 @@ export class Game {
       if (remote.headPivot) {
         const breath = Math.sin(remote.walkPhase * 0.5 + remote.yaw) * 0.018;
         const baseY = remote.headPivotBaseY ?? remote.headPivot.position.y;
-        remote.headPivot.position.y = baseY + breath * (0.55 + moveRatio * 0.45);
+        remote.headPivot.position.y =
+          baseY - 0.36 * crouchBlend + breath * (0.55 + moveRatio * 0.45);
       }
       if (remote.backpack) {
         const breath = Math.sin(remote.walkPhase * 0.5 + remote.yaw + 0.3) * 0.012;
         const baseY = remote.backpackBaseY ?? remote.backpack.position.y;
-        remote.backpack.position.y = baseY + breath * (0.5 + moveRatio * 0.4);
+        remote.backpack.position.y =
+          baseY - 0.26 * crouchBlend + breath * (0.5 + moveRatio * 0.4);
       }
       remote.prevPosition.set(remote.group.position.x, remote.group.position.y, remote.group.position.z);
 
       this._remoteHead.copy(remote.group.position);
-      this._remoteHead.y += PLAYER_HEIGHT + 0.72;
+      this._remoteHead.y += (remote.crouched ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT) + 0.72;
       this._toRemote.copy(this._remoteHead).sub(this.camera.position);
       const distance = this._toRemote.length();
 
@@ -6174,16 +6476,16 @@ export class Game {
     if (team === "alpha") {
       anchorX = this.objective.alphaBase.x;
       anchorZ = this.objective.alphaBase.z;
-      faceYaw = -Math.PI * 0.5;
+      faceYaw = Math.PI * 0.5;
     } else if (team === "bravo") {
       anchorX = this.objective.bravoBase.x;
       anchorZ = this.objective.bravoBase.z;
-      faceYaw = Math.PI * 0.5;
+      faceYaw = -Math.PI * 0.5;
     } else {
       const leftSide = (seed & 1) === 0;
       anchorX = leftSide ? this.objective.alphaBase.x + 4 : this.objective.bravoBase.x - 4;
       anchorZ = 0;
-      faceYaw = leftSide ? -Math.PI * 0.4 : Math.PI * 0.4;
+      faceYaw = leftSide ? Math.PI * 0.4 : -Math.PI * 0.4;
     }
 
     let spawnPoint = null;
@@ -6329,6 +6631,8 @@ export class Game {
     this.handlePrimaryActionUp();
     this.pendingMouseLookX = 0;
     this.pendingMouseLookY = 0;
+    this.unlockedLookLastClientX = null;
+    this.unlockedLookLastClientY = null;
     this.rightMouseAiming = false;
     if (!this.mobileEnabled) {
       this.isAiming = false;
@@ -6368,7 +6672,8 @@ export class Game {
       y: Number(this.playerPosition.y.toFixed(3)),
       z: Number(this.playerPosition.z.toFixed(3)),
       yaw: Number(this.yaw.toFixed(4)),
-      pitch: Number(this.pitch.toFixed(4))
+      pitch: Number(this.pitch.toFixed(4)),
+      crouched: this.isCrouching
     });
   }
 
@@ -6394,37 +6699,59 @@ export class Game {
       }
 
       const base = remote.group.position;
+      const bodyTopOffset = remote.crouched ? PVP_REMOTE_CROUCH_BODY_TOP_OFFSET : PVP_REMOTE_BODY_TOP_OFFSET;
+      const headMinOffset = remote.crouched ? PVP_REMOTE_CROUCH_HEAD_MIN_OFFSET : PVP_REMOTE_HEAD_MIN_OFFSET;
+      const headMaxOffset = remote.crouched ? PVP_REMOTE_CROUCH_HEAD_MAX_OFFSET : PVP_REMOTE_HEAD_MAX_OFFSET;
+      let candidate = null;
+
       this._pvpBoxMin.set(
-        base.x - PVP_REMOTE_HITBOX_HALF_WIDTH,
-        base.y + PVP_REMOTE_HITBOX_FOOT_OFFSET,
-        base.z - PVP_REMOTE_HITBOX_HALF_WIDTH
+        base.x - PVP_REMOTE_HEAD_HALF_WIDTH,
+        base.y + headMinOffset,
+        base.z - PVP_REMOTE_HEAD_HALF_WIDTH
       );
       this._pvpBoxMax.set(
-        base.x + PVP_REMOTE_HITBOX_HALF_WIDTH,
-        base.y + PLAYER_HEIGHT + PVP_REMOTE_HITBOX_TOP_OFFSET,
-        base.z + PVP_REMOTE_HITBOX_HALF_WIDTH
+        base.x + PVP_REMOTE_HEAD_HALF_WIDTH,
+        base.y + headMaxOffset,
+        base.z + PVP_REMOTE_HEAD_HALF_WIDTH
       );
       this._pvpBox.set(this._pvpBoxMin, this._pvpBoxMax);
+      const headHitPoint = raycaster.ray.intersectBox(this._pvpBox, this._pvpHeadHitPoint);
+      if (headHitPoint && this.voxelWorld.hasLineOfSight(this.camera.position, headHitPoint, 0.16)) {
+        candidate = {
+          id: remote.id,
+          distance: headHitPoint.distanceTo(this.camera.position),
+          point: headHitPoint.clone(),
+          hitZone: "head"
+        };
+      } else {
+        this._pvpBoxMin.set(
+          base.x - PVP_REMOTE_HITBOX_HALF_WIDTH,
+          base.y + PVP_REMOTE_HITBOX_FOOT_OFFSET,
+          base.z - PVP_REMOTE_HITBOX_HALF_WIDTH
+        );
+        this._pvpBoxMax.set(
+          base.x + PVP_REMOTE_HITBOX_HALF_WIDTH,
+          base.y + bodyTopOffset,
+          base.z + PVP_REMOTE_HITBOX_HALF_WIDTH
+        );
+        this._pvpBox.set(this._pvpBoxMin, this._pvpBoxMax);
+        const bodyHitPoint = raycaster.ray.intersectBox(this._pvpBox, this._pvpBodyHitPoint);
+        if (bodyHitPoint && this.voxelWorld.hasLineOfSight(this.camera.position, bodyHitPoint, 0.16)) {
+          candidate = {
+            id: remote.id,
+            distance: bodyHitPoint.distanceTo(this.camera.position),
+            point: bodyHitPoint.clone(),
+            hitZone: "body"
+          };
+        }
+      }
 
-      const hitPoint = raycaster.ray.intersectBox(this._pvpBox, this._pvpHitPoint);
-      if (!hitPoint) {
+      if (!candidate || candidate.distance > bestDistance) {
         continue;
       }
-      if (!this.voxelWorld.hasLineOfSight(this.camera.position, hitPoint, 0.16)) {
-        continue;
-      }
 
-      const distance = hitPoint.distanceTo(this.camera.position);
-      if (distance > bestDistance) {
-        continue;
-      }
-
-      bestDistance = distance;
-      best = {
-        id: remote.id,
-        distance,
-        point: hitPoint.clone()
-      };
+      bestDistance = candidate.distance;
+      best = candidate;
     }
 
     return best;
@@ -6769,82 +7096,149 @@ export class Game {
     return true;
   }
 
-  collectCollapsibleColumnBlocks(x, y, z) {
-    const collapsed = [];
+  isCollapseAnchorBlock(block) {
+    if (!block) {
+      return true;
+    }
+    if (this.isLobby3DProtectedBlockCoord(block.x, block.y, block.z)) {
+      return true;
+    }
+    if (block.y <= COLLAPSE_ANCHOR_MAX_Y) {
+      return true;
+    }
+    if (
+      block.y <= COLLAPSE_ANCHOR_MAX_Y + 1 &&
+      COLLAPSE_ANCHOR_TYPE_IDS.has(Math.trunc(Number(block.typeId) || 0))
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  collectCollapseGroupFrom(startBlock, visited) {
+    if (!startBlock) {
+      return null;
+    }
+
+    const startKey = toBlockKey(startBlock.x, startBlock.y, startBlock.z);
+    if (visited.has(startKey)) {
+      return null;
+    }
+
+    const queue = [startBlock];
+    const group = [];
+    let anchored = false;
+    visited.add(startKey);
+
+    while (queue.length > 0) {
+      const current = queue.pop();
+      if (!current) {
+        continue;
+      }
+      group.push(current);
+
+      if (this.isCollapseAnchorBlock(current)) {
+        anchored = true;
+        break;
+      }
+      if (group.length > COLLAPSE_GROUP_OVERFLOW_LIMIT) {
+        anchored = true;
+        break;
+      }
+
+      for (const [offsetX, offsetY, offsetZ] of COLLAPSE_NEIGHBOR_OFFSETS) {
+        const nextX = current.x + offsetX;
+        const nextY = current.y + offsetY;
+        const nextZ = current.z + offsetZ;
+        const nextKey = toBlockKey(nextX, nextY, nextZ);
+        if (visited.has(nextKey)) {
+          continue;
+        }
+        const nextBlock = this.voxelWorld.getBlock(nextX, nextY, nextZ);
+        if (!nextBlock) {
+          continue;
+        }
+        visited.add(nextKey);
+        queue.push(nextBlock);
+      }
+    }
+
+    if (anchored || group.length === 0 || group.length > COLLAPSE_GROUP_MAX_BLOCKS) {
+      return null;
+    }
+
+    return group;
+  }
+
+  collectCollapsibleGroups(x, y, z) {
     const baseX = Math.trunc(Number(x));
     const baseY = Math.trunc(Number(y));
     const baseZ = Math.trunc(Number(z));
     if (!Number.isFinite(baseX) || !Number.isFinite(baseY) || !Number.isFinite(baseZ)) {
-      return collapsed;
+      return [];
     }
 
-    for (let offset = 1; offset <= COLUMN_COLLAPSE_MAX_HEIGHT; offset += 1) {
-      const nextY = baseY + offset;
-      if (!this.voxelWorld.hasBlock(baseX, nextY, baseZ)) {
-        break;
-      }
+    const visited = new Set();
+    const groups = [];
 
-      const tracked = this.getDynamicBlockEntry(baseX, nextY, baseZ);
-      if (tracked?.action !== "place") {
-        break;
+    for (const [offsetX, offsetY, offsetZ] of COLLAPSE_NEIGHBOR_OFFSETS) {
+      const startBlock = this.voxelWorld.getBlock(baseX + offsetX, baseY + offsetY, baseZ + offsetZ);
+      if (!startBlock) {
+        continue;
       }
-
-      const typeId = Math.trunc(Number(tracked.typeId));
-      if (!Number.isFinite(typeId) || typeId <= 0) {
-        break;
+      const group = this.collectCollapseGroupFrom(startBlock, visited);
+      if (!group || group.length === 0) {
+        continue;
       }
-
-      collapsed.push({
-        x: baseX,
-        y: nextY,
-        z: baseZ,
-        typeId
-      });
+      groups.push(group);
     }
 
-    return collapsed;
+    return groups;
   }
 
-  collapseColumnAbove(x, y, z, { syncToServer = false } = {}) {
-    const collapsed = this.collectCollapsibleColumnBlocks(x, y, z);
-    if (collapsed.length === 0) {
+  collapseGroupsAround(x, y, z, { syncToServer = false } = {}) {
+    const groups = this.collectCollapsibleGroups(x, y, z);
+    if (groups.length === 0) {
       return 0;
     }
 
-    const visualBlocks = [];
-    for (const block of collapsed) {
-      const previousEntry = this.getDynamicBlockEntry(block.x, block.y, block.z);
-      const removed = this.voxelWorld.removeBlock(block.x, block.y, block.z);
-      if (!removed) {
-        continue;
+    let collapsedCount = 0;
+    for (const group of groups) {
+      const visualBlocks = [];
+      for (const block of group) {
+        const previousEntry = this.getDynamicBlockEntry(block.x, block.y, block.z);
+        const removed = this.voxelWorld.removeBlock(block.x, block.y, block.z);
+        if (!removed) {
+          continue;
+        }
+
+        const payload = {
+          action: "remove",
+          x: block.x,
+          y: block.y,
+          z: block.z,
+          typeId: block.typeId
+        };
+        this.applyDynamicBlockUpdate(payload);
+        visualBlocks.push(block);
+        collapsedCount += 1;
+        if (syncToServer) {
+          this.syncLocalBlockUpdateToServer(payload, previousEntry);
+        }
       }
 
-      const payload = {
-        action: "remove",
-        x: block.x,
-        y: block.y,
-        z: block.z,
-        typeId: block.typeId
-      };
-      this.applyDynamicBlockUpdate(payload);
-      visualBlocks.push(block);
-      if (syncToServer) {
-        this.syncLocalBlockUpdateToServer(payload, previousEntry);
+      if (visualBlocks.length > 0) {
+        this.collapseSystem?.spawnColumn?.(visualBlocks, this.voxelWorld);
       }
     }
 
-    this.collapseSystem?.spawnColumn?.(visualBlocks, this.voxelWorld);
-    return visualBlocks.length;
+    return collapsedCount;
   }
 
   handleLocalBlockChanged(change, { collapseColumn = true } = {}) {
     const payload = this.normalizeDynamicBlockUpdate(change);
     if (!payload) {
       return;
-    }
-    if (payload.action === "remove" && this.buildSystem?.isDigMode?.()) {
-      this.shovelSwingTimer = SHOVEL_SWING_DURATION;
-      this.sound.play("shovel", { gain: 0.78, rateJitter: 0.04, minIntervalMs: 90 });
     }
 
     const previousEntry = this.getDynamicBlockEntry(payload.x, payload.y, payload.z);
@@ -6853,7 +7247,7 @@ export class Game {
 
     if (this.activeMatchMode !== "online") {
       if (shouldCollapseColumn) {
-        this.collapseColumnAbove(payload.x, payload.y, payload.z);
+        this.collapseGroupsAround(payload.x, payload.y, payload.z);
       }
       return;
     }
@@ -6861,7 +7255,7 @@ export class Game {
     const synced = this.syncLocalBlockUpdateToServer(payload, previousEntry, {
       onSuccess: () => {
         if (shouldCollapseColumn) {
-          this.collapseColumnAbove(payload.x, payload.y, payload.z, { syncToServer: true });
+          this.collapseGroupsAround(payload.x, payload.y, payload.z, { syncToServer: true });
         }
       }
     });
@@ -6897,6 +7291,32 @@ export class Game {
       return false;
     }
 
+    const key = toBlockKey(x, y, z);
+    const impactPower = this.getShotBlockImpactPower(this.selectedWeaponDef);
+    const requiredHealth = this.getShotBlockHealth(typeId);
+    const nextDamage = Math.max(0, Number(this.shotBlockDamageState.get(key) ?? 0)) + impactPower;
+    const damageRatio = THREE.MathUtils.clamp(nextDamage / Math.max(1, requiredHealth), 0, 1);
+    this.shotBlockDamageState.set(key, nextDamage);
+    this.voxelWorld.setBlockDamageTint(x, y, z, damageRatio);
+
+    const blockKind =
+      typeId === 8 ? "metal" : typeId === 3 ? "stone" : typeId === 6 ? "brick" : "default";
+    this.sound.playBlockImpactCue(blockKind, 0.7 + damageRatio * 0.35);
+
+    if (nextDamage < requiredHealth) {
+      if (hit.point) {
+        this.spawnHitSpark(hit.point, {
+          color: 0xcfc3b7,
+          scale: 0.56 + damageRatio * 0.18,
+          lift: 0.12,
+          ttl: 0.1 + damageRatio * 0.05
+        });
+      }
+      return false;
+    }
+
+    this.shotBlockDamageState.delete(key);
+
     if (this.activeMatchMode === "online") {
       this.voxelWorld.removeBlock(x, y, z);
       this.handleLocalBlockChanged({
@@ -6922,12 +7342,19 @@ export class Game {
 
     if (hit.point) {
       this.spawnHitSpark(hit.point, {
-        color: 0xdeeaff,
-        scale: 0.88,
-        lift: 0.16,
+        color: 0xffe1b6,
+        scale: 1.08,
+        lift: 0.22,
+        ttl: 0.2
+      });
+      this.spawnHitSpark(hit.point, {
+        color: 0xcfa670,
+        scale: 0.72,
+        lift: 0.14,
         ttl: 0.16
       });
     }
+    this.sound.playBlockBreakCue(blockKind);
     return true;
   }
 
@@ -7125,19 +7552,23 @@ export class Game {
       return;
     }
 
+    this.leftMouseDown = true;
+    this.primaryActionRepeatTimer = 0;
+
     if (this.buildSystem.isBuildMode()) {
-      this.buildSystem.handlePointerAction(0, (x, y, z) =>
-        !this.isPlayerIntersectingBlock(x, y, z)
-      );
+      this.buildSystem.handlePointerAction(0, (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z));
+      if (this.buildSystem.isDigMode()) {
+        this.primaryActionRepeatTimer = DIG_HOLD_REPEAT_INTERVAL;
+      }
       return;
     }
 
-    this.leftMouseDown = true;
     this.fire();
   }
 
   handlePrimaryActionUp() {
     this.leftMouseDown = false;
+    this.primaryActionRepeatTimer = 0;
   }
 
   toggleToolInventory(forceOpen = null) {
@@ -7193,6 +7624,7 @@ export class Game {
     this.mobileModeDigBtn && (this.mobileModeDigBtn.disabled = !showToolTray);
     this.mobileModeGunBtn && (this.mobileModeGunBtn.disabled = !showToolTray);
     this.mobileAimBtn && (this.mobileAimBtn.disabled = !showGunControls);
+    this.mobileCrouchBtn && (this.mobileCrouchBtn.disabled = hideCombatButtons);
     this.mobileReloadBtn && (this.mobileReloadBtn.disabled = !showGunControls);
     if (hideCombatButtons) {
       this.handlePrimaryActionUp();
@@ -7208,6 +7640,7 @@ export class Game {
       "is-active",
       mode === "gun" && (this.isAiming || this.rightMouseAiming)
     );
+    this.mobileCrouchBtn?.classList.toggle("is-active", this.isCrouching);
     this.mobileChatBtn?.classList.toggle("is-active", chatOpen);
     this.mobileChatBtn?.setAttribute("aria-pressed", chatOpen ? "true" : "false");
   }
@@ -7226,6 +7659,7 @@ export class Game {
       !this.mobileModeGunBtn ||
       !this.mobileAimBtn ||
       !this.mobileJumpBtn ||
+      !this.mobileCrouchBtn ||
       !this.mobileReloadBtn ||
       !this.mobileTabBtn ||
       !this.mobileOptionsBtn
@@ -7375,6 +7809,14 @@ export class Game {
         this.verticalVelocity = JUMP_FORCE;
         this.onGround = false;
       }
+    });
+    bindUtilityTap(this.mobileCrouchBtn, () => {
+      if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
+        return;
+      }
+      this.mobileCrouchToggle = !this.mobileCrouchToggle;
+      this.updateCrouchState();
+      this.syncMobileUtilityButtons();
     });
     bindUtilityTap(this.mobileReloadBtn, () => {
       if (this.isLobby3DActive() && !this.isRunning) {
@@ -7538,11 +7980,14 @@ export class Game {
       this.isAiming = false;
       this.rightMouseAiming = false;
       this.handlePrimaryActionUp();
+      this.updateCrouchState();
+      this.resetLineBuildDrag();
       this.setTabScoreboardVisible(false);
       this.mobileState.lookPointerId = null;
       this.mobileState.aimPointerId = null;
       this.mobileState.firePointerId = null;
       this.resetMobileStick();
+      this.syncMobileUtilityButtons();
     });
 
     const controlKeys = new Set([
@@ -7558,6 +8003,8 @@ export class Game {
       "ArrowLeft",
       "ArrowRight",
       "Space",
+      "ControlLeft",
+      "ControlRight",
       "ShiftLeft",
       "ShiftRight",
       "KeyR",
@@ -7677,6 +8124,11 @@ export class Game {
         this.onGround = false;
       }
 
+      if (event.code === "ControlLeft" || event.code === "ControlRight") {
+        this.updateCrouchState();
+        this.syncMobileUtilityButtons();
+      }
+
       if (event.code === "KeyF") {
         this.requestCenterFlagInteract({ source: "key" });
       }
@@ -7710,12 +8162,18 @@ export class Game {
       if (event.code === "ArrowRight") {
         this.isAiming = false;
       }
+      if (event.code === "ControlLeft" || event.code === "ControlRight") {
+        this.updateCrouchState();
+        this.syncMobileUtilityButtons();
+      }
     });
 
     document.addEventListener("pointerlockchange", () => {
       const wasPointerLocked = this.pointerLocked;
       const active = document.pointerLockElement === this.renderer.domElement;
       this.pointerLocked = active;
+      this.unlockedLookLastClientX = null;
+      this.unlockedLookLastClientY = null;
       if (!active) {
         this.leftMouseDown = false;
         this.rightMouseAiming = false;
@@ -7756,6 +8214,8 @@ export class Game {
       }
 
       if (active) {
+        this.allowUnlockedLook = false;
+        this.unlockLookOnNextPointerLockFailure = false;
         this.mouseLookEnabled = true;
         this.hud.showPauseOverlay(false);
         this.syncCursorVisibility();
@@ -7784,6 +8244,15 @@ export class Game {
       if ((!this.isRunning && !this.isLobby3DActive()) || this.isGameOver || this.optionsMenuOpen) {
         return;
       }
+      if (this.unlockLookOnNextPointerLockFailure) {
+        this.unlockLookOnNextPointerLockFailure = false;
+        this.allowUnlockedLook = true;
+        this.mouseLookEnabled = true;
+        this.hud.showPauseOverlay(false);
+        this.hud.setStatus("화면 클릭 시 포인터 락으로 전환됩니다.", false, 1.1);
+        this.syncCursorVisibility();
+        return;
+      }
       this.mouseLookEnabled = this.allowUnlockedLook;
       this.hud.showPauseOverlay(false);
       if (!this.allowUnlockedLook) {
@@ -7793,6 +8262,14 @@ export class Game {
     });
 
     document.addEventListener("mousemove", (event) => {
+      if (this.lineBuildDragActive) {
+        this.lineBuildDragMotion +=
+          Math.abs(Number(event.movementX) || 0) + Math.abs(Number(event.movementY) || 0);
+        if (!this.lineBuildDragMoved && this.lineBuildDragMotion >= 6) {
+          this.lineBuildDragMoved = true;
+        }
+      }
+
       const controlActive = this.isRunning || this.isLobby3DActive();
       if (
         !controlActive ||
@@ -7802,11 +8279,44 @@ export class Game {
         (!this.mobileEnabled && !this.pointerLocked && !this.allowUnlockedLook) ||
         this.isUiInputFocused()
       ) {
+        this.unlockedLookLastClientX = null;
+        this.unlockedLookLastClientY = null;
         return;
       }
 
-      this.pendingMouseLookX += event.movementX;
-      this.pendingMouseLookY += event.movementY;
+      const usingUnlockedDesktopLook =
+        !this.mobileEnabled && !this.pointerLocked && this.allowUnlockedLook;
+
+      let deltaX = Number(event.movementX) || 0;
+      let deltaY = Number(event.movementY) || 0;
+
+      if (usingUnlockedDesktopLook) {
+        if (event.target !== this.renderer.domElement) {
+          this.unlockedLookLastClientX = null;
+          this.unlockedLookLastClientY = null;
+          return;
+        }
+        const clientX = Number(event.clientX);
+        const clientY = Number(event.clientY);
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+          return;
+        }
+        if (
+          this.unlockedLookLastClientX === null ||
+          this.unlockedLookLastClientY === null
+        ) {
+          this.unlockedLookLastClientX = clientX;
+          this.unlockedLookLastClientY = clientY;
+          return;
+        }
+        deltaX = clientX - this.unlockedLookLastClientX;
+        deltaY = clientY - this.unlockedLookLastClientY;
+        this.unlockedLookLastClientX = clientX;
+        this.unlockedLookLastClientY = clientY;
+      }
+
+      this.pendingMouseLookX += deltaX;
+      this.pendingMouseLookY += deltaY;
     });
 
     document.addEventListener(
@@ -7878,7 +8388,7 @@ export class Game {
         event.button === 0 &&
         this.pointerLockSupported &&
         !this.pointerLocked &&
-        !this.mouseLookEnabled &&
+        (!this.mouseLookEnabled || this.allowUnlockedLook) &&
         !this.isUiInputFocused() &&
         !isNonGameplayUiTarget(event.target);
       if (shouldTryPointerLockFromUi) {
@@ -7895,7 +8405,7 @@ export class Game {
       const shouldTryPointerLock =
         this.pointerLockSupported &&
         !this.pointerLocked &&
-        !this.mouseLookEnabled &&
+        (!this.mouseLookEnabled || this.allowUnlockedLook) &&
         !this.isUiInputFocused();
 
       if (lobbyActive) {
@@ -7907,9 +8417,21 @@ export class Game {
 
       if (this.buildSystem.isBuildMode()) {
         if (event.button === 0 || event.button === 2) {
+          const wantsLineDrag =
+            event.button === 0 && this.buildSystem.isPlaceMode() && event.shiftKey;
+          if (wantsLineDrag) {
+            this.lineBuildDragActive = true;
+            this.lineBuildDragMoved = false;
+            this.lineBuildDragMotion = 0;
+            return;
+          }
+          this.resetLineBuildDrag();
+          if (event.button === 0 && this.buildSystem.isDigMode()) {
+            this.handlePrimaryActionDown();
+            return;
+          }
           this.buildSystem.handlePointerAction(event.button, (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z), {
-            // Only allow line placement when Shift is actively held on the click itself.
-            lineMode: this.buildSystem.isPlaceMode() && event.button === 0 && event.shiftKey
+            lineMode: false
           });
           return;
         }
@@ -7935,6 +8457,14 @@ export class Game {
 
     document.addEventListener("mouseup", (event) => {
       if (event.button === 0) {
+        if (this.lineBuildDragActive) {
+          this.buildSystem.handlePointerAction(
+            0,
+            (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z),
+            { lineMode: this.lineBuildDragMoved }
+          );
+          this.resetLineBuildDrag();
+        }
         this.handlePrimaryActionUp();
       }
       if (this.buildSystem.isBuildMode()) {
@@ -7994,6 +8524,22 @@ export class Game {
       this.start({ mode: "single" });
     });
     this.mpOpenSimulacBtn?.addEventListener("click", () => {
+      this.openSimulacWorld();
+    });
+    this.hostStartForestBtn?.addEventListener("click", () => {
+      this.startOnlineMatch("forest_frontline");
+    });
+    this.hostStartCityBtn?.addEventListener("click", () => {
+      this.startOnlineMatch("city_frontline");
+    });
+    this.hostOpenLobbyBtn?.addEventListener("click", () => {
+      this.enterOnlineLobby3D();
+    });
+    this.hostOpenTrainingBtn?.addEventListener("click", () => {
+      this.applyLobbyNickname({ source: "menu", syncToServer: false });
+      this.start({ mode: "single" });
+    });
+    this.hostOpenSimulacBtn?.addEventListener("click", () => {
       this.openSimulacWorld();
     });
     for (const button of this.mpWeaponButtons) {
@@ -8153,20 +8699,27 @@ export class Game {
       return;
     }
 
-    if (this.pointerLocked || this.allowUnlockedLook) {
-      this.mouseLookEnabled = true;
-      this.hud.showPauseOverlay(false);
+    this.hud.showPauseOverlay(false);
+    if (this.isLobby3DActive()) {
+      this.restoreGameplayLookState({ preferPointerLock: true });
       this.syncCursorVisibility();
       return;
     }
 
-    this.tryPointerLock();
+    if (this.pointerLocked || this.allowUnlockedLook) {
+      this.mouseLookEnabled = true;
+      this.syncCursorVisibility();
+      return;
+    }
+
+    this.tryPointerLock({ fallbackUnlockedLook: true });
   }
 
   start(options = {}) {
     const mode = options.mode ?? this.menuMode;
     this.activeMatchMode = mode === "online" ? "online" : "single";
     this.mapId = this.getMapIdForMode(this.activeMatchMode);
+    this.clearUiInputFocus();
     this.setLobby3DActive(false, { reposition: false });
     this.resetState();
     this.setTabScoreboardVisible(false);
@@ -8177,6 +8730,11 @@ export class Game {
     this.hud.hideGameOver();
     this.isRunning = true;
     this.mobileEnabled = this.mobileModeLocked || isLikelyTouchDevice();
+    if (!this.mobileEnabled) {
+      // Desktop should remain playable even when pointer lock is denied.
+      this.allowUnlockedLook = true;
+      this.mouseLookEnabled = true;
+    }
     if (this.mobileEnabled) {
       this.mobileModeLocked = true;
       this.allowUnlockedLook = true;
@@ -8192,12 +8750,12 @@ export class Game {
     this.isGameOver = false;
     this.pointerLockAutoMenuUntil =
       (typeof performance !== "undefined" ? performance.now() : Date.now()) + 1200;
-    this.mouseLookEnabled = this.mobileEnabled ? true : this.allowUnlockedLook;
+    this.mouseLookEnabled = true;
     this.updateVisualMode(this.buildSystem.getToolMode());
     this.syncCursorVisibility();
     this.clock.start();
     if (!this.mobileEnabled) {
-      this.tryPointerLock();
+      this.tryPointerLock({ fallbackUnlockedLook: true });
     }
 
     if (!this.pointerLockSupported) {
@@ -8221,6 +8779,7 @@ export class Game {
       this.updateTeamScoreHud();
       this.updateFlagInteractUi();
     }
+    this.updateCamera(0);
     this.refreshOnlineStatus();
   }
 
@@ -8230,20 +8789,33 @@ export class Game {
       this.pointerLockFallbackTimer = null;
     }
 
-    if (!this.pointerLockSupported || this.allowUnlockedLook || this.mobileEnabled) {
+    if (
+      !this.pointerLockSupported ||
+      this.mobileEnabled ||
+      (this.allowUnlockedLook && !this.unlockLookOnNextPointerLockFailure)
+    ) {
       return;
     }
 
     this.pointerLockFallbackTimer = window.setTimeout(() => {
       this.pointerLockFallbackTimer = null;
 
-      if (
-        !this.isRunning ||
-        this.isGameOver ||
-        this.pointerLocked ||
-        this.allowUnlockedLook ||
-        this.isUiInputFocused()
-      ) {
+      const controlActive = this.isRunning || this.isLobby3DActive();
+      if (!controlActive || this.isGameOver || this.pointerLocked || this.isUiInputFocused()) {
+        return;
+      }
+
+      if (this.unlockLookOnNextPointerLockFailure) {
+        this.unlockLookOnNextPointerLockFailure = false;
+        this.allowUnlockedLook = true;
+        this.mouseLookEnabled = true;
+        this.hud.showPauseOverlay(false);
+        this.hud.setStatus("화면 클릭 시 포인터 락으로 전환됩니다.", false, 1.1);
+        this.syncCursorVisibility();
+        return;
+      }
+
+      if (this.allowUnlockedLook) {
         return;
       }
 
@@ -8261,6 +8833,8 @@ export class Game {
       this.pointerLockFallbackTimer = null;
     }
     this.pointerLockAutoMenuUntil = 0;
+    this.unlockedLookLastClientX = null;
+    this.unlockedLookLastClientY = null;
 
     this.keys.clear();
     this.remoteSyncClock = 0;
@@ -8307,9 +8881,13 @@ export class Game {
     this.weaponRecoil = 0;
     this.weaponBobClock = 0;
     this.shovelSwingTimer = 0;
+    this.currentPlayerHeight = PLAYER_HEIGHT;
+    this.isCrouching = false;
+    this.mobileCrouchToggle = false;
     this.isAiming = false;
     this.rightMouseAiming = false;
     this.leftMouseDown = false;
+    this.resetLineBuildDrag();
     this.aimBlend = 0;
     this.buildSystem.setInventoryOpen(false);
     this.buildSystem.setToolMode("gun", { silentStatus: true });
@@ -8348,6 +8926,7 @@ export class Game {
     this.hud.setKillStreak(0);
     this.hud.clearAnnouncement();
     this.dynamicBlockState.clear();
+    this.shotBlockDamageState.clear();
     this.camera.position.copy(this.playerPosition);
     this.camera.rotation.set(0, 0, 0);
     this.syncCursorVisibility();
@@ -8414,13 +8993,27 @@ export class Game {
       1,
       Math.trunc(Number(weaponDef.pelletDamage ?? weaponDef.damage) || weaponDef.damage || 1)
     );
+    const spreadPattern = String(weaponDef.spreadPattern ?? "").trim().toLowerCase();
+    const spreadRadiusScale = Math.max(0.1, Number(weaponDef.spreadRadiusScale ?? 1) || 1);
     const pelletHitPoints = [];
     const onlineDamageByTarget = new Map();
     const singleHitTargets = new Map();
+    let strongestHitZone = "";
 
     for (let pelletIndex = 0; pelletIndex < pelletCount; pelletIndex += 1) {
-      const spreadX = shotSpread > 0 ? THREE.MathUtils.randFloatSpread(shotSpread * 2) : 0;
-      const spreadY = shotSpread > 0 ? THREE.MathUtils.randFloatSpread(shotSpread * 2) : 0;
+      let spreadX = 0;
+      let spreadY = 0;
+      if (shotSpread > 0) {
+        if (spreadPattern === "circle") {
+          const angle = Math.random() * Math.PI * 2;
+          const radius = shotSpread * spreadRadiusScale * Math.sqrt(Math.random());
+          spreadX = Math.cos(angle) * radius;
+          spreadY = Math.sin(angle) * radius;
+        } else {
+          spreadX = THREE.MathUtils.randFloatSpread(shotSpread * 2);
+          spreadY = THREE.MathUtils.randFloatSpread(shotSpread * 2);
+        }
+      }
       const pelletRaycaster = pelletIndex === 0 ? this.raycaster : new THREE.Raycaster();
       pelletRaycaster.setFromCamera(new THREE.Vector2(spreadX, spreadY), this.camera);
       const blockHit = this.voxelWorld.raycast(pelletRaycaster, 120);
@@ -8429,6 +9022,13 @@ export class Game {
       if (this.activeMatchMode === "online") {
         const remoteHit = this.findOnlineShotTarget(maxEnemyDistance, pelletRaycaster);
         if (remoteHit) {
+          const appliedPelletDamage = this.getWeaponHitDamage(
+            weaponDef,
+            pelletDamage,
+            remoteHit.distance,
+            remoteHit.hitZone
+          );
+          strongestHitZone = this.promoteHitZone(strongestHitZone, remoteHit.hitZone);
           pelletHitPoints.push({
             point: remoteHit.point,
             color: 0xffd58a,
@@ -8438,7 +9038,7 @@ export class Game {
           });
           onlineDamageByTarget.set(
             remoteHit.id,
-            (onlineDamageByTarget.get(remoteHit.id) ?? 0) + pelletDamage
+            (onlineDamageByTarget.get(remoteHit.id) ?? 0) + appliedPelletDamage
           );
           continue;
         }
@@ -8456,8 +9056,15 @@ export class Game {
         continue;
       }
 
-      const result = this.enemyManager.handleShot(pelletRaycaster, maxEnemyDistance, pelletDamage);
+      const result = this.enemyManager.handleShot(
+        pelletRaycaster,
+        maxEnemyDistance,
+        pelletDamage,
+        (baseDamage, hitDistance, hit, hitZone) =>
+          this.getWeaponHitDamage(weaponDef, baseDamage, hitDistance, hitZone)
+      );
       if (result.didHit && result.target) {
+        strongestHitZone = this.promoteHitZone(strongestHitZone, result.hitZone);
         const previous = singleHitTargets.get(result.target) ?? {
           didKill: false,
           hitPoint: null
@@ -8492,6 +9099,7 @@ export class Game {
     if (this.activeMatchMode === "online") {
       if (onlineDamageByTarget.size > 0) {
         this.hud.pulseHitmarker();
+        this.sound.playHitCue(strongestHitZone);
         for (const [targetId, totalDamage] of onlineDamageByTarget.entries()) {
           this.emitPvpShot(targetId, totalDamage);
         }
@@ -8511,6 +9119,7 @@ export class Game {
     }
 
     this.hud.pulseHitmarker();
+    this.sound.playHitCue(strongestHitZone);
     for (const spark of pelletHitPoints) {
       this.spawnHitSpark(spark.point, spark);
     }
@@ -8563,6 +9172,7 @@ export class Game {
     ) {
       return;
     }
+    this.updateCrouchState();
     const wasOnGround = this.onGround;
     if (wasOnGround) {
       this.fallStartY = this.playerPosition.y;
@@ -8586,6 +9196,9 @@ export class Game {
     let speed = sprinting ? PLAYER_SPRINT : PLAYER_SPEED;
     if (this.isLocalFlagCarrier()) {
       speed *= FLAG_CARRIER_SPEED_MULTIPLIER;
+    }
+    if (this.isCrouching) {
+      speed *= PLAYER_CROUCH_SPEED_MULTIPLIER;
     }
 
     if (forward !== 0 || strafe !== 0) {
@@ -8621,6 +9234,9 @@ export class Game {
         if (stepX !== 0) {
           const worldLimit = this.getWorldLimit();
           const nextX = THREE.MathUtils.clamp(this.playerPosition.x + stepX, -worldLimit, worldLimit);
+          if (this.isCrouching && wasOnGround && !this.canCrouchHoldPosition(nextX, this.playerPosition.z)) {
+            continue;
+          }
           if (!this.isPlayerCollidingAt(nextX, this.playerPosition.y, this.playerPosition.z)) {
             this.playerPosition.x = nextX;
           } else if (
@@ -8634,6 +9250,9 @@ export class Game {
         if (stepZ !== 0) {
           const worldLimit = this.getWorldLimit();
           const nextZ = THREE.MathUtils.clamp(this.playerPosition.z + stepZ, -worldLimit, worldLimit);
+          if (this.isCrouching && wasOnGround && !this.canCrouchHoldPosition(this.playerPosition.x, nextZ)) {
+            continue;
+          }
           if (!this.isPlayerCollidingAt(this.playerPosition.x, this.playerPosition.y, nextZ)) {
             this.playerPosition.z = nextZ;
           } else if (
@@ -8670,13 +9289,22 @@ export class Game {
       return;
     }
 
-    const surfaceY = this.voxelWorld.getSurfaceYAt(this.playerPosition.x, this.playerPosition.z);
-    if (!Number.isFinite(surfaceY)) {
+    const supportedY = this.getSupportedPlayerY(
+      this.playerPosition.x,
+      this.playerPosition.z,
+      this.playerPosition.y,
+      {
+        maxDrop: Math.max(1.2, PLAYER_GROUND_SNAP_DOWN + 0.18),
+        maxRise: PLAYER_STEP_UP_HEIGHT,
+        fallbackToGlobalSurface: false
+      }
+    );
+    if (!Number.isFinite(supportedY)) {
       this.onGround = false;
       return;
     }
 
-    const floorY = surfaceY + PLAYER_HEIGHT;
+    const floorY = supportedY;
     const toFloor = floorY - this.playerPosition.y;
 
     // Avoid full-block instant snap-up that causes visible camera hitching.
@@ -8722,12 +9350,14 @@ export class Game {
   }
 
   tryStepUpMovement(nextX, nextZ, maxLift) {
-    const targetSurfaceY = this.voxelWorld.getSurfaceYAt(nextX, nextZ);
-    if (!Number.isFinite(targetSurfaceY)) {
+    const targetY = this.getSupportedPlayerY(nextX, nextZ, this.playerPosition.y, {
+      maxDrop: 0.28,
+      maxRise: maxLift,
+      fallbackToGlobalSurface: false
+    });
+    if (!Number.isFinite(targetY)) {
       return false;
     }
-
-    const targetY = targetSurfaceY + PLAYER_HEIGHT;
     const liftNeeded = targetY - this.playerPosition.y;
     if (liftNeeded <= 0.001 || liftNeeded > maxLift) {
       return false;
@@ -8829,14 +9459,14 @@ export class Game {
         this.shovelSwingTimer > 0 ? 1 - this.shovelSwingTimer / SHOVEL_SWING_DURATION : 0;
       const shovelSwing = this.shovelSwingTimer > 0 ? Math.sin(shovelSwingPhase * Math.PI) : 0;
       this.shovelView.position.set(
-        0.3 + bobX * 0.18 - shovelSwing * 0.03,
-        -0.48 - bobY * 0.18 - shovelSwing * 0.02,
-        -0.58 + recoil * 0.03 - shovelSwing * 0.18
+        0.28 + bobX * 0.11 - shovelSwing * 0.014,
+        -0.26 - bobY * 0.11 - shovelSwing * 0.016,
+        -0.48 + recoil * 0.02 - shovelSwing * 0.09
       );
       this.shovelView.rotation.set(
-        -0.04 + bobY * 0.05 - shovelSwing * 0.84,
-        0.1 + bobX * 0.05 + shovelSwing * 0.03,
-        0.48 + bobX * 0.08 + shovelSwing * 0.06
+        0.1 + bobY * 0.03 - shovelSwing * 0.42,
+        -0.3 + bobX * 0.04 + shovelSwing * 0.04,
+        0.5 + bobX * 0.05 + shovelSwing * 0.07
       );
     }
     if (this.blockView) {
@@ -8992,7 +9622,11 @@ export class Game {
     }
     const isUiTyping = this.isUiInputFocused();
     this.applyBufferedLookInput(isUiTyping);
+    if (!isUiTyping && !this.mouseLookEnabled) {
+      this.restoreGameplayLookState({ preferPointerLock: false });
+    }
     const gunMode = this.buildSystem.isGunMode();
+    const digMode = this.buildSystem.isDigMode();
     const aiEnabled = this.activeMatchMode !== "online";
     this.buildSystem.updatePlacementPreview(
       (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z),
@@ -9035,9 +9669,24 @@ export class Game {
       return;
     }
 
+    const inventoryOpen = this.buildSystem.isInventoryOpen();
     const requiresLockedLook =
-      !this.mobileEnabled && !this.mouseLookEnabled && !isUiTyping && !this.isRespawning;
-    if (!this.isRunning || this.isGameOver || requiresLockedLook) {
+      !inventoryOpen &&
+      !this.mobileEnabled &&
+      !this.mouseLookEnabled &&
+      !isUiTyping &&
+      !this.isRespawning;
+    if (!this.isRunning || this.isGameOver) {
+      this.updateMinimap();
+      this.hud.update(delta, {
+        ...this.state,
+        ...this.weapon.getState(),
+        enemyCount: aiEnabled ? this.enemyManager.enemies.length : 0
+      });
+      return;
+    }
+    if (requiresLockedLook) {
+      this.updateCamera(delta);
       this.updateMinimap();
       this.hud.update(delta, {
         ...this.state,
@@ -9063,6 +9712,12 @@ export class Game {
 
     if (gunMode && this.leftMouseDown) {
       this.fire();
+    } else if (digMode && this.leftMouseDown && !this.buildSystem.isInventoryOpen()) {
+      this.primaryActionRepeatTimer = Math.max(0, this.primaryActionRepeatTimer - delta);
+      if (this.primaryActionRepeatTimer <= 0) {
+        this.buildSystem.handlePointerAction(0, (x, y, z) => !this.isPlayerIntersectingBlock(x, y, z));
+        this.primaryActionRepeatTimer = DIG_HOLD_REPEAT_INTERVAL;
+      }
     }
 
     this.applyMovement(delta);
@@ -9085,6 +9740,7 @@ export class Game {
         controlRadius: this.objective.controlRadius,
         controlOwner: this.objective.controlOwner,
         playerHasEnemyFlag: this.objective.playerHasEnemyFlag,
+        playerCrouched: this.isCrouching,
         halfExtent: arenaHalfExtent
       });
 
@@ -9214,7 +9870,8 @@ export class Game {
     this.updateMinimap(true);
   }
 
-  tryPointerLock() {
+  tryPointerLock(options = {}) {
+    const fallbackUnlockedLook = Boolean(options?.fallbackUnlockedLook);
     if (this.mobileEnabled) {
       this.allowUnlockedLook = true;
       this.mouseLookEnabled = true;
@@ -9232,11 +9889,22 @@ export class Game {
       return;
     }
 
+    this.unlockLookOnNextPointerLockFailure = fallbackUnlockedLook;
     const maybePromise = this.renderer.domElement.requestPointerLock();
     this.schedulePointerLockFallback();
     if (maybePromise && typeof maybePromise.catch === "function") {
       maybePromise.catch(() => {
-        if (!this.isRunning || this.isGameOver) {
+        const controlActive = this.isRunning || this.isLobby3DActive();
+        if (!controlActive || this.isGameOver) {
+          return;
+        }
+        if (fallbackUnlockedLook) {
+          this.unlockLookOnNextPointerLockFailure = false;
+          this.allowUnlockedLook = true;
+          this.mouseLookEnabled = true;
+          this.hud.showPauseOverlay(false);
+          this.hud.setStatus("화면 클릭 시 포인터 락으로 전환됩니다.", false, 1.1);
+          this.syncCursorVisibility();
           return;
         }
         this.mouseLookEnabled = this.allowUnlockedLook;
@@ -9274,6 +9942,46 @@ export class Game {
     this.renderer.domElement.style.cursor = cursor;
   }
 
+  restoreGameplayLookState({ preferPointerLock = false } = {}) {
+    const controlActive = this.isRunning || this.isLobby3DActive();
+    const shouldPreferPointerLock =
+      Boolean(preferPointerLock) && !this.mobileEnabled && this.pointerLockSupported;
+    if (
+      !controlActive ||
+      this.isGameOver ||
+      this.optionsMenuOpen ||
+      this.buildSystem.isInventoryOpen() ||
+      this.isUiInputFocused()
+    ) {
+      return false;
+    }
+
+    if (this.mobileEnabled) {
+      this.allowUnlockedLook = true;
+      this.mouseLookEnabled = true;
+      return true;
+    }
+
+    if (this.pointerLocked) {
+      this.mouseLookEnabled = true;
+      return true;
+    }
+
+    if (shouldPreferPointerLock) {
+      this.tryPointerLock({ fallbackUnlockedLook: true });
+      return true;
+    }
+
+    if (this.allowUnlockedLook) {
+      this.mouseLookEnabled = true;
+      return true;
+    }
+
+    this.allowUnlockedLook = true;
+    this.mouseLookEnabled = true;
+    return true;
+  }
+
   updateVisualMode(mode) {
     const lobbyActive = this.isLobby3DActive();
     const startMenuActive = !this.isRunning && !lobbyActive;
@@ -9285,8 +9993,58 @@ export class Game {
     this.syncMinimapVisibility();
   }
 
-  isPlayerCollidingAt(positionX, positionY, positionZ) {
-    const feetY = positionY - PLAYER_HEIGHT;
+  getDesiredCrouchState() {
+    return (
+      this.mobileCrouchToggle ||
+      this.keys.has("ControlLeft") ||
+      this.keys.has("ControlRight")
+    );
+  }
+
+  getPlayerHeight(crouched = this.isCrouching) {
+    return crouched ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
+  }
+
+  setCrouchState(nextCrouched, { force = false } = {}) {
+    const crouched = Boolean(nextCrouched);
+    const currentHeight = this.getPlayerHeight(this.isCrouching);
+    const nextHeight = this.getPlayerHeight(crouched);
+    if (!force && crouched === this.isCrouching) {
+      return crouched;
+    }
+
+    const feetY = this.playerPosition.y - currentHeight;
+    const nextPlayerY = feetY + nextHeight;
+    if (!force && !crouched && this.isPlayerCollidingAt(this.playerPosition.x, nextPlayerY, this.playerPosition.z, { playerHeight: nextHeight })) {
+      return this.isCrouching;
+    }
+
+    this.isCrouching = crouched;
+    this.currentPlayerHeight = nextHeight;
+    this.playerPosition.y = nextPlayerY;
+    return this.isCrouching;
+  }
+
+  updateCrouchState() {
+    const wantsCrouch = this.getDesiredCrouchState();
+    this.setCrouchState(wantsCrouch);
+  }
+
+  canCrouchHoldPosition(nextX, nextZ) {
+    const supportedY = this.getSupportedPlayerY(nextX, nextZ, this.playerPosition.y, {
+      maxDrop: 0.32,
+      maxRise: PLAYER_STEP_UP_HEIGHT,
+      fallbackToGlobalSurface: false
+    });
+    if (!Number.isFinite(supportedY)) {
+      return false;
+    }
+    const drop = this.playerPosition.y - supportedY;
+    return drop <= PLAYER_CROUCH_EDGE_LOCK_DROP;
+  }
+
+  isPlayerCollidingAt(positionX, positionY, positionZ, { playerHeight = this.currentPlayerHeight ?? PLAYER_HEIGHT } = {}) {
+    const feetY = positionY - playerHeight;
     const headY = positionY;
     const minX = Math.floor(positionX - PLAYER_RADIUS);
     const maxX = Math.floor(positionX + PLAYER_RADIUS);
@@ -9335,7 +10093,7 @@ export class Game {
   }
 
   isPlayerIntersectingBlock(blockX, blockY, blockZ) {
-    const feetY = this.playerPosition.y - PLAYER_HEIGHT;
+    const feetY = this.playerPosition.y - this.getPlayerHeight();
     const headY = this.playerPosition.y;
 
     const playerMinX = this.playerPosition.x - PLAYER_RADIUS;
@@ -9504,9 +10262,14 @@ export class Game {
       this.handleOnlineMatchEnd(payload);
     });
 
-    socket.on("room:started", ({ code, startedAt }) => {
+    socket.on("room:started", ({ code, startedAt, mapId }) => {
       if (!code || this.lobbyState.roomCode !== code) {
         return;
+      }
+      const roundMapId = normalizeOnlineMapId(mapId ?? this.onlineMapId);
+      this.onlineMapId = roundMapId;
+      if (!this.isRunning || this.activeMatchMode === "online") {
+        this.mapId = roundMapId;
       }
       const startedAtNum = Number(startedAt);
       const roundStartedAt = Number.isFinite(startedAtNum) ? Math.max(0, Math.trunc(startedAtNum)) : 0;
@@ -9531,7 +10294,8 @@ export class Game {
         this.requestRoomSnapshot();
         return;
       }
-      this.hud.setStatus(`온라인 매치 시작 (${code})`, false, 1);
+      const mapMeta = MAP_DISPLAY_META[roundMapId] ?? this.getCurrentMapDisplayMeta();
+      this.hud.setStatus(`온라인 매치 시작: ${mapMeta.name}`, false, 1);
       this.start({ mode: "online" });
     });
 
@@ -9603,7 +10367,6 @@ export class Game {
       }
       this._nextAutoJoinAt = 0;
       this.setLobbyState(response.room ?? null);
-      this.requestRoomSnapshot();
       this.pushSelectedWeaponToServer(this.selectedWeaponId, { quiet: true });
       this.refreshOnlineStatus();
     });
@@ -9958,9 +10721,12 @@ export class Game {
       this.lobbyState.hostId = null;
       this.lobbyState.players = [];
       this.lobbyState.selectedTeam = null;
+      this.lobbyState.state = null;
       this.onlineRoomCount = 0;
       this.lastRoomStartedAt = 0;
       this.latestRoomSnapshot = null;
+      this.lastAppliedRoomSnapshotKey = "";
+      this.onlineMapId = ONLINE_MAP_ID;
       this.pendingRemoteBlocks.clear();
       this.clearRemotePlayers();
       this.setOnlineRoundState({
@@ -10002,7 +10768,13 @@ export class Game {
     this.lobbyState.roomCode = String(room.code ?? "");
     this.lobbyState.hostId = String(room.hostId ?? "");
     this.lobbyState.players = Array.isArray(room.players) ? room.players : [];
+    this.lobbyState.state = room?.state ?? null;
     this.onlineRoomCount = this.lobbyState.players.length;
+    const roomMapId = normalizeOnlineMapId(room?.state?.mapId ?? this.onlineMapId);
+    this.onlineMapId = roomMapId;
+    if (!this.isRunning || this.activeMatchMode === "online") {
+      this.mapId = roomMapId;
+    }
     this.applyDailyLeaderboardPayload(room.dailyLeaderboard ?? null);
 
     const myId = this.chat?.socket?.id ?? "";
@@ -10084,7 +10856,8 @@ export class Game {
     }
 
     if (this.mpRoomSubtitleEl) {
-      this.mpRoomSubtitleEl.textContent = `24시간 GLOBAL 방 | ${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS}`;
+      const mapMeta = this.getCurrentMapDisplayMeta();
+      this.mpRoomSubtitleEl.textContent = `${mapMeta.name} | ${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS}`;
     }
 
     this.mpTeamAlphaBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "alpha");
@@ -10210,8 +10983,9 @@ export class Game {
     });
   }
 
-  startOnlineMatch() {
+  startOnlineMatch(mapId = null) {
     const socket = this.chat?.socket;
+    const requestedMapId = normalizeOnlineMapId(mapId ?? this.onlineMapId);
     if (!socket || !socket.connected) {
       this.hud.setStatus("서버가 오프라인입니다.", true, 1);
       return;
@@ -10235,10 +11009,14 @@ export class Game {
       return;
     }
 
-    socket.emit("room:start", (response = {}) => {
+    socket.emit("room:start", { mapId: requestedMapId }, (response = {}) => {
       if (!response.ok) {
         this.hud.setStatus(response.error ?? "온라인 매치 시작에 실패했습니다.", true, 1);
+        return;
       }
+      this.onlineMapId = normalizeOnlineMapId(response.mapId ?? requestedMapId);
+      const mapMeta = MAP_DISPLAY_META[this.onlineMapId] ?? this.getCurrentMapDisplayMeta();
+      this.hud.setStatus(`호스트 이동: ${mapMeta.name}`, false, 0.8);
     });
   }
 
@@ -10274,6 +11052,7 @@ export class Game {
     const hostId = String(this.lobbyState.hostId ?? "");
     const isHost = !!inRoom && !!myId && !!hostId && myId === hostId;
     const canStart = connected && inRoom;
+    const hostPanelVisible = isHost && this.menuMode === "online";
     this.syncOnlineHubSummary();
 
     if (this.mpCreateBtn) {
@@ -10352,6 +11131,39 @@ export class Game {
     }
     if (this.mpOpenSimulacBtn) {
       this.mpOpenSimulacBtn.disabled = false;
+    }
+    if (this.hostCommandPanelEl) {
+      this.hostCommandPanelEl.classList.toggle("hidden", !hostPanelVisible);
+    }
+    this.startLayoutEl?.classList.toggle("host-panel-hidden", !hostPanelVisible);
+    if (this.hostCommandStateEl) {
+      if (!inRoom) {
+        this.hostCommandStateEl.textContent = "방 자동 참가 중";
+      } else if (!isHost) {
+        this.hostCommandStateEl.textContent = "방장 전용";
+      } else if (!connected && connecting) {
+        this.hostCommandStateEl.textContent = retrying ? "재연결 중" : "연결 중";
+      } else if (!connected) {
+        this.hostCommandStateEl.textContent = "오프라인";
+      } else {
+        const mapMeta = MAP_DISPLAY_META[this.onlineMapId] ?? this.getCurrentMapDisplayMeta();
+        this.hostCommandStateEl.textContent = `현재 ${mapMeta.name}`;
+      }
+    }
+    if (this.hostStartForestBtn) {
+      this.hostStartForestBtn.disabled = !connected || !inRoom || !isHost;
+    }
+    if (this.hostStartCityBtn) {
+      this.hostStartCityBtn.disabled = !connected || !inRoom || !isHost;
+    }
+    if (this.hostOpenLobbyBtn) {
+      this.hostOpenLobbyBtn.disabled = !connected && !in3dLobby;
+    }
+    if (this.hostOpenTrainingBtn) {
+      this.hostOpenTrainingBtn.disabled = false;
+    }
+    if (this.hostOpenSimulacBtn) {
+      this.hostOpenSimulacBtn.disabled = false;
     }
     this.syncLobby3DPortalState();
     this.updateLobbyQuickPanel();

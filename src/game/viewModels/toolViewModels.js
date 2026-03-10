@@ -2,6 +2,7 @@ import * as THREE from "three";
 
 export function createShovelViewModel() {
   const group = new THREE.Group();
+  const bladeGroup = new THREE.Group();
 
   const handleMaterial = new THREE.MeshStandardMaterial({
     color: 0x8b6947,
@@ -14,58 +15,66 @@ export function createShovelViewModel() {
     metalness: 0.04
   });
   const metalMaterial = new THREE.MeshStandardMaterial({
-    color: 0xb7bec8,
-    roughness: 0.28,
-    metalness: 0.78
+    color: 0xc9d1db,
+    roughness: 0.2,
+    metalness: 0.82
+  });
+  const bladeEdgeMaterial = new THREE.MeshStandardMaterial({
+    color: 0x8e98a4,
+    roughness: 0.34,
+    metalness: 0.74
   });
 
-  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.028, 1.08, 10), handleMaterial);
+  // Handle along Y axis — blade end is Y+, grip end is Y-
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.021, 0.88, 10), handleMaterial);
   handle.castShadow = true;
 
-  const topCap = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.03, 0.08, 10), gripMaterial);
-  topCap.position.set(0, 0.58, 0);
-  topCap.castShadow = true;
-
-  const handWrap = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.22, 10), gripMaterial);
-  handWrap.position.set(0, -0.08, 0);
+  // Grip wrap (lower hand area, Y- side = near player)
+  const handWrap = new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.027, 0.20, 10), gripMaterial);
+  handWrap.position.set(0, -0.22, 0);
   handWrap.castShadow = true;
 
-  const collar = new THREE.Mesh(new THREE.BoxGeometry(0.072, 0.14, 0.09), metalMaterial);
-  collar.position.set(0, -0.44, 0.02);
-  collar.castShadow = true;
+  // Butt cap at very bottom (Y-)
+  const buttCap = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.026, 0.06, 10), gripMaterial);
+  buttCap.position.set(0, -0.46, 0);
+  buttCap.castShadow = true;
 
-  const bladeShoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.05), metalMaterial);
-  bladeShoulderL.position.set(-0.08, -0.58, 0.04);
-  bladeShoulderL.rotation.z = 0.34;
-  bladeShoulderL.castShadow = true;
+  // === BLADE GROUP at the TOP of handle (Y+) ===
+  // Metal socket connecting handle top to blade
+  const socket = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.028, 0.10, 8), bladeEdgeMaterial);
+  socket.position.set(0, -0.07, 0);
+  socket.castShadow = true;
 
-  const bladeShoulderR = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.05), metalMaterial);
-  bladeShoulderR.position.set(0.08, -0.58, 0.04);
-  bladeShoulderR.rotation.z = -0.34;
-  bladeShoulderR.castShadow = true;
-
-  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.28, 0.05), metalMaterial);
-  blade.position.set(0, -0.7, 0.08);
-  blade.rotation.x = 0.22;
+  // Main flat square blade — XY plane, thin in Z, faces camera
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.28, 0.026), metalMaterial);
+  blade.position.set(0, 0.10, 0);
   blade.castShadow = true;
 
-  const bladeTip = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.12, 0.05), metalMaterial);
-  bladeTip.position.set(0, -0.88, 0.13);
-  bladeTip.rotation.x = 0.46;
-  bladeTip.castShadow = true;
+  // Bottom edge of blade
+  const bladeLip = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.032, 0.044), bladeEdgeMaterial);
+  bladeLip.position.set(0, -0.03, 0);
+  bladeLip.castShadow = true;
 
-  group.add(
-    handle,
-    topCap,
-    handWrap,
-    collar,
-    bladeShoulderL,
-    bladeShoulderR,
-    blade,
-    bladeTip
-  );
-  group.position.set(0.3, -0.48, -0.58);
-  group.rotation.set(-0.04, 0.1, 0.48);
+  // Left edge
+  const bladeEdgeL = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.28, 0.036), bladeEdgeMaterial);
+  bladeEdgeL.position.set(-0.136, 0.10, 0);
+  bladeEdgeL.castShadow = true;
+
+  // Right edge
+  const bladeEdgeR = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.28, 0.036), bladeEdgeMaterial);
+  bladeEdgeR.position.set(0.136, 0.10, 0);
+  bladeEdgeR.castShadow = true;
+
+  bladeGroup.add(socket, blade, bladeLip, bladeEdgeL, bladeEdgeR);
+  // Place blade group at TOP of handle (Y = +0.50)
+  bladeGroup.position.set(0, 0.50, 0);
+  // No rotation — blade already faces camera in XY plane
+
+  group.add(handle, handWrap, buttCap, bladeGroup);
+  group.scale.setScalar(0.72);
+  // Diagonal hold: blade end (Y+) points upper-left toward screen center
+  group.position.set(0.36, -0.44, -0.50);
+  group.rotation.set(0.08, -0.20, 0.44);
   group.visible = false;
   return group;
 }

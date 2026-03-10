@@ -39,36 +39,59 @@ export class CollapseSystem {
 
     const column = new THREE.Group();
     let minCenterY = Infinity;
+    let maxLandingCenterY = -Infinity;
     let firstBlock = null;
+    const center = new THREE.Vector3();
+    let count = 0;
+
+    for (const block of blocks) {
+      if (!block) {
+        continue;
+      }
+      center.x += block.x + 0.5;
+      center.y += block.y + 0.5;
+      center.z += block.z + 0.5;
+      count += 1;
+    }
+
+    if (count <= 0) {
+      return false;
+    }
+
+    center.divideScalar(count);
+    column.position.copy(center);
 
     for (const block of blocks) {
       if (!block) {
         continue;
       }
       const mesh = new THREE.Mesh(this.geometry, this.getMaterial(block.typeId));
-      mesh.position.set(block.x + 0.5, block.y + 0.5, block.z + 0.5);
+      mesh.position.set(block.x + 0.5 - center.x, block.y + 0.5 - center.y, block.z + 0.5 - center.z);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       column.add(mesh);
-      minCenterY = Math.min(minCenterY, block.y + 0.5);
+      minCenterY = Math.min(minCenterY, mesh.position.y);
+      const surfaceY = voxelWorld?.getSurfaceYAt?.(block.x + 0.5, block.z + 0.5, -32, 64);
+      const landingCenterY = Number.isFinite(surfaceY) ? surfaceY - 0.5 : -40;
+      maxLandingCenterY = Math.max(maxLandingCenterY, landingCenterY);
       firstBlock ??= block;
     }
 
     if (!firstBlock || !Number.isFinite(minCenterY)) {
       return false;
     }
-
-    const surfaceY = voxelWorld?.getSurfaceYAt?.(firstBlock.x + 0.5, firstBlock.z + 0.5, -32, 64);
-    const landingCenterY = (Number.isFinite(surfaceY) ? surfaceY - 0.5 : -40);
+    if (!Number.isFinite(maxLandingCenterY)) {
+      maxLandingCenterY = -40;
+    }
 
     this.scene.add(column);
     this.activeColumns.push({
       group: column,
       velocityY: -1.4,
-      rotationVelocityX: (Math.random() * 2 - 1) * MAX_FALL_ROTATION,
-      rotationVelocityZ: (Math.random() * 2 - 1) * MAX_FALL_ROTATION,
+      rotationVelocityX: (Math.random() * 2 - 1) * (MAX_FALL_ROTATION * 0.18),
+      rotationVelocityZ: (Math.random() * 2 - 1) * (MAX_FALL_ROTATION * 0.18),
       minCenterY,
-      landingCenterY
+      landingCenterY: maxLandingCenterY
     });
     return true;
   }
@@ -85,7 +108,7 @@ export class CollapseSystem {
       column.group.rotation.x += column.rotationVelocityX * delta;
       column.group.rotation.z += column.rotationVelocityZ * delta;
 
-      if (column.minCenterY + column.group.position.y > column.landingCenterY) {
+      if (column.group.position.y + column.minCenterY > column.landingCenterY) {
         continue;
       }
 

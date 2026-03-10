@@ -10,6 +10,16 @@ const TOOL_LABELS = Object.freeze({
 });
 const DEFAULT_SLOT_STOCK = 32;
 const MAX_SLOT_STOCK = 999;
+const DIG_REQUIRED_HITS_BY_KEY = Object.freeze({
+  grass: 2,
+  dirt: 2,
+  sand: 2,
+  ice: 2,
+  clay: 3,
+  brick: 3,
+  stone: 4,
+  metal: 4
+});
 
 function clampSlot(slot) {
   return Math.max(1, Math.min(BLOCK_TYPES.length, Math.trunc(Number(slot) || 1)));
@@ -24,6 +34,7 @@ export class BuildSystem {
     onInventoryChanged = null,
     onStatus = null,
     onBlockChanged = null,
+    onDigAction = null,
     canInteract = null,
     canRemoveBlock = null,
     canPlaceBlock = null
@@ -35,6 +46,7 @@ export class BuildSystem {
     this.onInventoryChanged = onInventoryChanged;
     this.onStatus = onStatus;
     this.onBlockChanged = onBlockChanged;
+    this.onDigAction = onDigAction;
     this.canInteract = canInteract;
     this.canRemoveBlock = canRemoveBlock;
     this.canPlaceBlock = canPlaceBlock;
@@ -48,6 +60,8 @@ export class BuildSystem {
     this.previewValid = false;
     this.slotStock = new Map();
     this.slotCountEls = new Map();
+    this.digTargetKey = "";
+    this.digTargetHits = 0;
 
     this.buildHudEl = document.getElementById("build-hud");
     this.modeBadgeEl = document.getElementById("build-mode-badge");
@@ -106,6 +120,17 @@ export class BuildSystem {
     this.syncAuxiliaryToolUi();
     this.onInventoryChanged?.(this.inventoryOpen);
     return this.inventoryOpen;
+  }
+
+  resetDigProgress() {
+    this.digTargetKey = "";
+    this.digTargetHits = 0;
+  }
+
+  getDigRequiredHits(typeId) {
+    const type = BLOCK_TYPES.find((entry) => entry.id === typeId) ?? null;
+    const key = String(type?.key ?? "").trim().toLowerCase();
+    return Math.max(1, Math.trunc(Number(DIG_REQUIRED_HITS_BY_KEY[key] ?? 3) || 3));
   }
 
   toggleInventory(forceOpen = null) {
@@ -299,8 +324,13 @@ export class BuildSystem {
           return;
         }
         event.preventDefault();
+        const wasPlaceMode = this.isPlaceMode();
         this.setToolMode(mode);
-        this.setInventoryOpen(mode === "place");
+        if (mode === "place") {
+          this.setInventoryOpen(wasPlaceMode ? !this.inventoryOpen : false);
+          return;
+        }
+        this.setInventoryOpen(false);
       });
     }
 
@@ -502,6 +532,9 @@ export class BuildSystem {
 
     const changed = this.toolMode !== mode;
     this.toolMode = mode;
+    if (mode !== "dig") {
+      this.resetDigProgress();
+    }
     if (mode !== "place") {
       this.hidePlacementPreview();
     }
@@ -579,8 +612,9 @@ export class BuildSystem {
     }
 
     if (event.code === "Digit1") {
+      const wasPlaceMode = this.isPlaceMode();
       this.setToolMode("place");
-      this.setInventoryOpen(true);
+      this.setInventoryOpen(wasPlaceMode ? !this.inventoryOpen : false);
       return true;
     }
     if (event.code === "Digit2") {
@@ -628,6 +662,7 @@ export class BuildSystem {
       })();
 
     if (!hit) {
+      this.resetDigProgress();
       this.onStatus?.(this.isPlaceMode() ? "배치할 블록이 없습니다." : "제거할 블록이 없습니다.", true, 0.28);
       return true;
     }
@@ -673,18 +708,46 @@ export class BuildSystem {
       const y = hit.y;
       const z = hit.z;
       const minedTypeId = hit.typeId;
+      const minedType = BLOCK_TYPES.find((entry) => entry.id === minedTypeId) ?? null;
       if (this.canRemoveBlock && !this.canRemoveBlock(x, y, z, minedTypeId)) {
+        this.resetDigProgress();
         this.onStatus?.("이 블록은 제거할 수 없습니다.", true, 0.45);
+        return true;
+      }
+
+      const digTargetKey = `${x}|${y}|${z}|${minedTypeId}`;
+      if (this.digTargetKey !== digTargetKey) {
+        this.digTargetKey = digTargetKey;
+        this.digTargetHits = 0;
+      }
+      const requiredHits = this.getDigRequiredHits(minedTypeId);
+      const hitCount = Math.min(requiredHits, this.digTargetHits + 1);
+      const completed = hitCount >= requiredHits;
+      this.digTargetHits = completed ? 0 : hitCount;
+      if (completed) {
+        this.digTargetKey = "";
+      }
+      this.onDigAction?.({
+        x,
+        y,
+        z,
+        typeId: minedTypeId,
+        blockKey: minedType?.key ?? "default",
+        hitCount,
+        requiredHits,
+        completed
+      });
+      if (!completed) {
         return true;
       }
 
       const removed = this.world.removeFromHit(hit);
       if (!removed) {
+        this.resetDigProgress();
         this.onStatus?.("블록 제거에 실패했습니다.", true, 0.3);
       } else {
         const gained = this.collectByTypeId(minedTypeId, 1);
         if (gained > 0) {
-          const minedType = BLOCK_TYPES.find((entry) => entry.id === minedTypeId);
           this.onStatus?.(`${minedType?.name ?? "블록"} +1`, false, 0.35);
         }
         this.onBlockChanged?.({ action: "remove", x, y, z, typeId: minedTypeId });

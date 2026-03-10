@@ -145,8 +145,8 @@ export function drawMinimap({
   }
 
   const playerPoint = toMapPoint(playerPosition.x, playerPosition.z);
-  const dirX = Math.sin(yaw);
-  const dirZ = Math.cos(yaw);
+  const dirX = -Math.sin(yaw);
+  const dirZ = -Math.cos(yaw);
   ctx.beginPath();
   ctx.arc(playerPoint.x, playerPoint.y, playerRadius, 0, Math.PI * 2);
   ctx.fillStyle = "#f5fbff";

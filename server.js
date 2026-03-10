@@ -16,6 +16,12 @@ import {
   getWeaponDefinition,
   sanitizeWeaponId
 } from "./src/shared/weaponCatalog.js";
+import {
+  getInitialOnlineMapId,
+  getNextOnlineMapId,
+  getOnlineMapConfig,
+  normalizeOnlineMapId
+} from "./src/shared/onlineMapRotation.js";
 
 function parseCorsOrigins(rawValue) {
   const value = String(rawValue ?? "").trim();
@@ -165,19 +171,19 @@ const PERSISTENT_WORLD_STATE_PATH = resolve(
   "storage",
   "global-world-state.json"
 );
-const PERSISTENT_WORLD_MAP_ID = "forest_frontline_v2";
+const PERSISTENT_WORLD_MAP_ID = getInitialOnlineMapId();
 const DAILY_LEADERBOARD_VERSION = 1;
 const DAILY_LEADERBOARD_MAX_ENTRIES = 200;
 const DAILY_LEADERBOARD_PATH = resolve(process.cwd(), "storage", "daily-leaderboard.json");
 const DAILY_LEADERBOARD_TIMEZONE_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAILY_LEADERBOARD_RESET_CHECK_MS = 15_000;
 const DEFAULT_TEAM_HOME = Object.freeze({
-  alpha: Object.freeze({ x: -35, y: 0, z: 0 }),
-  bravo: Object.freeze({ x: 35, y: 0, z: 0 })
+  alpha: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).alphaBase }),
+  bravo: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).bravoBase })
 });
 const DEFAULT_TEAM_FLAG_HOME = Object.freeze({
-  alpha: Object.freeze({ x: -44, y: 0, z: 0 }),
-  bravo: Object.freeze({ x: 44, y: 0, z: 0 })
+  alpha: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).alphaFlag }),
+  bravo: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).bravoFlag })
 });
 const SPAWN_PROTECT_RADIUS = 4;
 const SPAWN_PROTECT_RADIUS_SQ = SPAWN_PROTECT_RADIUS * SPAWN_PROTECT_RADIUS;
@@ -218,6 +224,50 @@ function clonePoint(point = { x: 0, y: 0, z: 0 }) {
   };
 }
 
+function getRoomMapId(roomOrState = null) {
+  const source =
+    roomOrState && typeof roomOrState === "object" && "state" in roomOrState
+      ? getRoomState(roomOrState)
+      : roomOrState;
+  return normalizeOnlineMapId(source?.mapId ?? PERSISTENT_WORLD_MAP_ID);
+}
+
+function getRoomMapConfig(roomOrState = null) {
+  return getOnlineMapConfig(getRoomMapId(roomOrState));
+}
+
+function getTeamHomeForMap(mapId, team) {
+  const config = getOnlineMapConfig(mapId);
+  return clonePoint(team === "bravo" ? config.bravoBase : config.alphaBase);
+}
+
+function getTeamFlagHomeForMap(mapId, team) {
+  const config = getOnlineMapConfig(mapId);
+  return clonePoint(team === "bravo" ? config.bravoFlag : config.alphaFlag);
+}
+
+function getTeamHomeForRoom(roomOrState, team) {
+  return getTeamHomeForMap(getRoomMapId(roomOrState), team);
+}
+
+function getTeamFlagHomeForRoom(roomOrState, team) {
+  return getTeamFlagHomeForMap(getRoomMapId(roomOrState), team);
+}
+
+function getSpawnProtectCentersForRoom(roomOrState) {
+  const config = getRoomMapConfig(roomOrState);
+  return [
+    {
+      x: Number(config.alphaBase?.x ?? DEFAULT_TEAM_HOME.alpha.x),
+      z: Number(config.alphaBase?.z ?? DEFAULT_TEAM_HOME.alpha.z)
+    },
+    {
+      x: Number(config.bravoBase?.x ?? DEFAULT_TEAM_HOME.bravo.x),
+      z: Number(config.bravoBase?.z ?? DEFAULT_TEAM_HOME.bravo.z)
+    }
+  ];
+}
+
 function createDefaultFlag(homePoint) {
   const home = clonePoint(homePoint);
   return {
@@ -227,10 +277,10 @@ function createDefaultFlag(homePoint) {
   };
 }
 
-function createDefaultTeamFlags() {
+function createDefaultTeamFlags(mapId = PERSISTENT_WORLD_MAP_ID) {
   return {
-    alpha: createDefaultFlag(DEFAULT_TEAM_FLAG_HOME.alpha),
-    bravo: createDefaultFlag(DEFAULT_TEAM_FLAG_HOME.bravo)
+    alpha: createDefaultFlag(getTeamFlagHomeForMap(mapId, "alpha")),
+    bravo: createDefaultFlag(getTeamFlagHomeForMap(mapId, "bravo"))
   };
 }
 
@@ -244,11 +294,11 @@ function cloneFlagState(flag = null, fallbackHome = { x: 0, y: 0, z: 0 }) {
   };
 }
 
-function cloneTeamFlagsState(flags = null) {
+function cloneTeamFlagsState(flags = null, mapId = PERSISTENT_WORLD_MAP_ID) {
   const source = flags && typeof flags === "object" ? flags : {};
   return {
-    alpha: cloneFlagState(source.alpha, DEFAULT_TEAM_FLAG_HOME.alpha),
-    bravo: cloneFlagState(source.bravo, DEFAULT_TEAM_FLAG_HOME.bravo)
+    alpha: cloneFlagState(source.alpha, getTeamFlagHomeForMap(mapId, "alpha")),
+    bravo: cloneFlagState(source.bravo, getTeamFlagHomeForMap(mapId, "bravo"))
   };
 }
 
@@ -352,8 +402,12 @@ function applyPersistentWorldSnapshot(room) {
     return;
   }
 
+  const activeMapId = getRoomMapId(room);
   const snapshot = loadPersistentWorldSnapshot();
   if (!snapshot || !Array.isArray(snapshot.blocks) || snapshot.blocks.length === 0) {
+    return;
+  }
+  if (normalizeOnlineMapId(snapshot.mapId) !== activeMapId) {
     return;
   }
 
@@ -390,10 +444,11 @@ function savePersistentWorldSnapshot(room) {
   }
 
   try {
+    const activeMapId = getRoomMapId(room);
     const blocks = serializeBlocksSnapshot(room).slice(0, PERSISTENT_WORLD_MAX_BLOCKS);
     const payload = {
       version: PERSISTENT_WORLD_STATE_VERSION,
-      mapId: PERSISTENT_WORLD_MAP_ID,
+      mapId: activeMapId,
       roomCode: room.code,
       savedAt: Date.now(),
       blocks
@@ -510,11 +565,13 @@ function changeStockCount(stock, typeId, delta) {
 }
 
 function createRoomState(players = new Map()) {
+  const initialMapId = getInitialOnlineMapId();
   return {
     players,
     blocks: new Map(),
+    mapId: initialMapId,
     mode: DEFAULT_GAME_MODE,
-    flags: createDefaultTeamFlags(),
+    flags: createDefaultTeamFlags(initialMapId),
     score: { alpha: 0, bravo: 0 },
     captures: { alpha: 0, bravo: 0 },
     round: {
@@ -565,11 +622,13 @@ function getRoomState(room) {
     room.state.blocks = new Map();
   }
 
+  room.state.mapId = getRoomMapId(room.state);
+
   room.state.mode = normalizeGameMode(room.state.mode);
   if (!room.state.flags || typeof room.state.flags !== "object") {
-    room.state.flags = createDefaultTeamFlags();
+    room.state.flags = createDefaultTeamFlags(room.state.mapId);
   } else {
-    room.state.flags = cloneTeamFlagsState(room.state.flags);
+    room.state.flags = cloneTeamFlagsState(room.state.flags, room.state.mapId);
   }
 
   if (!room.state.score || typeof room.state.score !== "object") {
@@ -641,10 +700,12 @@ function isRoundEnded(state) {
   return Boolean(state?.round?.ended);
 }
 
-function getSpawnStateForTeam(team) {
+function getSpawnStateForTeam(team, roomOrMapId = null) {
   const normalized = normalizeTeam(team);
-  const home = normalized ? DEFAULT_TEAM_HOME[normalized] : { x: 0, y: 0, z: 0 };
-  const yaw = normalized === "alpha" ? -Math.PI * 0.5 : normalized === "bravo" ? Math.PI * 0.5 : 0;
+  const mapId =
+    typeof roomOrMapId === "string" ? normalizeOnlineMapId(roomOrMapId) : getRoomMapId(roomOrMapId);
+  const home = normalized ? getTeamHomeForMap(mapId, normalized) : { x: 0, y: 0, z: 0 };
+  const yaw = normalized === "alpha" ? Math.PI * 0.5 : normalized === "bravo" ? -Math.PI * 0.5 : 0;
   const spawnOffsets = [
     [0, 0],
     [2.5, 0],
@@ -697,7 +758,7 @@ function schedulePlayerRespawn(room, player) {
     current.killStreak = 0;
     current.lastShotAt = 0;
     current.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
-    current.state = getSpawnStateForTeam(current.team);
+    current.state = getSpawnStateForTeam(current.team, room);
 
     const roomState = touchRoomState(room);
     io.to(room.code).emit("player:respawn", {
@@ -713,15 +774,18 @@ function schedulePlayerRespawn(room, player) {
   return respawnAt;
 }
 
-function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null } = {}) {
+function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null, rotateMap = false } = {}) {
   if (!room) {
     return null;
   }
 
   const state = getRoomState(room);
   clearRoundRestartTimer(state);
+  if (rotateMap) {
+    state.mapId = getNextOnlineMapId(state.mapId);
+  }
   state.mode = DEFAULT_GAME_MODE;
-  state.flags = createDefaultTeamFlags();
+  state.flags = createDefaultTeamFlags(state.mapId);
   state.score.alpha = 0;
   state.score.bravo = 0;
   state.captures.alpha = 0;
@@ -745,13 +809,17 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null }
     player.hp = 100;
     player.respawnAt = 0;
     player.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
-    player.state = getSpawnStateForTeam(player.team);
+    player.state = getSpawnStateForTeam(player.team, state.mapId);
   }
 
   ensurePlayerTeamsBalanced(state.players);
   touchRoomState(room);
   emitRoomUpdate(room);
-  io.to(room.code).emit("room:started", { code: room.code, startedAt });
+  io.to(room.code).emit("room:started", {
+    code: room.code,
+    startedAt,
+    mapId: state.mapId
+  });
   emitCtfUpdate(room, {
     type: "start",
     byPlayerId
@@ -797,7 +865,8 @@ function endRoundAndScheduleRestart(room, { winnerTeam, byPlayerId = null } = {}
     liveState.round.restartTimer = null;
     resetRoomRoundState(room, {
       startedAt: Date.now(),
-      byPlayerId: "auto_restart"
+      byPlayerId: "auto_restart",
+      rotateMap: true
     });
   }, ROUND_RESTART_DELAY_MS);
 
@@ -806,15 +875,16 @@ function endRoundAndScheduleRestart(room, { winnerTeam, byPlayerId = null } = {}
 
 function serializeRoomState(room) {
   const state = getRoomState(room);
-  const teamFlags = cloneTeamFlagsState(state.flags);
+  const teamFlags = cloneTeamFlagsState(state.flags, state.mapId);
   return {
+    mapId: getRoomMapId(state),
     mode: normalizeGameMode(state.mode),
     revision: state.revision,
     updatedAt: state.updatedAt,
     targetScore: CTF_WIN_SCORE,
     blockCount: state.blocks.size,
     // Legacy compatibility for older clients/scripts expecting single `flag`.
-    flag: cloneFlagState(teamFlags.bravo, DEFAULT_TEAM_FLAG_HOME.bravo),
+    flag: cloneFlagState(teamFlags.bravo, getTeamFlagHomeForRoom(state, "bravo")),
     flags: teamFlags,
     score: {
       alpha: Number(state.score.alpha ?? 0),
@@ -850,8 +920,7 @@ function resetFlagForPlayer(room, playerId) {
     if (!flag || flag.carrierId !== id) {
       continue;
     }
-    flag.carrierId = null;
-    flag.at = clonePoint(flag.home ?? DEFAULT_TEAM_FLAG_HOME[team]);
+    flags[team] = createDefaultFlag(flag.home ?? getTeamFlagHomeForRoom(room, team));
     touchRoomState(room);
     return team;
   }
@@ -933,7 +1002,7 @@ function handleCtfPlayerSync(room, player) {
     return null;
   }
 
-  const teamHome = DEFAULT_TEAM_HOME[team] ?? { x: 0, y: 0, z: 0 };
+  const teamHome = getTeamHomeForRoom(room, team);
   const teamFlags = state.flags;
   if (!teamFlags || typeof teamFlags !== "object") {
     return null;
@@ -948,10 +1017,11 @@ function handleCtfPlayerSync(room, player) {
   let event = null;
 
   if (enemyFlag.carrierId === player.id) {
+    const enemyFlagHome = getTeamFlagHomeForRoom(room, enemyTeam);
     enemyFlag.at = {
-      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home?.x ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].x),
-      y: Number(enemyFlag.home?.y ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].y),
-      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home?.z ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].z)
+      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home?.x ?? enemyFlagHome.x),
+      y: Number(enemyFlag.home?.y ?? enemyFlagHome.y),
+      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home?.z ?? enemyFlagHome.z)
     };
     changed = true;
   }
@@ -959,8 +1029,7 @@ function handleCtfPlayerSync(room, player) {
   if (enemyFlag.carrierId === player.id) {
     const nearHome = distanceXZ(playerPos, teamHome) <= CTF_CAPTURE_RADIUS;
     if (nearHome) {
-      enemyFlag.carrierId = null;
-      enemyFlag.at = clonePoint(enemyFlag.home ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam]);
+      state.flags[enemyTeam] = createDefaultFlag(enemyFlag.home ?? getTeamFlagHomeForRoom(room, enemyTeam));
       state.captures[team] = (Number(state.captures[team]) || 0) + 1;
       state.score[team] = (Number(state.score[team]) || 0) + 1;
       player.captures = (Number(player.captures) || 0) + 1;
@@ -1210,6 +1279,7 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
   const player = roomState.players.get(socket.id);
   socket.emit("room:snapshot", {
     reason,
+    mapId: state.mapId,
     mode: state.mode,
     revision: state.revision,
     updatedAt: state.updatedAt,
@@ -1619,6 +1689,7 @@ function sanitizePlayerState(raw = {}) {
     z: clampNumber(raw.z, -256, 256, 0),
     yaw: clampNumber(raw.yaw, -Math.PI, Math.PI, 0),
     pitch: clampNumber(raw.pitch, -1.55, 1.55, 0),
+    crouched: Boolean(raw.crouched),
     updatedAt: Date.now()
   };
 }
@@ -1894,7 +1965,7 @@ function joinDefaultRoom(socket, nameOverride = null) {
     name,
     weaponId,
     team: assignedTeam,
-    state: getSpawnStateForTeam(assignedTeam),
+    state: getSpawnStateForTeam(assignedTeam, room),
     stock: createDefaultBlockStock(),
     hp: 100,
     respawnAt: 0,
@@ -1917,7 +1988,8 @@ function joinDefaultRoom(socket, nameOverride = null) {
   if (Number(state.round?.startedAt) > 0 && !Boolean(state.round?.ended)) {
     socket.emit("room:started", {
       code: room.code,
-      startedAt: Number(state.round.startedAt)
+      startedAt: Number(state.round.startedAt),
+      mapId: state.mapId
     });
   }
 
@@ -1934,7 +2006,7 @@ const httpServer = createServer((req, res) => {
     writeJson(res, 200, {
       ok: true,
       service: "reclaim-fps-chat",
-      worldMapId: PERSISTENT_WORLD_MAP_ID,
+      worldMapId: getRoomMapId(globalRoom),
       gitCommit:
         process.env.RENDER_GIT_COMMIT ?? process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT ?? null,
       rooms: rooms.size,
@@ -2206,8 +2278,7 @@ io.on("connection", (socket) => {
       const carrier = state.players.get(carrierId);
       const carrierHp = Number.isFinite(Number(carrier?.hp)) ? Number(carrier.hp) : 100;
       if (!carrier || carrierHp <= 0) {
-        enemyFlag.carrierId = null;
-        enemyFlag.at = clonePoint(enemyFlag.home ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam]);
+        flags[enemyTeam] = createDefaultFlag(enemyFlag.home ?? getTeamFlagHomeForRoom(room, enemyTeam));
         touchRoomState(room);
         emitCtfUpdate(room, {
           type: "reset",
@@ -2238,10 +2309,11 @@ io.on("connection", (socket) => {
     }
 
     enemyFlag.carrierId = player.id;
+    const enemyFlagHome = getTeamFlagHomeForRoom(room, enemyTeam);
     enemyFlag.at = {
-      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home?.x ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].x),
-      y: Number(enemyFlag.home?.y ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].y),
-      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home?.z ?? DEFAULT_TEAM_FLAG_HOME[enemyTeam].z)
+      x: Number(playerPos.x ?? enemyFlag.at?.x ?? enemyFlag.home?.x ?? enemyFlagHome.x),
+      y: Number(enemyFlag.home?.y ?? enemyFlagHome.y),
+      z: Number(playerPos.z ?? enemyFlag.at?.z ?? enemyFlag.home?.z ?? enemyFlagHome.z)
     };
     touchRoomState(room);
 
@@ -2433,10 +2505,14 @@ io.on("connection", (socket) => {
     }
     shooter.lastShotAt = now;
     const weaponBaseDamage = Math.max(1, Math.trunc(Number(weaponDef.damage) || PVP_DEFAULT_DAMAGE));
+    const maxHitMultiplier = Math.max(1, Number(weaponDef.headshotMultiplier ?? 1) || 1);
     const weaponMaxDamage = Math.max(
-      weaponBaseDamage,
-      Math.trunc(Number(weaponDef.pelletDamage ?? weaponBaseDamage) || weaponBaseDamage) *
-        Math.max(1, Math.trunc(Number(weaponDef.pelletCount ?? 1) || 1))
+      Math.round(weaponBaseDamage * maxHitMultiplier),
+      Math.round(
+        Math.trunc(Number(weaponDef.pelletDamage ?? weaponBaseDamage) || weaponBaseDamage) *
+          Math.max(1, Math.trunc(Number(weaponDef.pelletCount ?? 1) || 1)) *
+          maxHitMultiplier
+      )
     );
     const requestedDamage = Math.trunc(Number(sanitized.damage ?? weaponBaseDamage) || weaponBaseDamage);
     const appliedDamage = Math.max(1, Math.min(weaponMaxDamage, requestedDamage));
@@ -2738,7 +2814,6 @@ io.on("connection", (socket) => {
       return;
     }
 
-    emitRoomSnapshot(socket, room, "manual");
     ack(ackFn, {
       ok: true,
       snapshot: {
@@ -2793,7 +2868,12 @@ io.on("connection", (socket) => {
     ack(ackFn, { ok: true });
   });
 
-  socket.on("room:start", (ackFn) => {
+  socket.on("room:start", (payloadOrAck, maybeAckFn) => {
+    const payload =
+      payloadOrAck && typeof payloadOrAck === "object" && !Array.isArray(payloadOrAck)
+        ? payloadOrAck
+        : {};
+    const ackFn = typeof payloadOrAck === "function" ? payloadOrAck : maybeAckFn;
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
@@ -2816,12 +2896,14 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const requestedMapId = normalizeOnlineMapId(payload.mapId ?? state.mapId);
+    state.mapId = requestedMapId;
     const startedAt = Date.now();
     resetRoomRoundState(room, {
       startedAt,
       byPlayerId: socket.id
     });
-    ack(ackFn, { ok: true, startedAt });
+    ack(ackFn, { ok: true, startedAt, mapId: requestedMapId });
   });
 
   socket.on("disconnecting", () => {

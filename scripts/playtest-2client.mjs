@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { io } from "socket.io-client";
 import { CTF_WIN_SCORE } from "../src/shared/matchConfig.js";
+import { getOnlineMapConfig } from "../src/shared/onlineMapRotation.js";
 
 const HOST = "127.0.0.1";
 const START_PORT = 3301;
@@ -335,10 +336,14 @@ async function scenarioCombatAndCtfInteraction(url) {
     assert(sawPvpDamage === false, "동일 팀에도 PvP 데미지 발생");
 
     const bBack = await emitAck(b, "room:set-team", { team: "bravo" });
+    const ctfSnapshot = await emitAck(a, "room:request-snapshot");
+    const roundMap = getOnlineMapConfig(ctfSnapshot?.snapshot?.mapId);
+    const alphaHome = roundMap.alphaBase ?? { x: -35, y: 0, z: 0 };
+    const bravoFlagAt = ctfSnapshot?.snapshot?.flags?.bravo?.at ?? roundMap.bravoFlag ?? { x: 44, y: 0, z: 0 };
     assert(bBack?.ok === true, "적 팀 복귀 실패");
 
     for (let i = 0; i < CTF_WIN_SCORE; i += 1) {
-      a.emit("player:sync", { x: 44, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+      a.emit("player:sync", { x: bravoFlagAt.x, y: 1.75, z: bravoFlagAt.z, yaw: 0, pitch: 0 });
       await sleep(80);
       const pickupAck = await emitAck(a, "ctf:interact");
       assert(pickupAck?.ok === true, `ctf:interact 실패 (#${i + 1})`);
@@ -352,7 +357,7 @@ async function scenarioCombatAndCtfInteraction(url) {
         await sleep(320);
         assert(sawPvpDamage === false, "깃발 운반 중에도 사격 피해가 적용됨");
       }
-      a.emit("player:sync", { x: -35, y: 1.75, z: 0, yaw: 0, pitch: 0 });
+      a.emit("player:sync", { x: alphaHome.x, y: 1.75, z: alphaHome.z, yaw: 0, pitch: 0 });
       await waitFor(() => captureCount >= i + 1, 4500);
       await sleep(80);
     }

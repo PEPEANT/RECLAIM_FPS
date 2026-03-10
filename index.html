@@ -172,6 +172,7 @@
         <span class="tool-icon tool-icon-crosshair" aria-hidden="true"></span>
       </button>
       <button id="mobile-jump" class="mobile-utility-btn" type="button">점프</button>
+      <button id="mobile-crouch" class="mobile-utility-btn" type="button">웅크</button>
       <button id="mobile-reload" class="mobile-utility-btn" type="button">장전</button>
       <button id="mobile-fire" type="button" aria-label="Fire">
         FIRE
@@ -204,11 +205,11 @@
     <button id="flag-interact-btn" type="button" aria-hidden="true">깃발 탈취</button>
 
     <div id="start-overlay" class="overlay show overlay-start">
+      <div class="start-layout">
       <section class="start-panel">
 
         <!-- Header: logo + title + connection status -->
         <div class="start-header">
-          <img class="start-emblem" src="/assets/graphics/ui/logo.svg" alt="RECLAIM logo" loading="eager" decoding="async" />
           <div class="start-title-block">
             <h1>RECLAIM FPS</h1>
             <p class="start-kicker">FRONTLINE RECOVERY</p>
@@ -241,13 +242,13 @@
 
           <!-- 3 main action buttons -->
           <div class="start-action-grid">
-            <button id="mp-enter-lobby" class="start-action-btn" type="button">
-              <strong>3D 대기방</strong>
-              <span>로비 탐색</span>
-            </button>
             <button id="mp-start" class="start-action-btn start-action-primary" type="button">
               <strong>&#9658; 바로 참전</strong>
               <span>온라인 CTF</span>
+            </button>
+            <button id="mp-enter-lobby" class="start-action-btn" type="button">
+              <strong>3D 대기방</strong>
+              <span>로비 탐색</span>
             </button>
             <button id="mp-open-training" class="start-action-btn" type="button">
               <strong>훈련소</strong>
@@ -289,6 +290,36 @@
         </div>
 
       </section>
+      <aside id="host-command-panel" class="host-command-panel hidden" aria-label="호스트 빠른 이동">
+        <div class="host-command-head">
+          <span class="host-command-kicker">HOST LINK</span>
+          <strong>호스트 빠른 이동</strong>
+          <span id="host-command-state" class="host-command-state">방장 전용</span>
+        </div>
+        <div class="host-command-body">
+          <button id="host-start-forest" class="host-command-btn host-command-btn-primary" type="button">
+            <strong>숲 라운드 시작</strong>
+            <span>FOREST FRONTLINE</span>
+          </button>
+          <button id="host-start-city" class="host-command-btn host-command-btn-primary" type="button">
+            <strong>도시 라운드 시작</strong>
+            <span>CITY FRONTLINE</span>
+          </button>
+          <button id="host-open-lobby" class="host-command-btn" type="button">
+            <strong>3D 대기방 이동</strong>
+            <span>허브에서 바로 텔레포트</span>
+          </button>
+          <button id="host-open-training" class="host-command-btn" type="button">
+            <strong>AI훈련소 이동</strong>
+            <span>즉시 단독 훈련</span>
+          </button>
+          <button id="host-open-simulac" class="host-command-btn" type="button">
+            <strong>시뮬라크 월드</strong>
+            <span>외부 월드로 즉시 이동</span>
+          </button>
+        </div>
+      </aside>
+      </div>
     </div>
 
     <div id="pause-overlay" class="overlay overlay-pause" aria-hidden="true">
