@@ -34,8 +34,8 @@ const PLAYER_CROUCH_SPEED_MULTIPLIER = 0.68;
 const PLAYER_CROUCH_EDGE_LOCK_DROP = 0.12;
 const DEFAULT_FOV = 75;
 const AIM_FOV = 48;
-const PLAYER_SPEED = 7.9;
-const PLAYER_SPRINT = 11.9;
+const PLAYER_SPEED = 6.8;
+const PLAYER_SPRINT = 9.8;
 const PLAYER_GRAVITY = -22;
 const JUMP_FORCE = 9.2;
 const WORLD_LIMIT = 72;
@@ -8016,11 +8016,6 @@ export class Game {
           return;
         }
         if (this.chat?.isOpen?.()) {
-          if (!this.chat?.isExpanded?.()) {
-            this.chat?.setExpandedState?.(true, { focusInput: true });
-            this.syncCursorVisibility();
-            return;
-          }
           this.chat.close();
         } else {
           this.chat?.open?.({ focusInput: true });

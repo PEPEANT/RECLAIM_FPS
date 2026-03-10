@@ -210,15 +210,21 @@ export class Chat {
     this._historyBound = true;
 
     window.addEventListener("popstate", () => {
-      if (!this.chatOpen && !this.expanded) {
-        this.historyGuardArmed = false;
+      const active = this.chatOpen || this.expanded || this.isInputFocused;
+      this.historyGuardArmed = false;
+      if (!active) {
         return;
       }
 
-      this.historyGuardArmed = false;
-      this.armHistoryGuard();
-      this.setOpenState(true, { focusInput: false, force: true });
-      this.setExpandedState(this.expanded, { focusInput: false, force: true });
+      if (this.isInputFocused) {
+        this.inputEl?.blur();
+        if (this.chatOpen || this.expanded) {
+          this.armHistoryGuard();
+        }
+        return;
+      }
+
+      this.close();
     });
   }
 
@@ -336,10 +342,10 @@ export class Chat {
         : "\uCC44\uD305";
     }
 
-    const showMobileHeaderToggle = !this.mobileUiEnabled || this.mobileHeaderToggleVisible;
+    const showHeaderActions = !this.mobileUiEnabled;
     this.panelEl?.classList.toggle(
       "hide-mobile-chat-toggle",
-      this.mobileUiEnabled && !showMobileHeaderToggle
+      !showHeaderActions
     );
 
     if (this.toggleBtnEl) {
@@ -352,13 +358,13 @@ export class Chat {
         "aria-label",
         this.chatOpen ? "\uCC44\uD305 \uB2EB\uAE30" : "\uCC44\uD305 \uC5F4\uAE30"
       );
-      this.toggleBtnEl.setAttribute("aria-hidden", showMobileHeaderToggle ? "false" : "true");
-      this.toggleBtnEl.disabled = !showMobileHeaderToggle;
-      this.toggleBtnEl.tabIndex = showMobileHeaderToggle ? 0 : -1;
+      this.toggleBtnEl.setAttribute("aria-hidden", showHeaderActions ? "false" : "true");
+      this.toggleBtnEl.disabled = !showHeaderActions;
+      this.toggleBtnEl.tabIndex = showHeaderActions ? 0 : -1;
     }
 
     if (this.expandBtnEl) {
-      const canExpand = this.chatOpen;
+      const canExpand = this.chatOpen && showHeaderActions;
       this.expandBtnEl.classList.toggle("show", canExpand);
       this.expandBtnEl.textContent = this.expanded
         ? "\uC811\uAE30"

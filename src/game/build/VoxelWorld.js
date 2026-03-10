@@ -83,10 +83,23 @@ export class VoxelWorld {
     }
 
     const baseColor = type.color ?? "#9aa3ad";
+    const emissive = type.emissive ?? 0x000000;
     const material = new THREE.MeshStandardMaterial({
       color: baseColor,
-      roughness: typeId === 7 ? 0.18 : 0.82,
-      metalness: typeId === 8 ? 0.24 : typeId === 7 ? 0.08 : 0.03,
+      roughness: Number.isFinite(type.roughness)
+        ? type.roughness
+        : typeId === 7
+          ? 0.18
+          : 0.82,
+      metalness: Number.isFinite(type.metalness)
+        ? type.metalness
+        : typeId === 8
+          ? 0.24
+          : typeId === 7
+            ? 0.08
+            : 0.03,
+      emissive,
+      emissiveIntensity: Number.isFinite(type.emissiveIntensity) ? type.emissiveIntensity : 0,
       flatShading: true
     });
 

@@ -14,7 +14,11 @@
 
     <div id="hud">
       <div class="hud-center">
-        <span id="hud-health" class="hud-health-number">100</span>
+        <div class="hud-health-shell" aria-label="체력">
+          <span class="hud-health-icon" aria-hidden="true">❤</span>
+          <span class="hud-health-label" aria-hidden="true">HP</span>
+          <span id="hud-health" class="hud-health-number">100</span>
+        </div>
       </div>
       <div class="hud-right">
         <div class="hud-ammo-row">
@@ -353,7 +357,7 @@
                 <input id="options-mobile-look" type="range" min="40" max="220" step="1" value="100" />
                 <div id="options-mobile-look-value" class="options-volume-value">100%</div>
               </div>
-              <div class="options-row">
+              <div id="options-mobile-chat-header-row" class="options-row" hidden>
                 <span id="options-mobile-chat-header-label" class="options-volume-label">모바일 채팅 상단 버튼</span>
                 <div id="options-mobile-chat-header-value" class="options-volume-value">숨김</div>
                 <button id="options-mobile-chat-header-toggle" class="options-secondary-btn" type="button">
