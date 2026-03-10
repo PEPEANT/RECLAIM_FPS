@@ -1363,6 +1363,10 @@ function sanitizeName(raw) {
   return value || "PLAYER";
 }
 
+function normalizeRoomEntryRole(raw) {
+  return String(raw ?? "").trim().toLowerCase() === "host" ? "host" : "player";
+}
+
 function getDailyLeaderboardDateKey(now = Date.now()) {
   const shifted = new Date(Number(now) + DAILY_LEADERBOARD_TIMEZONE_OFFSET_MS);
   const year = shifted.getUTCFullYear();
@@ -1809,10 +1813,12 @@ function emitRoomUpdate(room) {
 
 function updateHost(room) {
   const state = getRoomState(room);
-  if (room.hostId && state.players.has(room.hostId)) {
-    return;
-  }
-  room.hostId = state.players.keys().next().value ?? null;
+  const players = Array.from(state.players.values());
+  const preferredHost =
+    players.find((player) => normalizeRoomEntryRole(player?.role) === "host") ??
+    players[0] ??
+    null;
+  room.hostId = preferredHost?.id ?? null;
 }
 
 function pruneRoomPlayers(room) {
@@ -1916,15 +1922,21 @@ function leaveCurrentRoom(socket) {
   emitRoomList();
 }
 
-function joinDefaultRoom(socket, nameOverride = null) {
+function joinDefaultRoom(socket, options = {}) {
   const room = getDefaultRoom();
   const state = getRoomState(room);
   ensureDailyLeaderboardFresh();
   pruneRoomPlayers(room);
-  const name = sanitizeName(nameOverride ?? socket.data.playerName);
+  const payload =
+    options && typeof options === "object" && !Array.isArray(options)
+      ? options
+      : { name: options };
+  const name = sanitizeName(payload.name ?? socket.data.playerName);
   const weaponId = sanitizeWeaponId(socket.data.playerWeaponId ?? DEFAULT_WEAPON_ID);
+  const role = normalizeRoomEntryRole(payload.role ?? socket.data.playerRole ?? "player");
   socket.data.playerName = name;
   socket.data.playerWeaponId = weaponId;
+  socket.data.playerRole = role;
 
   if (socket.data.roomCode === room.code && state.players.has(socket.id)) {
     const existing = state.players.get(socket.id);
@@ -1943,6 +1955,12 @@ function joinDefaultRoom(socket, nameOverride = null) {
     if (existing && sanitizeWeaponId(existing.weaponId) !== weaponId) {
       existing.weaponId = weaponId;
       touchRoomState(room);
+      emitRoomUpdate(room);
+    }
+    if (existing && normalizeRoomEntryRole(existing.role) !== role) {
+      existing.role = role;
+      touchRoomState(room);
+      updateHost(room);
       emitRoomUpdate(room);
     }
     emitRoomSnapshot(socket, room, "resync");
@@ -1964,6 +1982,7 @@ function joinDefaultRoom(socket, nameOverride = null) {
     id: socket.id,
     name,
     weaponId,
+    role,
     team: assignedTeam,
     state: getSpawnStateForTeam(assignedTeam, room),
     stock: createDefaultBlockStock(),
@@ -2078,6 +2097,7 @@ io.on("connection", (socket) => {
   playerCount += 1;
   socket.data.playerName = `PLAYER_${Math.floor(Math.random() * 9000 + 1000)}`;
   socket.data.playerWeaponId = DEFAULT_WEAPON_ID;
+  socket.data.playerRole = "player";
   socket.data.roomCode = null;
 
   console.log(`[+] player connected (${playerCount}) ${socket.id}`);
@@ -2826,15 +2846,15 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:quick-join", (payload = {}, ackFn) => {
-    ack(ackFn, joinDefaultRoom(socket, payload.name));
+    ack(ackFn, joinDefaultRoom(socket, payload));
   });
 
   socket.on("room:create", (payload = {}, ackFn) => {
-    ack(ackFn, joinDefaultRoom(socket, payload.name));
+    ack(ackFn, joinDefaultRoom(socket, payload));
   });
 
   socket.on("room:join", (payload = {}, ackFn) => {
-    ack(ackFn, joinDefaultRoom(socket, payload.name));
+    ack(ackFn, joinDefaultRoom(socket, payload));
   });
 
   socket.on("room:leave", (ackFn) => {

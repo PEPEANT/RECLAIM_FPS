@@ -365,6 +365,22 @@ function isPerfDebugEnabled() {
   }
 }
 
+function normalizeOnlineEntryRole(raw) {
+  return String(raw ?? "").trim().toLowerCase() === "host" ? "host" : "player";
+}
+
+function readOnlineEntryRole() {
+  if (typeof window === "undefined") {
+    return "player";
+  }
+  try {
+    const query = new URLSearchParams(window.location.search);
+    return normalizeOnlineEntryRole(query.get("role"));
+  } catch {
+    return "player";
+  }
+}
+
 export class Game {
   constructor(mount, options = {}) {
     this.mount = mount;
@@ -539,6 +555,7 @@ export class Game {
     this.chatIntroShown = false;
     this.menuMode = "online";
     this.activeMatchMode = "single";
+    this.onlineEntryRole = readOnlineEntryRole();
 
     this.pointerLockSupported =
       "pointerLockElement" in document &&
@@ -8527,28 +8544,28 @@ export class Game {
       this.openSimulacWorld();
     });
     this.hostStartForestBtn?.addEventListener("click", () => {
-      if (!this.isCurrentRoomHost()) {
+      if (!this.canUseHostControls()) {
         this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
         return;
       }
       this.startOnlineMatch("forest_frontline");
     });
     this.hostStartCityBtn?.addEventListener("click", () => {
-      if (!this.isCurrentRoomHost()) {
+      if (!this.canUseHostControls()) {
         this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
         return;
       }
       this.startOnlineMatch("city_frontline");
     });
     this.hostOpenLobbyBtn?.addEventListener("click", () => {
-      if (!this.isCurrentRoomHost()) {
+      if (!this.canUseHostControls()) {
         this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
         return;
       }
       this.enterOnlineLobby3D();
     });
     this.hostOpenTrainingBtn?.addEventListener("click", () => {
-      if (!this.isCurrentRoomHost()) {
+      if (!this.canUseHostControls()) {
         this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
         return;
       }
@@ -8556,7 +8573,7 @@ export class Game {
       this.start({ mode: "single" });
     });
     this.hostOpenSimulacBtn?.addEventListener("click", () => {
-      if (!this.isCurrentRoomHost()) {
+      if (!this.canUseHostControls()) {
         this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
         return;
       }
@@ -10377,7 +10394,10 @@ export class Game {
     }
 
     this._joiningDefaultRoom = true;
-    socket.emit("room:quick-join", { name: this.chat?.playerName }, (response = {}) => {
+    socket.emit("room:quick-join", {
+      name: this.chat?.playerName,
+      role: this.onlineEntryRole
+    }, (response = {}) => {
       this._joiningDefaultRoom = false;
       if (!response.ok) {
         this._nextAutoJoinAt = Date.now() + 1800;
@@ -11027,6 +11047,11 @@ export class Game {
       return;
     }
 
+    if (!this.isUsingHostLink()) {
+      this.hud.setStatus("호스트 링크로 접속한 방장만 라운드를 시작할 수 있습니다.", true, 1);
+      return;
+    }
+
     socket.emit("room:start", { mapId: requestedMapId }, (response = {}) => {
       if (!response.ok) {
         this.hud.setStatus(response.error ?? "온라인 매치 시작에 실패했습니다.", true, 1);
@@ -11068,13 +11093,22 @@ export class Game {
     return Boolean(this.lobbyState.roomCode) && !!myId && !!hostId && myId === hostId;
   }
 
+  isUsingHostLink() {
+    return this.onlineEntryRole === "host";
+  }
+
+  canUseHostControls() {
+    return this.isUsingHostLink() && this.isCurrentRoomHost();
+  }
+
   updateLobbyControls() {
     const { connected, connecting, retrying } = this.getOnlineConnectionUiState();
     const inRoom = !!this.lobbyState.roomCode;
     const in3dLobby = this.isLobby3DActive();
     const isHost = this.isCurrentRoomHost();
+    const canUseHostControls = this.canUseHostControls();
     const canStart = connected && inRoom;
-    const hostPanelVisible = isHost && this.menuMode === "online";
+    const hostPanelVisible = canUseHostControls && this.menuMode === "online";
     this.syncOnlineHubSummary();
 
     if (this.mpCreateBtn) {
@@ -11109,6 +11143,8 @@ export class Game {
         this.mpStartBtn.textContent = "서버 오프라인";
       } else if (!inRoom) {
         this.mpStartBtn.textContent = "방 자동 참가 중...";
+      } else if (isHost && !this.isUsingHostLink()) {
+        this.mpStartBtn.textContent = "호스트 링크 필요";
       } else if (!isHost) {
         this.mpStartBtn.textContent = "온라인 바로 입장";
       } else {
@@ -11163,7 +11199,7 @@ export class Game {
     if (this.hostCommandStateEl) {
       if (!inRoom) {
         this.hostCommandStateEl.textContent = "방 자동 참가 중";
-      } else if (!isHost) {
+      } else if (!canUseHostControls) {
         this.hostCommandStateEl.textContent = "방장 전용";
       } else if (!connected && connecting) {
         this.hostCommandStateEl.textContent = retrying ? "재연결 중" : "연결 중";
@@ -11175,19 +11211,19 @@ export class Game {
       }
     }
     if (this.hostStartForestBtn) {
-      this.hostStartForestBtn.disabled = !connected || !inRoom || !isHost;
+      this.hostStartForestBtn.disabled = !connected || !inRoom || !canUseHostControls;
     }
     if (this.hostStartCityBtn) {
-      this.hostStartCityBtn.disabled = !connected || !inRoom || !isHost;
+      this.hostStartCityBtn.disabled = !connected || !inRoom || !canUseHostControls;
     }
     if (this.hostOpenLobbyBtn) {
-      this.hostOpenLobbyBtn.disabled = !isHost || (!connected && !in3dLobby);
+      this.hostOpenLobbyBtn.disabled = !canUseHostControls || (!connected && !in3dLobby);
     }
     if (this.hostOpenTrainingBtn) {
-      this.hostOpenTrainingBtn.disabled = !isHost;
+      this.hostOpenTrainingBtn.disabled = !canUseHostControls;
     }
     if (this.hostOpenSimulacBtn) {
-      this.hostOpenSimulacBtn.disabled = !isHost;
+      this.hostOpenSimulacBtn.disabled = !canUseHostControls;
     }
     this.syncLobby3DPortalState();
     this.updateLobbyQuickPanel();

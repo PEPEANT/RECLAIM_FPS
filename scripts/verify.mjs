@@ -394,16 +394,20 @@ async function checkSocketServer() {
       }
     });
 
-    const created = await emitWithAck(c1, "room:create", { name: "CheckHost" });
+    const created = await emitWithAck(c1, "room:create", { name: "CheckHost", role: "player" });
     assert(created?.ok === true, `room:create failed: ${JSON.stringify(created)}`);
     const code = created.room?.code;
     assert(code === "GLOBAL", `Expected GLOBAL room code, got: ${String(code)}`);
 
-    const joined = await emitWithAck(c2, "room:join", { code, name: "CheckGuest" });
+    const joined = await emitWithAck(c2, "room:join", { code, name: "CheckGuest", role: "host" });
     assert(joined?.ok === true, `room:join failed: ${JSON.stringify(joined)}`);
     assert(
       joined?.room?.code === "GLOBAL",
       `Expected GLOBAL room on join, got: ${JSON.stringify(joined)}`
+    );
+    assert(
+      String(joined?.room?.hostId ?? "") === String(c2.id ?? ""),
+      `Expected host-link client to become host, got: ${JSON.stringify(joined?.room)}`
     );
 
     const teamHost = await emitWithAck(c1, "room:set-team", { team: "alpha" });
