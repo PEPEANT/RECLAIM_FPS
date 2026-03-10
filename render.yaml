@@ -3,7 +3,7 @@ services:
     name: reclaim-fps
     runtime: node
     plan: free
-    autoDeploy: true
+    autoDeploy: false
     healthCheckPath: /health
     buildCommand: npm ci && npm run build
     startCommand: npm run render:start
