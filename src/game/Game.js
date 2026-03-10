@@ -11037,18 +11037,13 @@ export class Game {
       return;
     }
 
-    if (!this.isCurrentRoomHost()) {
+    if (!this.canUseHostControls()) {
       if (this.activeMatchMode === "online" && this.isRunning && !this.isGameOver) {
         this.hud.setStatus("이미 온라인 매치에 참가 중입니다.", false, 0.8);
         return;
       }
       this.hud.setStatus("온라인 매치에 참가합니다.", false, 0.8);
       this.start({ mode: "online" });
-      return;
-    }
-
-    if (!this.isUsingHostLink()) {
-      this.hud.setStatus("호스트 링크로 접속한 방장만 라운드를 시작할 수 있습니다.", true, 1);
       return;
     }
 
@@ -11143,12 +11138,10 @@ export class Game {
         this.mpStartBtn.textContent = "서버 오프라인";
       } else if (!inRoom) {
         this.mpStartBtn.textContent = "방 자동 참가 중...";
-      } else if (isHost && !this.isUsingHostLink()) {
-        this.mpStartBtn.textContent = "호스트 링크 필요";
-      } else if (!isHost) {
-        this.mpStartBtn.textContent = "온라인 바로 입장";
-      } else {
+      } else if (canUseHostControls) {
         this.mpStartBtn.textContent = "온라인 라운드 시작";
+      } else {
+        this.mpStartBtn.textContent = "온라인 바로 입장";
       }
     }
     if (this.mpLeaveBtn) {
