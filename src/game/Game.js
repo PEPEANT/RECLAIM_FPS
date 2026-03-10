@@ -8527,19 +8527,39 @@ export class Game {
       this.openSimulacWorld();
     });
     this.hostStartForestBtn?.addEventListener("click", () => {
+      if (!this.isCurrentRoomHost()) {
+        this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
+        return;
+      }
       this.startOnlineMatch("forest_frontline");
     });
     this.hostStartCityBtn?.addEventListener("click", () => {
+      if (!this.isCurrentRoomHost()) {
+        this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
+        return;
+      }
       this.startOnlineMatch("city_frontline");
     });
     this.hostOpenLobbyBtn?.addEventListener("click", () => {
+      if (!this.isCurrentRoomHost()) {
+        this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
+        return;
+      }
       this.enterOnlineLobby3D();
     });
     this.hostOpenTrainingBtn?.addEventListener("click", () => {
+      if (!this.isCurrentRoomHost()) {
+        this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
+        return;
+      }
       this.applyLobbyNickname({ source: "menu", syncToServer: false });
       this.start({ mode: "single" });
     });
     this.hostOpenSimulacBtn?.addEventListener("click", () => {
+      if (!this.isCurrentRoomHost()) {
+        this.hud.setStatus("방장만 사용할 수 있습니다.", true, 0.8);
+        return;
+      }
       this.openSimulacWorld();
     });
     for (const button of this.mpWeaponButtons) {
@@ -10997,9 +11017,7 @@ export class Game {
       return;
     }
 
-    const myId = this.getMySocketId();
-    const hostId = String(this.lobbyState.hostId ?? "");
-    if (!myId || !hostId || myId !== hostId) {
+    if (!this.isCurrentRoomHost()) {
       if (this.activeMatchMode === "online" && this.isRunning && !this.isGameOver) {
         this.hud.setStatus("이미 온라인 매치에 참가 중입니다.", false, 0.8);
         return;
@@ -11044,13 +11062,17 @@ export class Game {
     }
   }
 
+  isCurrentRoomHost() {
+    const myId = this.getMySocketId();
+    const hostId = String(this.lobbyState.hostId ?? "");
+    return Boolean(this.lobbyState.roomCode) && !!myId && !!hostId && myId === hostId;
+  }
+
   updateLobbyControls() {
     const { connected, connecting, retrying } = this.getOnlineConnectionUiState();
     const inRoom = !!this.lobbyState.roomCode;
     const in3dLobby = this.isLobby3DActive();
-    const myId = this.getMySocketId();
-    const hostId = String(this.lobbyState.hostId ?? "");
-    const isHost = !!inRoom && !!myId && !!hostId && myId === hostId;
+    const isHost = this.isCurrentRoomHost();
     const canStart = connected && inRoom;
     const hostPanelVisible = isHost && this.menuMode === "online";
     this.syncOnlineHubSummary();
@@ -11134,6 +11156,8 @@ export class Game {
     }
     if (this.hostCommandPanelEl) {
       this.hostCommandPanelEl.classList.toggle("hidden", !hostPanelVisible);
+      this.hostCommandPanelEl.toggleAttribute("hidden", !hostPanelVisible);
+      this.hostCommandPanelEl.setAttribute("aria-hidden", hostPanelVisible ? "false" : "true");
     }
     this.startLayoutEl?.classList.toggle("host-panel-hidden", !hostPanelVisible);
     if (this.hostCommandStateEl) {
@@ -11157,13 +11181,13 @@ export class Game {
       this.hostStartCityBtn.disabled = !connected || !inRoom || !isHost;
     }
     if (this.hostOpenLobbyBtn) {
-      this.hostOpenLobbyBtn.disabled = !connected && !in3dLobby;
+      this.hostOpenLobbyBtn.disabled = !isHost || (!connected && !in3dLobby);
     }
     if (this.hostOpenTrainingBtn) {
-      this.hostOpenTrainingBtn.disabled = false;
+      this.hostOpenTrainingBtn.disabled = !isHost;
     }
     if (this.hostOpenSimulacBtn) {
-      this.hostOpenSimulacBtn.disabled = false;
+      this.hostOpenSimulacBtn.disabled = !isHost;
     }
     this.syncLobby3DPortalState();
     this.updateLobbyQuickPanel();
