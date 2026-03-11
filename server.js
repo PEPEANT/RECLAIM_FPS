@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { Server } from "socket.io";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "./src/shared/gameModes.js";
 import {
@@ -22,6 +23,9 @@ import {
   getOnlineMapConfig,
   normalizeOnlineMapId
 } from "./src/shared/onlineMapRotation.js";
+import { createMapBuilder } from "./src/game/world/MapBuilder.js";
+import { generateCityFrontlineMap } from "./src/game/world/maps/cityFrontlineMap.js";
+import { generateForestFrontlineMap } from "./src/game/world/maps/forestFrontlineMap.js";
 
 function parseCorsOrigins(rawValue) {
   const value = String(rawValue ?? "").trim();
@@ -162,6 +166,8 @@ const BLOCK_TYPE_MIN = 1;
 const BLOCK_TYPE_MAX = 8;
 const DEFAULT_BLOCK_STOCK = 32;
 const MAX_BLOCK_STOCK = 999;
+const SERVER_BLOCK_REMOVE_MAX_REACH = 12.5;
+const SERVER_BLOCK_PLACE_MAX_REACH = 19.5;
 const ENABLE_PERSISTENT_WORLD_STATE = true;
 const PERSISTENT_WORLD_STATE_VERSION = 1;
 const PERSISTENT_WORLD_SAVE_DEBOUNCE_MS = 700;
@@ -177,6 +183,7 @@ const DAILY_LEADERBOARD_MAX_ENTRIES = 200;
 const DAILY_LEADERBOARD_PATH = resolve(process.cwd(), "storage", "daily-leaderboard.json");
 const DAILY_LEADERBOARD_TIMEZONE_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAILY_LEADERBOARD_RESET_CHECK_MS = 15_000;
+const SERVER_SECURITY_LOG_FLUSH_MS = 60_000;
 const DEFAULT_TEAM_HOME = Object.freeze({
   alpha: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).alphaBase }),
   bravo: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).bravoBase })
@@ -185,17 +192,13 @@ const DEFAULT_TEAM_FLAG_HOME = Object.freeze({
   alpha: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).alphaFlag }),
   bravo: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).bravoFlag })
 });
-const SPAWN_PROTECT_RADIUS = 4;
+const SPAWN_PROTECT_RADIUS = 6.5;
 const SPAWN_PROTECT_RADIUS_SQ = SPAWN_PROTECT_RADIUS * SPAWN_PROTECT_RADIUS;
 const SPAWN_PROTECT_MIN_Y = -1;
 const SPAWN_PROTECT_MAX_Y = 6;
 const BASE_FLOOR_PROTECT_RADIUS = 8;
 const BASE_FLOOR_PROTECT_RADIUS_SQ = BASE_FLOOR_PROTECT_RADIUS * BASE_FLOOR_PROTECT_RADIUS;
 const BASE_FLOOR_PROTECT_MAX_Y = -4;
-const SPAWN_PROTECT_CENTERS = Object.freeze([
-  Object.freeze({ x: DEFAULT_TEAM_HOME.alpha.x, z: DEFAULT_TEAM_HOME.alpha.z }),
-  Object.freeze({ x: DEFAULT_TEAM_HOME.bravo.x, z: DEFAULT_TEAM_HOME.bravo.z })
-]);
 const LOBBY3D_CENTER_X = 0;
 const LOBBY3D_CENTER_Z = -22;
 const LOBBY3D_HALF_X = 34;
@@ -208,6 +211,60 @@ const LOBBY3D_MIN_Z = LOBBY3D_CENTER_Z - LOBBY3D_HALF_Z;
 const LOBBY3D_MAX_Z = LOBBY3D_CENTER_Z + LOBBY3D_HALF_Z;
 const LOBBY3D_MIN_Y = LOBBY3D_FLOOR_Y - 1;
 const LOBBY3D_MAX_Y = LOBBY3D_FLOOR_Y + LOBBY3D_WALL_HEIGHT;
+const SERVER_PLAYER_HEIGHT = 1.75;
+const SERVER_PLAYER_CROUCH_HEIGHT = 1.18;
+const SERVER_PLAYER_SPRINT_SPEED = 9.8;
+const SERVER_FLAG_CARRIER_SPEED_MULTIPLIER = 0.9;
+const SERVER_SYNC_MIN_ELAPSED_MS = 1000 / 60;
+const SERVER_SYNC_MAX_ELAPSED_MS = 750;
+const SERVER_SYNC_HORIZONTAL_SLACK = 0.9;
+const SERVER_SYNC_VERTICAL_RISE_SPEED = 6.5;
+const SERVER_SYNC_VERTICAL_FALL_SPEED = 18;
+const SERVER_SYNC_VERTICAL_RISE_SLACK = 1.25;
+const SERVER_SYNC_VERTICAL_FALL_SLACK = 2.25;
+const SERVER_SYNC_BOUNDS_MARGIN = 12;
+const SERVER_POSITION_CORRECTION_DISTANCE = 2.4;
+const SERVER_POSITION_CORRECTION_COOLDOWN_MS = 250;
+const SERVER_DYNAMIC_LOS_STEP = 0.2;
+const SERVER_HITBOX_BODY_HALF_WIDTH = 0.46;
+const SERVER_HITBOX_HEAD_HALF_WIDTH = 0.24;
+const SERVER_HITBOX_BODY_FOOT_OFFSET = -0.06;
+const SERVER_HITBOX_BODY_TOP_OFFSET = 1.22;
+const SERVER_HITBOX_CROUCH_BODY_TOP_OFFSET = 0.88;
+const SERVER_HITBOX_HEAD_MIN_OFFSET = 1.14;
+const SERVER_HITBOX_HEAD_MAX_OFFSET = 1.98;
+const SERVER_HITBOX_CROUCH_HEAD_MIN_OFFSET = 0.82;
+const SERVER_HITBOX_CROUCH_HEAD_MAX_OFFSET = 1.42;
+const SERVER_DEFAULT_WEAPON_VALIDATION = Object.freeze({
+  maxRange: 128,
+  bodyPadding: 0.08,
+  headPadding: 0.04
+});
+const SERVER_WEAPON_VALIDATION_BY_ID = Object.freeze({
+  m4a1: Object.freeze({
+    maxRange: 132,
+    bodyPadding: 0.08,
+    headPadding: 0.05
+  }),
+  spas12: Object.freeze({
+    maxRange: 30,
+    bodyPadding: 0.44,
+    headPadding: 0.18
+  }),
+  awp: Object.freeze({
+    maxRange: 196,
+    bodyPadding: 0.05,
+    headPadding: 0.03
+  })
+});
+const SERVER_STATIC_MAP_GENERATORS = Object.freeze({
+  forest_frontline: generateForestFrontlineMap,
+  city_frontline: generateCityFrontlineMap
+});
+const SERVER_BLOCK_PACK_X_OFFSET = 512;
+const SERVER_BLOCK_PACK_Y_OFFSET = 128;
+const SERVER_BLOCK_PACK_Z_OFFSET = 512;
+const SERVER_STATIC_COLLISION_BY_MAP_ID = new Map();
 
 const rooms = new Map();
 let playerCount = 0;
@@ -215,6 +272,7 @@ let persistentWorldSaveTimer = null;
 let dailyLeaderboardSaveTimer = null;
 let dailyLeaderboardState = null;
 let dailyLeaderboardResetInterval = null;
+let serverSecurityLogInterval = null;
 
 function clonePoint(point = { x: 0, y: 0, z: 0 }) {
   return {
@@ -222,6 +280,256 @@ function clonePoint(point = { x: 0, y: 0, z: 0 }) {
     y: Number(point.y ?? 0),
     z: Number(point.z ?? 0)
   };
+}
+
+function createServerSecurityTelemetry(now = Date.now()) {
+  return {
+    windowStartedAt: Math.max(0, Math.trunc(Number(now) || Date.now())),
+    sync: {
+      processed: 0,
+      rejected: 0,
+      corrected: 0,
+      emittedCorrections: 0,
+      totalCorrectionDistance: 0,
+      maxCorrectionDistance: 0,
+      rejectReasons: new Map(),
+      correctionReasons: new Map()
+    },
+    shot: {
+      processed: 0,
+      rejected: 0,
+      misses: 0,
+      hits: 0,
+      kills: 0,
+      immune: 0,
+      rejectReasons: new Map()
+    },
+    los: {
+      calls: 0,
+      blocked: 0,
+      totalSteps: 0,
+      maxSteps: 0,
+      totalDurationMs: 0,
+      maxDurationMs: 0,
+      maxDistance: 0
+    }
+  };
+}
+
+let serverSecurityTelemetry = createServerSecurityTelemetry();
+
+function incrementTelemetryReason(reasonMap, reason, amount = 1) {
+  if (!(reasonMap instanceof Map)) {
+    return;
+  }
+  const key = String(reason ?? "unknown").trim() || "unknown";
+  reasonMap.set(key, (reasonMap.get(key) ?? 0) + Math.max(1, Math.trunc(Number(amount) || 1)));
+}
+
+function formatTelemetryReasons(reasonMap) {
+  if (!(reasonMap instanceof Map) || reasonMap.size === 0) {
+    return "none";
+  }
+  return [...reasonMap.entries()]
+    .sort((a, b) => {
+      if (b[1] !== a[1]) {
+        return b[1] - a[1];
+      }
+      return String(a[0]).localeCompare(String(b[0]));
+    })
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(", ");
+}
+
+function hasServerSecurityTelemetryData() {
+  const telemetry = serverSecurityTelemetry;
+  return Boolean(
+    telemetry.sync.processed ||
+      telemetry.sync.rejected ||
+      telemetry.sync.corrected ||
+      telemetry.shot.processed ||
+      telemetry.shot.rejected ||
+      telemetry.shot.misses ||
+      telemetry.shot.hits ||
+      telemetry.shot.immune ||
+      telemetry.los.calls
+  );
+}
+
+function recordPlayerSyncProcessed() {
+  serverSecurityTelemetry.sync.processed += 1;
+}
+
+function recordPlayerSyncReject(reason) {
+  serverSecurityTelemetry.sync.rejected += 1;
+  incrementTelemetryReason(serverSecurityTelemetry.sync.rejectReasons, reason);
+}
+
+function recordPlayerSyncCorrection(syncResult = {}) {
+  serverSecurityTelemetry.sync.corrected += 1;
+  const correctionDistance = Math.max(0, Number(syncResult.correctionDistance) || 0);
+  serverSecurityTelemetry.sync.totalCorrectionDistance += correctionDistance;
+  serverSecurityTelemetry.sync.maxCorrectionDistance = Math.max(
+    serverSecurityTelemetry.sync.maxCorrectionDistance,
+    correctionDistance
+  );
+  for (const reason of Array.isArray(syncResult.correctionReasons) ? syncResult.correctionReasons : []) {
+    incrementTelemetryReason(serverSecurityTelemetry.sync.correctionReasons, reason);
+  }
+}
+
+function recordPlayerSyncCorrectionEmit() {
+  serverSecurityTelemetry.sync.emittedCorrections += 1;
+}
+
+function recordPvpShotProcessed() {
+  serverSecurityTelemetry.shot.processed += 1;
+}
+
+function recordPvpShotReject(reason) {
+  serverSecurityTelemetry.shot.rejected += 1;
+  incrementTelemetryReason(serverSecurityTelemetry.shot.rejectReasons, reason);
+}
+
+function recordPvpShotImmune() {
+  serverSecurityTelemetry.shot.immune += 1;
+}
+
+function recordPvpShotMiss() {
+  serverSecurityTelemetry.shot.misses += 1;
+}
+
+function recordPvpShotHit({ killed = false } = {}) {
+  serverSecurityTelemetry.shot.hits += 1;
+  if (killed) {
+    serverSecurityTelemetry.shot.kills += 1;
+  }
+}
+
+function recordServerLosSample({ blocked = false, steps = 0, durationMs = 0, distance = 0 } = {}) {
+  const los = serverSecurityTelemetry.los;
+  los.calls += 1;
+  if (blocked) {
+    los.blocked += 1;
+  }
+  los.totalSteps += Math.max(0, Math.trunc(Number(steps) || 0));
+  los.maxSteps = Math.max(los.maxSteps, Math.max(0, Math.trunc(Number(steps) || 0)));
+  const safeDurationMs = Math.max(0, Number(durationMs) || 0);
+  los.totalDurationMs += safeDurationMs;
+  los.maxDurationMs = Math.max(los.maxDurationMs, safeDurationMs);
+  los.maxDistance = Math.max(los.maxDistance, Math.max(0, Number(distance) || 0));
+}
+
+function flushServerSecurityTelemetry(force = false) {
+  if (!hasServerSecurityTelemetryData()) {
+    return;
+  }
+
+  const telemetry = serverSecurityTelemetry;
+  const windowSeconds = Math.max(
+    1,
+    Math.round((Date.now() - Number(telemetry.windowStartedAt ?? Date.now())) / 1000)
+  );
+  const averageCorrectionDistance =
+    telemetry.sync.corrected > 0
+      ? telemetry.sync.totalCorrectionDistance / telemetry.sync.corrected
+      : 0;
+  const averageLosSteps = telemetry.los.calls > 0 ? telemetry.los.totalSteps / telemetry.los.calls : 0;
+  const averageLosDurationMs =
+    telemetry.los.calls > 0 ? telemetry.los.totalDurationMs / telemetry.los.calls : 0;
+
+  if (force || telemetry.sync.processed || telemetry.sync.rejected || telemetry.sync.corrected) {
+    console.log(
+      `[security:sync] ${windowSeconds}s processed=${telemetry.sync.processed} rejected=${telemetry.sync.rejected} corrected=${telemetry.sync.corrected} emitted=${telemetry.sync.emittedCorrections} avgCorrection=${averageCorrectionDistance.toFixed(2)} maxCorrection=${telemetry.sync.maxCorrectionDistance.toFixed(2)} rejectReasons=${formatTelemetryReasons(
+        telemetry.sync.rejectReasons
+      )} correctionReasons=${formatTelemetryReasons(telemetry.sync.correctionReasons)}`
+    );
+  }
+
+  if (
+    force ||
+    telemetry.shot.processed ||
+    telemetry.shot.rejected ||
+    telemetry.shot.misses ||
+    telemetry.shot.hits ||
+    telemetry.shot.immune
+  ) {
+    console.log(
+      `[security:shot] ${windowSeconds}s processed=${telemetry.shot.processed} rejected=${telemetry.shot.rejected} misses=${telemetry.shot.misses} hits=${telemetry.shot.hits} kills=${telemetry.shot.kills} immune=${telemetry.shot.immune} rejectReasons=${formatTelemetryReasons(
+        telemetry.shot.rejectReasons
+      )}`
+    );
+  }
+
+  if (force || telemetry.los.calls) {
+    console.log(
+      `[security:los] ${windowSeconds}s calls=${telemetry.los.calls} blocked=${telemetry.los.blocked} avgSteps=${averageLosSteps.toFixed(1)} maxSteps=${telemetry.los.maxSteps} avgMs=${averageLosDurationMs.toFixed(3)} maxMs=${telemetry.los.maxDurationMs.toFixed(3)} maxDistance=${telemetry.los.maxDistance.toFixed(2)}`
+    );
+  }
+
+  serverSecurityTelemetry = createServerSecurityTelemetry();
+}
+
+function packServerBlockCoord(x, y, z) {
+  const px = (Math.trunc(Number(x) || 0) + SERVER_BLOCK_PACK_X_OFFSET) & 0x3ff;
+  const py = (Math.trunc(Number(y) || 0) + SERVER_BLOCK_PACK_Y_OFFSET) & 0x3ff;
+  const pz = (Math.trunc(Number(z) || 0) + SERVER_BLOCK_PACK_Z_OFFSET) & 0x3ff;
+  return (px << 20) | (py << 10) | pz;
+}
+
+function createServerCollisionWorld() {
+  const blocks = new Map();
+  return {
+    blocks,
+    setBlock(x, y, z, typeId = BLOCK_TYPE_MIN) {
+      blocks.set(packServerBlockCoord(x, y, z), normalizeStockTypeId(typeId) ?? BLOCK_TYPE_MIN);
+    },
+    removeBlock(x, y, z) {
+      blocks.delete(packServerBlockCoord(x, y, z));
+    },
+    hasBlock(x, y, z) {
+      return blocks.has(packServerBlockCoord(x, y, z));
+    },
+    getBlockType(x, y, z) {
+      return blocks.get(packServerBlockCoord(x, y, z)) ?? null;
+    },
+    getSurfaceYAt(worldX, worldZ, minY = -32, maxY = 64) {
+      const x = Math.trunc(Number(worldX) || 0);
+      const z = Math.trunc(Number(worldZ) || 0);
+      for (let y = Math.trunc(Number(maxY) || 64); y >= Math.trunc(Number(minY) || -32); y -= 1) {
+        if (blocks.has(packServerBlockCoord(x, y, z))) {
+          return y + 1;
+        }
+      }
+      return null;
+    }
+  };
+}
+
+function buildStaticCollisionWorld(mapId) {
+  const normalizedMapId = normalizeOnlineMapId(mapId);
+  const generator = SERVER_STATIC_MAP_GENERATORS[normalizedMapId];
+  if (!generator) {
+    return null;
+  }
+  const world = createServerCollisionWorld();
+  const builder = createMapBuilder(world);
+  generator(builder);
+  return world;
+}
+
+function getStaticCollisionWorld(mapId) {
+  const normalizedMapId = normalizeOnlineMapId(mapId);
+  if (!SERVER_STATIC_COLLISION_BY_MAP_ID.has(normalizedMapId)) {
+    SERVER_STATIC_COLLISION_BY_MAP_ID.set(normalizedMapId, buildStaticCollisionWorld(normalizedMapId));
+  }
+  return SERVER_STATIC_COLLISION_BY_MAP_ID.get(normalizedMapId) ?? null;
+}
+
+function prewarmServerStaticCollisionWorlds() {
+  for (const mapId of Object.keys(SERVER_STATIC_MAP_GENERATORS)) {
+    getStaticCollisionWorld(mapId);
+  }
 }
 
 function getRoomMapId(roomOrState = null) {
@@ -321,7 +629,7 @@ function sanitizePersistedBlockEntry(entry = {}) {
     y: Math.trunc(y),
     z: Math.trunc(z)
   };
-  if (getProtectedBlockReason(normalized.action, normalized.x, normalized.y, normalized.z)) {
+  if (getProtectedBlockReason(null, normalized.action, normalized.x, normalized.y, normalized.z)) {
     return null;
   }
 
@@ -602,6 +910,12 @@ function getRoomState(room) {
 
   for (const player of room.state.players.values()) {
     ensurePlayerStock(player);
+    ensurePlayerWeaponState(player);
+    if (!player.state || typeof player.state !== "object") {
+      player.state = getInitialPlayerSyncReferenceState(room, player);
+    } else if (!Number.isFinite(Number(player.state.updatedAt))) {
+      player.state.updatedAt = Date.now();
+    }
     player.hp = Number.isFinite(player.hp) ? Math.max(0, Math.trunc(player.hp)) : 100;
     player.respawnAt = Number.isFinite(player.respawnAt) ? Math.max(0, Math.trunc(player.respawnAt)) : 0;
     player.spawnShieldUntil = Number.isFinite(player.spawnShieldUntil)
@@ -612,6 +926,9 @@ function getRoomState(room) {
     player.captures = Number.isFinite(player.captures) ? Math.max(0, Math.trunc(player.captures)) : 0;
     player.killStreak = Number.isFinite(player.killStreak)
       ? Math.max(0, Math.trunc(player.killStreak))
+      : 0;
+    player.lastStateCorrectionAt = Number.isFinite(player.lastStateCorrectionAt)
+      ? Math.max(0, Math.trunc(player.lastStateCorrectionAt))
       : 0;
     if (typeof player.respawnTimer === "undefined") {
       player.respawnTimer = null;
@@ -706,6 +1023,17 @@ function getSpawnStateForTeam(team, roomOrMapId = null) {
     typeof roomOrMapId === "string" ? normalizeOnlineMapId(roomOrMapId) : getRoomMapId(roomOrMapId);
   const home = normalized ? getTeamHomeForMap(mapId, normalized) : { x: 0, y: 0, z: 0 };
   const yaw = normalized === "alpha" ? Math.PI * 0.5 : normalized === "bravo" ? -Math.PI * 0.5 : 0;
+  return sanitizePlayerState({
+    x: home.x,
+    y: 1.75,
+    z: home.z,
+    yaw,
+    pitch: 0
+  });
+}
+
+function getRandomizedSpawnStateForTeam(team, roomOrMapId = null) {
+  const baseState = getSpawnStateForTeam(team, roomOrMapId);
   const spawnOffsets = [
     [0, 0],
     [2.5, 0],
@@ -726,12 +1054,197 @@ function getSpawnStateForTeam(team, roomOrMapId = null) {
   const jitterZ = (Math.random() - 0.5) * 0.35;
 
   return sanitizePlayerState({
-    x: home.x + randomOffset[0] + jitterX,
-    y: 1.75,
-    z: home.z + randomOffset[1] + jitterZ,
-    yaw,
-    pitch: 0
+    ...baseState,
+    x: Number(baseState.x ?? 0) + randomOffset[0] + jitterX,
+    z: Number(baseState.z ?? 0) + randomOffset[1] + jitterZ
   });
+}
+
+function getPlayerSpawnedAt(player) {
+  const spawnShieldUntil = Number(player?.spawnShieldUntil ?? 0);
+  if (Number.isFinite(spawnShieldUntil) && spawnShieldUntil > 0) {
+    return Math.max(0, Math.trunc(spawnShieldUntil - RESPAWN_SHIELD_MS));
+  }
+  return Date.now();
+}
+
+function getInitialPlayerSyncReferenceState(room, player) {
+  return {
+    ...getSpawnStateForTeam(player?.team, room),
+    updatedAt: getPlayerSpawnedAt(player)
+  };
+}
+
+function createPlayerWeaponState(rawWeaponId = DEFAULT_WEAPON_ID, now = Date.now()) {
+  const weaponDef = getWeaponDefinition(rawWeaponId);
+  return {
+    weaponId: weaponDef.id,
+    ammo: Math.max(0, Math.trunc(Number(weaponDef.magazineSize) || 0)),
+    reserve: Math.max(0, Math.trunc(Number(weaponDef.reserve) || 0)),
+    reloading: false,
+    reloadEndsAt: 0,
+    updatedAt: Math.max(0, Math.trunc(Number(now) || Date.now()))
+  };
+}
+
+function ensurePlayerWeaponState(player, { reset = false, now = Date.now() } = {}) {
+  if (!player || typeof player !== "object") {
+    return createPlayerWeaponState(DEFAULT_WEAPON_ID, now);
+  }
+
+  const weaponDef = getWeaponDefinition(player.weaponId ?? DEFAULT_WEAPON_ID);
+  if (reset || !player.weaponState || player.weaponState.weaponId !== weaponDef.id) {
+    player.weaponState = createPlayerWeaponState(weaponDef.id, now);
+    return player.weaponState;
+  }
+
+  const weaponState = player.weaponState;
+  weaponState.weaponId = weaponDef.id;
+  weaponState.ammo = Math.max(
+    0,
+    Math.min(
+      Math.max(0, Math.trunc(Number(weaponDef.magazineSize) || 0)),
+      Math.trunc(Number(weaponState.ammo ?? weaponDef.magazineSize) || weaponDef.magazineSize || 0)
+    )
+  );
+  weaponState.reserve = Math.max(
+    0,
+    Math.min(
+      Math.max(0, Math.trunc(Number(weaponDef.reserve) || 0)),
+      Math.trunc(Number(weaponState.reserve ?? weaponDef.reserve) || weaponDef.reserve || 0)
+    )
+  );
+  weaponState.reloading = Boolean(weaponState.reloading);
+  weaponState.reloadEndsAt = weaponState.reloading
+    ? Math.max(0, Math.trunc(Number(weaponState.reloadEndsAt ?? 0)))
+    : 0;
+  weaponState.updatedAt = Math.max(
+    0,
+    Math.trunc(Number(weaponState.updatedAt ?? now) || Math.trunc(Number(now) || Date.now()))
+  );
+  if (weaponState.reloading && weaponState.reloadEndsAt <= 0) {
+    weaponState.reloading = false;
+  }
+  return weaponState;
+}
+
+function getServerWeaponCadenceMs(rawWeaponId = DEFAULT_WEAPON_ID) {
+  const weaponDef = getWeaponDefinition(rawWeaponId);
+  const cadenceSeconds = Math.max(
+    Number(weaponDef.shotCooldown) || 0,
+    Number(weaponDef.magazineSize) === 1 ? Number(weaponDef.reloadDuration) || 0 : 0
+  );
+  return Math.max(50, Math.round(cadenceSeconds * 1000 * 0.85));
+}
+
+function updatePlayerWeaponStateProgress(player, now = Date.now()) {
+  const weaponState = ensurePlayerWeaponState(player, { now });
+  if (!weaponState.reloading || now < Number(weaponState.reloadEndsAt ?? 0)) {
+    return weaponState;
+  }
+
+  const weaponDef = getWeaponDefinition(weaponState.weaponId);
+  const magazineSize = Math.max(0, Math.trunc(Number(weaponDef.magazineSize) || 0));
+  const reserve = Math.max(0, Math.trunc(Number(weaponState.reserve ?? 0) || 0));
+  const needed = Math.max(0, magazineSize - Math.max(0, Math.trunc(Number(weaponState.ammo ?? 0) || 0)));
+  const loaded = Math.min(needed, reserve);
+  weaponState.ammo = Math.max(0, Math.trunc(Number(weaponState.ammo ?? 0) || 0) + loaded);
+  weaponState.reserve = Math.max(0, reserve - loaded);
+  weaponState.reloading = false;
+  weaponState.reloadEndsAt = 0;
+  weaponState.updatedAt = Math.max(0, Math.trunc(Number(now) || Date.now()));
+  return weaponState;
+}
+
+function serializePlayerWeaponState(player, { now = Date.now() } = {}) {
+  const weaponState = updatePlayerWeaponStateProgress(player, now);
+  const weaponDef = getWeaponDefinition(weaponState.weaponId);
+  const cooldownRemainingMs = Math.max(
+    0,
+    Number(player?.lastShotAt ?? 0) + getServerWeaponCadenceMs(weaponState.weaponId) - now
+  );
+  const reloadEndsAt = weaponState.reloading ? Math.max(0, Math.trunc(Number(weaponState.reloadEndsAt) || 0)) : 0;
+  return {
+    weaponId: weaponState.weaponId,
+    ammo: Math.max(0, Math.trunc(Number(weaponState.ammo ?? 0) || 0)),
+    reserve: Math.max(0, Math.trunc(Number(weaponState.reserve ?? 0) || 0)),
+    magazineSize: Math.max(0, Math.trunc(Number(weaponDef.magazineSize) || 0)),
+    reloading: Boolean(weaponState.reloading && reloadEndsAt > now),
+    reloadEndsAt,
+    reloadRemainingMs: reloadEndsAt > now ? Math.max(0, reloadEndsAt - now) : 0,
+    cooldownRemainingMs: Math.max(0, Math.trunc(cooldownRemainingMs))
+  };
+}
+
+function emitPlayerInventoryUpdate(socket, player, room = null) {
+  if (!socket || !player) {
+    return;
+  }
+  const payload = {
+    stock: serializeBlockStock(player.stock),
+    weaponState: serializePlayerWeaponState(player)
+  };
+  if (room) {
+    payload.roomStateRevision = getRoomState(room).revision;
+  }
+  socket.emit("inventory:update", payload);
+}
+
+function emitPlayerInventoryUpdateById(playerId, room) {
+  const safePlayerId = String(playerId ?? "").trim();
+  if (!safePlayerId || !room) {
+    return;
+  }
+  const roomState = getRoomState(room);
+  const player = roomState.players.get(safePlayerId);
+  const targetSocket = io?.sockets?.sockets?.get?.(safePlayerId) ?? null;
+  if (!player || !targetSocket) {
+    return;
+  }
+  emitPlayerInventoryUpdate(targetSocket, player, room);
+}
+
+function startPlayerReload(player, now = Date.now()) {
+  const weaponState = updatePlayerWeaponStateProgress(player, now);
+  const weaponDef = getWeaponDefinition(weaponState.weaponId);
+  const magazineSize = Math.max(0, Math.trunc(Number(weaponDef.magazineSize) || 0));
+
+  if (weaponState.reloading) {
+    return { ok: false, reason: "reloading", weaponState };
+  }
+  if (weaponState.ammo >= magazineSize) {
+    return { ok: false, reason: "full_mag", weaponState };
+  }
+  if (weaponState.reserve <= 0) {
+    return { ok: false, reason: "no_reserve", weaponState };
+  }
+
+  weaponState.reloading = true;
+  weaponState.reloadEndsAt =
+    now + Math.max(50, Math.round(Math.max(0, Number(weaponDef.reloadDuration) || 0) * 1000));
+  weaponState.updatedAt = Math.max(0, Math.trunc(Number(now) || Date.now()));
+  return { ok: true, weaponState };
+}
+
+function consumePlayerShotAmmo(player, now = Date.now()) {
+  const weaponState = updatePlayerWeaponStateProgress(player, now);
+
+  if (weaponState.reloading) {
+    return { ok: false, reason: "reloading", weaponState };
+  }
+  if (weaponState.ammo <= 0) {
+    if (weaponState.reserve > 0) {
+      startPlayerReload(player, now);
+    }
+    return { ok: false, reason: "empty", weaponState: ensurePlayerWeaponState(player, { now }) };
+  }
+
+  weaponState.ammo = Math.max(0, Math.trunc(Number(weaponState.ammo ?? 0) || 0) - 1);
+  weaponState.updatedAt = Math.max(0, Math.trunc(Number(now) || Date.now()));
+  if (weaponState.ammo <= 0 && weaponState.reserve > 0) {
+    startPlayerReload(player, now);
+  }
+  return { ok: true, weaponState };
 }
 
 function schedulePlayerRespawn(room, player) {
@@ -758,14 +1271,17 @@ function schedulePlayerRespawn(room, player) {
     current.killStreak = 0;
     current.lastShotAt = 0;
     current.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
-    current.state = getSpawnStateForTeam(current.team, room);
+    current.state = getRandomizedSpawnStateForTeam(current.team, room);
+    ensurePlayerWeaponState(current, { reset: true });
 
     const roomState = touchRoomState(room);
+    emitPlayerInventoryUpdateById(current.id, room);
     io.to(room.code).emit("player:respawn", {
       id: current.id,
       hp: current.hp,
       spawnShieldUntil: Number(current.spawnShieldUntil ?? 0),
       state: current.state,
+      weaponState: serializePlayerWeaponState(current),
       roomStateRevision: roomState.revision
     });
     emitRoomUpdate(room);
@@ -809,11 +1325,15 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null, 
     player.hp = 100;
     player.respawnAt = 0;
     player.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
-    player.state = getSpawnStateForTeam(player.team, state.mapId);
+    player.state = getRandomizedSpawnStateForTeam(player.team, state.mapId);
+    ensurePlayerWeaponState(player, { reset: true });
   }
 
   ensurePlayerTeamsBalanced(state.players);
   touchRoomState(room);
+  for (const player of state.players.values()) {
+    emitPlayerInventoryUpdateById(player.id, room);
+  }
   emitRoomUpdate(room);
   io.to(room.code).emit("room:started", {
     code: room.code,
@@ -973,10 +1493,16 @@ function resolveRemovedBlockType(state, update) {
     };
   }
 
+  const staticTypeId =
+    getStaticCollisionWorld(getRoomMapId(state))?.getBlockType?.(update.x, update.y, update.z) ?? null;
+  if (!normalizeStockTypeId(staticTypeId)) {
+    return { ok: false, reason: "already_removed", typeId: null };
+  }
+
   return {
     ok: true,
     reason: "remove_base",
-    typeId: normalizeStockTypeId(update.typeId) ?? BLOCK_TYPE_MIN
+    typeId: normalizeStockTypeId(staticTypeId) ?? BLOCK_TYPE_MIN
   };
 }
 
@@ -1160,14 +1686,749 @@ function distanceXZ(a = null, b = null) {
   return Math.hypot(dx, dz);
 }
 
-function isInsideProtectedRadius(x, z, radiusSq) {
+function distance3D(a = null, b = null) {
+  if (!a || !b) {
+    return Infinity;
+  }
+  const dx = Number(a.x ?? 0) - Number(b.x ?? 0);
+  const dy = Number(a.y ?? 0) - Number(b.y ?? 0);
+  const dz = Number(a.z ?? 0) - Number(b.z ?? 0);
+  return Math.hypot(dx, dy, dz);
+}
+
+function smoothstep01(value) {
+  const clamped = Math.max(0, Math.min(1, Number(value) || 0));
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function getPlayerHeightForState(state = null) {
+  return state?.crouched ? SERVER_PLAYER_CROUCH_HEIGHT : SERVER_PLAYER_HEIGHT;
+}
+
+function getPlayerBasePosition(state = null) {
+  const height = getPlayerHeightForState(state);
+  return {
+    x: Number(state?.x ?? 0),
+    y: Number(state?.y ?? 0) - height,
+    z: Number(state?.z ?? 0)
+  };
+}
+
+function getPlayerEyePosition(state = null) {
+  return {
+    x: Number(state?.x ?? 0),
+    y: Number(state?.y ?? SERVER_PLAYER_HEIGHT),
+    z: Number(state?.z ?? 0)
+  };
+}
+
+function getPlayerAimDirection(state = null) {
+  const yaw = normalizeYaw(state?.yaw, 0);
+  const pitch = clampNumber(state?.pitch, -1.55, 1.55, 0);
+  const cosPitch = Math.cos(pitch);
+  return {
+    x: -Math.sin(yaw) * cosPitch,
+    y: Math.sin(pitch),
+    z: -Math.cos(yaw) * cosPitch
+  };
+}
+
+function getRoomMovementBounds(room) {
+  const mapConfig = getOnlineMapConfig(getRoomMapId(room));
+  const halfExtent = Math.max(32, Number(mapConfig?.halfExtent) || 72);
+  return {
+    minX: -halfExtent - SERVER_SYNC_BOUNDS_MARGIN,
+    maxX: halfExtent + SERVER_SYNC_BOUNDS_MARGIN,
+    minY: -64,
+    maxY: 128,
+    minZ: -halfExtent - SERVER_SYNC_BOUNDS_MARGIN,
+    maxZ: halfExtent + SERVER_SYNC_BOUNDS_MARGIN
+  };
+}
+
+function getPlayerSyncElapsedMs(player, previousState = null) {
+  const referenceState =
+    previousState && typeof previousState === "object" ? previousState : player?.state;
+  const previousUpdatedAt = Number(referenceState?.updatedAt ?? 0);
+  if (!Number.isFinite(previousUpdatedAt) || previousUpdatedAt <= 0) {
+    return SERVER_SYNC_MIN_ELAPSED_MS;
+  }
+  const elapsedMs = Date.now() - previousUpdatedAt;
+  return Math.max(
+    SERVER_SYNC_MIN_ELAPSED_MS,
+    Math.min(SERVER_SYNC_MAX_ELAPSED_MS, Number.isFinite(elapsedMs) ? elapsedMs : SERVER_SYNC_MIN_ELAPSED_MS)
+  );
+}
+
+function getPlayerMaxHorizontalSyncDistance(room, player, previousState = null) {
+  const elapsedSeconds = getPlayerSyncElapsedMs(player, previousState) / 1000;
+  let maxSpeed = SERVER_PLAYER_SPRINT_SPEED;
+  const state = getRoomState(room);
+  if (findCarriedFlagTeam(state.flags, player?.id)) {
+    maxSpeed *= SERVER_FLAG_CARRIER_SPEED_MULTIPLIER;
+  }
+  return maxSpeed * elapsedSeconds + SERVER_SYNC_HORIZONTAL_SLACK;
+}
+
+function getPlayerMaxVerticalRiseDistance(player, previousState = null) {
+  const elapsedSeconds = getPlayerSyncElapsedMs(player, previousState) / 1000;
+  return SERVER_SYNC_VERTICAL_RISE_SPEED * elapsedSeconds + SERVER_SYNC_VERTICAL_RISE_SLACK;
+}
+
+function getPlayerMaxVerticalFallDistance(player, previousState = null) {
+  const elapsedSeconds = getPlayerSyncElapsedMs(player, previousState) / 1000;
+  return SERVER_SYNC_VERTICAL_FALL_SPEED * elapsedSeconds + SERVER_SYNC_VERTICAL_FALL_SLACK;
+}
+
+function clampPlayerSyncState(room, player, rawState = {}) {
+  const proposedState = sanitizePlayerState(rawState);
+  const hasPreviousState = Boolean(player?.state && typeof player.state === "object");
+  const previousState = hasPreviousState ? player.state : getInitialPlayerSyncReferenceState(room, player);
+
+  let nextX = Number(proposedState.x ?? previousState.x ?? 0);
+  let nextY = Number(proposedState.y ?? previousState.y ?? SERVER_PLAYER_HEIGHT);
+  let nextZ = Number(proposedState.z ?? previousState.z ?? 0);
+  let corrected = !hasPreviousState;
+  const correctionReasons = corrected ? ["initial_state_fallback"] : [];
+
+  const deltaX = nextX - Number(previousState.x ?? 0);
+  const deltaZ = nextZ - Number(previousState.z ?? 0);
+  const horizontalDistance = Math.hypot(deltaX, deltaZ);
+  const maxHorizontalDistance = getPlayerMaxHorizontalSyncDistance(room, player, previousState);
+  if (horizontalDistance > maxHorizontalDistance && horizontalDistance > 0.0001) {
+    const scale = maxHorizontalDistance / horizontalDistance;
+    nextX = Number(previousState.x ?? 0) + deltaX * scale;
+    nextZ = Number(previousState.z ?? 0) + deltaZ * scale;
+    corrected = true;
+    correctionReasons.push("horizontal_speed");
+  }
+
+  const deltaY = nextY - Number(previousState.y ?? SERVER_PLAYER_HEIGHT);
+  const maxRise = getPlayerMaxVerticalRiseDistance(player, previousState);
+  const maxFall = getPlayerMaxVerticalFallDistance(player, previousState);
+  if (deltaY > maxRise) {
+    nextY = Number(previousState.y ?? SERVER_PLAYER_HEIGHT) + maxRise;
+    corrected = true;
+    correctionReasons.push("vertical_rise");
+  } else if (deltaY < -maxFall) {
+    nextY = Number(previousState.y ?? SERVER_PLAYER_HEIGHT) - maxFall;
+    corrected = true;
+    correctionReasons.push("vertical_fall");
+  }
+
+  const bounds = getRoomMovementBounds(room);
+  const boundedX = clampNumber(nextX, bounds.minX, bounds.maxX, nextX);
+  const boundedY = clampNumber(nextY, bounds.minY, bounds.maxY, nextY);
+  const boundedZ = clampNumber(nextZ, bounds.minZ, bounds.maxZ, nextZ);
+  if (boundedX !== nextX || boundedY !== nextY || boundedZ !== nextZ) {
+    corrected = true;
+    nextX = boundedX;
+    nextY = boundedY;
+    nextZ = boundedZ;
+    correctionReasons.push("map_bounds");
+  }
+
+  const acceptedState = {
+    ...proposedState,
+    x: Number(nextX.toFixed(3)),
+    y: Number(nextY.toFixed(3)),
+    z: Number(nextZ.toFixed(3)),
+    updatedAt: Date.now()
+  };
+
+  return {
+    state: acceptedState,
+    corrected,
+    correctionDistance: distance3D(acceptedState, proposedState),
+    correctionReasons
+  };
+}
+
+function getWeaponServerValidation(rawWeaponId) {
+  const weaponId = sanitizeWeaponId(rawWeaponId);
+  return SERVER_WEAPON_VALIDATION_BY_ID[weaponId] ?? SERVER_DEFAULT_WEAPON_VALIDATION;
+}
+
+function getWeaponDamageAtDistance(weaponDef, baseDamage, distance = 0) {
+  const parsedBaseDamage = Math.max(1, Number(baseDamage) || 1);
+  const falloffStart = Math.max(0, Number(weaponDef?.damageFalloffStart) || 0);
+  const falloffEnd = Math.max(falloffStart, Number(weaponDef?.damageFalloffEnd) || falloffStart);
+  if (falloffEnd <= falloffStart) {
+    return Math.round(parsedBaseDamage);
+  }
+  const minDamageScale = Math.min(1, Math.max(0.05, Number(weaponDef?.minDamageScale ?? 1) || 1));
+  const normalizedDistance = (Number(distance) - falloffStart) / Math.max(0.0001, falloffEnd - falloffStart);
+  const easedDistance = smoothstep01(normalizedDistance);
+  return Math.max(1, Math.round(parsedBaseDamage + (parsedBaseDamage * minDamageScale - parsedBaseDamage) * easedDistance));
+}
+
+function getValidatedShotDamage(weaponDef, requestedDamage, distance, hitZone = "body") {
+  const hitMultiplier =
+    String(hitZone ?? "body").trim().toLowerCase() === "head"
+      ? Math.max(1, Number(weaponDef?.headshotMultiplier ?? 1) || 1)
+      : 1;
+  const baseDamage = getWeaponDamageAtDistance(
+    weaponDef,
+    Math.max(1, Math.trunc(Number(weaponDef?.damage) || PVP_DEFAULT_DAMAGE)),
+    distance
+  );
+  const pelletDamage = getWeaponDamageAtDistance(
+    weaponDef,
+    Math.max(1, Math.trunc(Number(weaponDef?.pelletDamage ?? weaponDef?.damage) || PVP_DEFAULT_DAMAGE)),
+    distance
+  );
+  const pelletCount = Math.max(1, Math.trunc(Number(weaponDef?.pelletCount ?? 1) || 1));
+  const maxValidatedDamage = Math.max(
+    Math.round(baseDamage * hitMultiplier),
+    Math.round(pelletDamage * pelletCount * hitMultiplier)
+  );
+  const desiredDamage = Math.trunc(Number(requestedDamage));
+  const requested =
+    Number.isFinite(desiredDamage) && desiredDamage > 0 ? desiredDamage : Math.round(baseDamage * hitMultiplier);
+  return Math.max(1, Math.min(maxValidatedDamage, requested));
+}
+
+function getServerHitDamage(weaponDef, distance, hitZone = "body", { pellet = false } = {}) {
+  const hitMultiplier =
+    String(hitZone ?? "body").trim().toLowerCase() === "head"
+      ? Math.max(1, Number(weaponDef?.headshotMultiplier ?? 1) || 1)
+      : 1;
+  const configuredBaseDamage = pellet
+    ? Math.max(1, Math.trunc(Number(weaponDef?.pelletDamage ?? weaponDef?.damage) || PVP_DEFAULT_DAMAGE))
+    : Math.max(1, Math.trunc(Number(weaponDef?.damage) || PVP_DEFAULT_DAMAGE));
+  const damageAtDistance = getWeaponDamageAtDistance(weaponDef, configuredBaseDamage, distance);
+  return Math.max(1, Math.round(damageAtDistance * hitMultiplier));
+}
+
+function hashString32(value = "") {
+  let hash = 2166136261;
+  const text = String(value ?? "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function normalizeVector3(vector, fallback = { x: 0, y: 0, z: -1 }) {
+  const x = Number(vector?.x ?? 0);
+  const y = Number(vector?.y ?? 0);
+  const z = Number(vector?.z ?? 0);
+  const length = Math.hypot(x, y, z);
+  if (!Number.isFinite(length) || length <= 1e-6) {
+    return { ...fallback };
+  }
+  return {
+    x: x / length,
+    y: y / length,
+    z: z / length
+  };
+}
+
+function crossVector3(a, b) {
+  return {
+    x: Number(a?.y ?? 0) * Number(b?.z ?? 0) - Number(a?.z ?? 0) * Number(b?.y ?? 0),
+    y: Number(a?.z ?? 0) * Number(b?.x ?? 0) - Number(a?.x ?? 0) * Number(b?.z ?? 0),
+    z: Number(a?.x ?? 0) * Number(b?.y ?? 0) - Number(a?.y ?? 0) * Number(b?.x ?? 0)
+  };
+}
+
+function getShotDirectionAxes(direction) {
+  const forward = normalizeVector3(direction);
+  let right = normalizeVector3(crossVector3(forward, { x: 0, y: 1, z: 0 }), { x: 1, y: 0, z: 0 });
+  if (Math.abs(forward.y) >= 0.999) {
+    right = { x: 1, y: 0, z: 0 };
+  }
+  const up = normalizeVector3(crossVector3(right, forward), { x: 0, y: 1, z: 0 });
+  return { forward, right, up };
+}
+
+function applyShotSpread(direction, right, up, spreadX = 0, spreadY = 0) {
+  return normalizeVector3({
+    x:
+      Number(direction?.x ?? 0) +
+      Number(right?.x ?? 0) * Number(spreadX || 0) +
+      Number(up?.x ?? 0) * Number(spreadY || 0),
+    y:
+      Number(direction?.y ?? 0) +
+      Number(right?.y ?? 0) * Number(spreadX || 0) +
+      Number(up?.y ?? 0) * Number(spreadY || 0),
+    z:
+      Number(direction?.z ?? 0) +
+      Number(right?.z ?? 0) * Number(spreadX || 0) +
+      Number(up?.z ?? 0) * Number(spreadY || 0)
+  });
+}
+
+function getShotSpreadRadius(shotContext) {
+  const weaponDef = shotContext?.weaponDef ?? null;
+  const hipSpread = Math.max(0, Number(weaponDef?.hipSpread ?? 0));
+  const aimSpread = Math.max(0, Number(weaponDef?.aimSpread ?? hipSpread));
+  const baseSpread = shotContext?.shooterState?.aiming ? aimSpread : hipSpread;
+  return baseSpread * Math.max(0.1, Number(weaponDef?.spreadRadiusScale ?? 1) || 1);
+}
+
+function canPlayerReachBlockUpdate(player, update) {
+  if (!player?.state || !update) {
+    return false;
+  }
+  const origin = getPlayerEyePosition(player.state);
+  const blockCenter = {
+    x: Number(update.x ?? 0) + 0.5,
+    y: Number(update.y ?? 0) + 0.5,
+    z: Number(update.z ?? 0) + 0.5
+  };
+  const maxReach =
+    update.action === "place" ? SERVER_BLOCK_PLACE_MAX_REACH : SERVER_BLOCK_REMOVE_MAX_REACH;
+  return distance3D(origin, blockCenter) <= maxReach;
+}
+
+function hasServerWorldBlockAtCell(state, blockX, blockY, blockZ) {
+  const key = blockStateKey(blockX, blockY, blockZ);
+  const dynamicEntry = state?.blocks instanceof Map ? state.blocks.get(key) : null;
+  if (dynamicEntry?.action === "place") {
+    return true;
+  }
+  if (dynamicEntry?.action === "remove") {
+    return false;
+  }
+  const staticWorld = getStaticCollisionWorld(getRoomMapId(state));
+  return Boolean(staticWorld?.hasBlock(blockX, blockY, blockZ));
+}
+
+function hasServerWorldBlockAtWorld(state, worldX, worldY, worldZ) {
+  return hasServerWorldBlockAtCell(state, Math.floor(worldX), Math.floor(worldY), Math.floor(worldZ));
+}
+
+function hasServerWorldLineOfSight(state, start, end, step = SERVER_DYNAMIC_LOS_STEP) {
+  const startedAt = performance.now();
+  if (!state || !start || !end) {
+    recordServerLosSample({ blocked: true, steps: 0, durationMs: performance.now() - startedAt, distance: 0 });
+    return false;
+  }
+  const distance = distance3D(start, end);
+  if (!Number.isFinite(distance) || distance <= 0.0001) {
+    recordServerLosSample({ blocked: false, steps: 0, durationMs: performance.now() - startedAt, distance });
+    return true;
+  }
+
+  const startX = Number(start.x ?? 0);
+  const startY = Number(start.y ?? 0);
+  const startZ = Number(start.z ?? 0);
+  const endXValue = Number(end.x ?? 0);
+  const endYValue = Number(end.y ?? 0);
+  const endZValue = Number(end.z ?? 0);
+
+  let currentX = Math.floor(startX);
+  let currentY = Math.floor(startY);
+  let currentZ = Math.floor(startZ);
+  const endX = Math.floor(endXValue);
+  const endY = Math.floor(endYValue);
+  const endZ = Math.floor(endZValue);
+  if (currentX === endX && currentY === endY && currentZ === endZ) {
+    recordServerLosSample({ blocked: false, steps: 0, durationMs: performance.now() - startedAt, distance });
+    return true;
+  }
+
+  const deltaX = endXValue - startX;
+  const deltaY = endYValue - startY;
+  const deltaZ = endZValue - startZ;
+  const stepX = deltaX > 1e-9 ? 1 : deltaX < -1e-9 ? -1 : 0;
+  const stepY = deltaY > 1e-9 ? 1 : deltaY < -1e-9 ? -1 : 0;
+  const stepZ = deltaZ > 1e-9 ? 1 : deltaZ < -1e-9 ? -1 : 0;
+  const absDeltaX = Math.abs(deltaX);
+  const absDeltaY = Math.abs(deltaY);
+  const absDeltaZ = Math.abs(deltaZ);
+  const tDeltaX = stepX === 0 ? Infinity : 1 / absDeltaX;
+  const tDeltaY = stepY === 0 ? Infinity : 1 / absDeltaY;
+  const tDeltaZ = stepZ === 0 ? Infinity : 1 / absDeltaZ;
+  let tMaxX =
+    stepX > 0 ? (currentX + 1 - startX) / absDeltaX : stepX < 0 ? (startX - currentX) / absDeltaX : Infinity;
+  let tMaxY =
+    stepY > 0 ? (currentY + 1 - startY) / absDeltaY : stepY < 0 ? (startY - currentY) / absDeltaY : Infinity;
+  let tMaxZ =
+    stepZ > 0 ? (currentZ + 1 - startZ) / absDeltaZ : stepZ < 0 ? (startZ - currentZ) / absDeltaZ : Infinity;
+  let stepsTaken = 0;
+  const epsilon = 1e-9;
+
+  while (!(currentX === endX && currentY === endY && currentZ === endZ)) {
+    const nextT = Math.min(tMaxX, tMaxY, tMaxZ);
+    if (!Number.isFinite(nextT)) {
+      break;
+    }
+
+    if (tMaxX <= nextT + epsilon) {
+      currentX += stepX;
+      tMaxX += tDeltaX;
+    }
+    if (tMaxY <= nextT + epsilon) {
+      currentY += stepY;
+      tMaxY += tDeltaY;
+    }
+    if (tMaxZ <= nextT + epsilon) {
+      currentZ += stepZ;
+      tMaxZ += tDeltaZ;
+    }
+
+    if (currentX === endX && currentY === endY && currentZ === endZ) {
+      break;
+    }
+
+    stepsTaken += 1;
+    if (hasServerWorldBlockAtCell(state, currentX, currentY, currentZ)) {
+      recordServerLosSample({
+        blocked: true,
+        steps: stepsTaken,
+        durationMs: performance.now() - startedAt,
+        distance
+      });
+      return false;
+    }
+  }
+
+  recordServerLosSample({
+    blocked: false,
+    steps: stepsTaken,
+    durationMs: performance.now() - startedAt,
+    distance
+  });
+  return true;
+}
+
+function intersectRayWithAabb(origin, direction, box, maxDistance = Infinity) {
+  let tMin = 0;
+  let tMax = Number.isFinite(maxDistance) ? maxDistance : Infinity;
+  for (const axis of ["x", "y", "z"]) {
+    const originValue = Number(origin?.[axis] ?? 0);
+    const directionValue = Number(direction?.[axis] ?? 0);
+    const minValue = Number(box?.min?.[axis] ?? 0);
+    const maxValue = Number(box?.max?.[axis] ?? 0);
+    if (Math.abs(directionValue) <= 1e-6) {
+      if (originValue < minValue || originValue > maxValue) {
+        return null;
+      }
+      continue;
+    }
+    let t1 = (minValue - originValue) / directionValue;
+    let t2 = (maxValue - originValue) / directionValue;
+    if (t1 > t2) {
+      const temp = t1;
+      t1 = t2;
+      t2 = temp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) {
+      return null;
+    }
+  }
+  const distance = tMin >= 0 ? tMin : tMax;
+  if (!Number.isFinite(distance) || distance < 0 || distance > maxDistance) {
+    return null;
+  }
+  return {
+    distance,
+    point: {
+      x: Number(origin.x ?? 0) + Number(direction.x ?? 0) * distance,
+      y: Number(origin.y ?? 0) + Number(direction.y ?? 0) * distance,
+      z: Number(origin.z ?? 0) + Number(direction.z ?? 0) * distance
+    }
+  };
+}
+
+function getPlayerHitboxes(state, weaponValidation) {
+  const base = getPlayerBasePosition(state);
+  const crouched = Boolean(state?.crouched);
+  const bodyPadding = Math.max(0, Number(weaponValidation?.bodyPadding ?? 0));
+  const headPadding = Math.max(0, Number(weaponValidation?.headPadding ?? 0));
+  const bodyTop = crouched ? SERVER_HITBOX_CROUCH_BODY_TOP_OFFSET : SERVER_HITBOX_BODY_TOP_OFFSET;
+  const headMin = crouched ? SERVER_HITBOX_CROUCH_HEAD_MIN_OFFSET : SERVER_HITBOX_HEAD_MIN_OFFSET;
+  const headMax = crouched ? SERVER_HITBOX_CROUCH_HEAD_MAX_OFFSET : SERVER_HITBOX_HEAD_MAX_OFFSET;
+  return [
+    {
+      hitZone: "head",
+      box: {
+        min: {
+          x: base.x - (SERVER_HITBOX_HEAD_HALF_WIDTH + headPadding),
+          y: base.y + headMin - 0.03,
+          z: base.z - (SERVER_HITBOX_HEAD_HALF_WIDTH + headPadding)
+        },
+        max: {
+          x: base.x + (SERVER_HITBOX_HEAD_HALF_WIDTH + headPadding),
+          y: base.y + headMax + 0.03,
+          z: base.z + (SERVER_HITBOX_HEAD_HALF_WIDTH + headPadding)
+        }
+      }
+    },
+    {
+      hitZone: "body",
+      box: {
+        min: {
+          x: base.x - (SERVER_HITBOX_BODY_HALF_WIDTH + bodyPadding),
+          y: base.y + SERVER_HITBOX_BODY_FOOT_OFFSET,
+          z: base.z - (SERVER_HITBOX_BODY_HALF_WIDTH + bodyPadding)
+        },
+        max: {
+          x: base.x + (SERVER_HITBOX_BODY_HALF_WIDTH + bodyPadding),
+          y: base.y + bodyTop + 0.04,
+          z: base.z + (SERVER_HITBOX_BODY_HALF_WIDTH + bodyPadding)
+        }
+      }
+    }
+  ];
+}
+
+function createShotValidationContext(shooter) {
+  const shooterState = shooter?.state;
+  if (!shooterState) {
+    return null;
+  }
+  const weaponId = shooter.weaponId ?? DEFAULT_WEAPON_ID;
+  const shotContext = {
+    shooter,
+    shooterState,
+    weaponDef: getWeaponDefinition(weaponId),
+    weaponValidation: getWeaponServerValidation(weaponId),
+    origin: getPlayerEyePosition(shooterState),
+    direction: normalizeVector3(getPlayerAimDirection(shooterState)),
+    shotAt: Math.max(0, Math.trunc(Number(shooter?.lastShotAt) || Date.now()))
+  };
+  shotContext.spreadRadius = getShotSpreadRadius(shotContext);
+  return shotContext;
+}
+
+function isValidPvpEnemy(shooter, target) {
+  if (!shooter || !target || target.id === shooter.id) {
+    return false;
+  }
+  const shooterTeam = shooter.team ?? null;
+  const targetTeam = target.team ?? null;
+  return (
+    (shooterTeam === "alpha" || shooterTeam === "bravo") &&
+    (targetTeam === "alpha" || targetTeam === "bravo") &&
+    shooterTeam !== targetTeam
+  );
+}
+
+function validateShotAgainstTarget(roomState, shotContext, target, direction = shotContext?.direction) {
+  const targetState = target?.state;
+  if (!shotContext || !targetState || !direction) {
+    return null;
+  }
+  let bestHit = null;
+  for (const hitbox of getPlayerHitboxes(targetState, shotContext.weaponValidation)) {
+    const hit = intersectRayWithAabb(
+      shotContext.origin,
+      direction,
+      hitbox.box,
+      shotContext.weaponValidation.maxRange
+    );
+    if (!hit) {
+      continue;
+    }
+    if (!hasServerWorldLineOfSight(roomState, shotContext.origin, hit.point)) {
+      continue;
+    }
+    if (!bestHit || hit.distance < bestHit.distance) {
+      bestHit = {
+        distance: hit.distance,
+        hitZone: hitbox.hitZone,
+        point: hit.point,
+        weaponDef: shotContext.weaponDef
+      };
+    }
+  }
+  return bestHit;
+}
+
+function compareShotHits(leftHit, rightHit) {
+  const leftDistance = Number(leftHit?.distance ?? Infinity);
+  const rightDistance = Number(rightHit?.distance ?? Infinity);
+  if (leftDistance < rightDistance - 0.0001) {
+    return -1;
+  }
+  if (leftDistance > rightDistance + 0.0001) {
+    return 1;
+  }
+  const leftPriority = String(leftHit?.hitZone ?? "").trim().toLowerCase() === "head" ? 1 : 0;
+  const rightPriority = String(rightHit?.hitZone ?? "").trim().toLowerCase() === "head" ? 1 : 0;
+  return rightPriority - leftPriority;
+}
+
+function resolveClosestShotHit(roomState, shotContext, direction = shotContext?.direction) {
+  if (!roomState?.players || !shotContext || !direction) {
+    return null;
+  }
+  let bestResolution = null;
+
+  for (const target of roomState.players.values()) {
+    if (!isValidPvpEnemy(shotContext.shooter, target)) {
+      continue;
+    }
+
+    const currentHp = Number.isFinite(target?.hp) ? target.hp : 100;
+    if (currentHp <= 0) {
+      continue;
+    }
+
+    const validatedHit = validateShotAgainstTarget(roomState, shotContext, target, direction);
+    if (!validatedHit) {
+      continue;
+    }
+
+    if (!bestResolution || compareShotHits(validatedHit, bestResolution.validatedHit) < 0) {
+      bestResolution = { target, validatedHit, shotContext };
+    }
+  }
+
+  return bestResolution;
+}
+
+function createServerPelletDirections(shotContext) {
+  const pelletCount = Math.max(1, Math.trunc(Number(shotContext?.weaponDef?.pelletCount ?? 1) || 1));
+  if (pelletCount <= 1) {
+    return [shotContext.direction];
+  }
+  const spreadRadius = Math.max(0, Number(shotContext?.spreadRadius ?? 0));
+  if (!Number.isFinite(spreadRadius) || spreadRadius <= 1e-6) {
+    return new Array(pelletCount).fill(shotContext.direction);
+  }
+
+  const directions = [shotContext.direction];
+  const { forward, right, up } = getShotDirectionAxes(shotContext.direction);
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const rotationSeed = hashString32(
+    `${shotContext?.shooter?.id ?? "player"}:${shotContext?.shotAt ?? 0}:${shotContext?.weaponDef?.id ?? "weapon"}`
+  );
+  const rotation = (rotationSeed / 0xffffffff) * Math.PI * 2;
+  const outerPelletCount = pelletCount - 1;
+
+  for (let pelletIndex = 0; pelletIndex < outerPelletCount; pelletIndex += 1) {
+    const radiusT = outerPelletCount <= 1 ? 1 : Math.sqrt((pelletIndex + 1) / outerPelletCount);
+    const angle = rotation + pelletIndex * goldenAngle;
+    directions.push(
+      applyShotSpread(
+        forward,
+        right,
+        up,
+        Math.cos(angle) * spreadRadius * radiusT,
+        Math.sin(angle) * spreadRadius * radiusT
+      )
+    );
+  }
+
+  return directions;
+}
+
+function resolveValidatedShotImpact(roomState, shooter, requestedDamage = null) {
+  if (!roomState?.players || !shooter) {
+    return null;
+  }
+  const shotContext = createShotValidationContext(shooter);
+  if (!shotContext) {
+    return null;
+  }
+
+  const pelletCount = Math.max(1, Math.trunc(Number(shotContext.weaponDef?.pelletCount ?? 1) || 1));
+  if (pelletCount <= 1) {
+    const resolvedHit = resolveClosestShotHit(roomState, shotContext);
+    if (!resolvedHit) {
+      return null;
+    }
+    return {
+      ...resolvedHit,
+      appliedDamage: getValidatedShotDamage(
+        shotContext.weaponDef,
+        requestedDamage,
+        resolvedHit.validatedHit.distance,
+        resolvedHit.validatedHit.hitZone
+      ),
+      pelletHits: 1
+    };
+  }
+
+  const damageCap = Math.max(0, Math.trunc(Number(requestedDamage) || 0));
+  const targetTotals = new Map();
+
+  for (const pelletDirection of createServerPelletDirections(shotContext)) {
+    const pelletHit = resolveClosestShotHit(roomState, shotContext, pelletDirection);
+    if (!pelletHit) {
+      continue;
+    }
+
+    const pelletDamage = getServerHitDamage(
+      shotContext.weaponDef,
+      pelletHit.validatedHit.distance,
+      pelletHit.validatedHit.hitZone,
+      { pellet: true }
+    );
+    const targetId = String(pelletHit.target?.id ?? "");
+    if (!targetId) {
+      continue;
+    }
+
+    const existing = targetTotals.get(targetId) ?? {
+      target: pelletHit.target,
+      shotContext,
+      totalDamage: 0,
+      pelletHits: 0,
+      nearestDistance: Infinity,
+      validatedHit: pelletHit.validatedHit
+    };
+    existing.totalDamage += pelletDamage;
+    existing.pelletHits += 1;
+    if (compareShotHits(pelletHit.validatedHit, existing.validatedHit) < 0) {
+      existing.validatedHit = pelletHit.validatedHit;
+    }
+    existing.nearestDistance = Math.min(existing.nearestDistance, Number(pelletHit.validatedHit.distance ?? Infinity));
+    targetTotals.set(targetId, existing);
+  }
+
+  let bestResolution = null;
+  for (const entry of targetTotals.values()) {
+    if (!bestResolution) {
+      bestResolution = entry;
+      continue;
+    }
+    if (entry.totalDamage > bestResolution.totalDamage) {
+      bestResolution = entry;
+      continue;
+    }
+    if (entry.totalDamage === bestResolution.totalDamage && entry.pelletHits > bestResolution.pelletHits) {
+      bestResolution = entry;
+      continue;
+    }
+    if (
+      entry.totalDamage === bestResolution.totalDamage &&
+      entry.pelletHits === bestResolution.pelletHits &&
+      entry.nearestDistance < bestResolution.nearestDistance - 0.0001
+    ) {
+      bestResolution = entry;
+    }
+  }
+
+  if (!bestResolution) {
+    return null;
+  }
+
+  return {
+    target: bestResolution.target,
+    validatedHit: bestResolution.validatedHit,
+    shotContext,
+    pelletHits: bestResolution.pelletHits,
+    appliedDamage:
+      damageCap > 0 ? Math.max(1, Math.min(bestResolution.totalDamage, damageCap)) : bestResolution.totalDamage
+  };
+}
+
+function isInsideProtectedRadius(roomOrState, x, z, radiusSq) {
   const cx = Number(x);
   const cz = Number(z);
   if (!Number.isFinite(cx) || !Number.isFinite(cz)) {
     return false;
   }
 
-  for (const center of SPAWN_PROTECT_CENTERS) {
+  for (const center of getSpawnProtectCentersForRoom(roomOrState)) {
     const dx = cx - center.x;
     const dz = cz - center.z;
     if (dx * dx + dz * dz <= radiusSq) {
@@ -1177,7 +2438,7 @@ function isInsideProtectedRadius(x, z, radiusSq) {
   return false;
 }
 
-function isSpawnProtectedBlockCoord(x, y, z) {
+function isSpawnProtectedBlockCoord(roomOrState, x, y, z) {
   const cx = Number(x);
   const cy = Number(y);
   const cz = Number(z);
@@ -1187,10 +2448,10 @@ function isSpawnProtectedBlockCoord(x, y, z) {
   if (cy < SPAWN_PROTECT_MIN_Y || cy > SPAWN_PROTECT_MAX_Y) {
     return false;
   }
-  return isInsideProtectedRadius(cx, cz, SPAWN_PROTECT_RADIUS_SQ);
+  return isInsideProtectedRadius(roomOrState, cx, cz, SPAWN_PROTECT_RADIUS_SQ);
 }
 
-function isBaseFloorProtectedBlockCoord(x, y, z) {
+function isBaseFloorProtectedBlockCoord(roomOrState, x, y, z) {
   const cx = Number(x);
   const cy = Number(y);
   const cz = Number(z);
@@ -1200,12 +2461,18 @@ function isBaseFloorProtectedBlockCoord(x, y, z) {
   if (cy > BASE_FLOOR_PROTECT_MAX_Y) {
     return false;
   }
-  return isInsideProtectedRadius(cx, cz, BASE_FLOOR_PROTECT_RADIUS_SQ);
+  return isInsideProtectedRadius(roomOrState, cx, cz, BASE_FLOOR_PROTECT_RADIUS_SQ);
 }
 
-function getProtectedBlockReason(action, x, y, z) {
+function getProtectedBlockReason(roomOrState, action, x, y, z) {
   if (isLobbyProtectedBlockCoord(x, y, z)) {
     return "lobby";
+  }
+  if (isSpawnProtectedBlockCoord(roomOrState, x, y, z)) {
+    return "spawn";
+  }
+  if (isBaseFloorProtectedBlockCoord(roomOrState, x, y, z)) {
+    return "base_floor";
   }
   return null;
 }
@@ -1224,7 +2491,7 @@ function pruneSpawnProtectedBlockChanges(room) {
     if (!entry) {
       continue;
     }
-    if (getProtectedBlockReason(entry.action, entry.x, entry.y, entry.z)) {
+    if (getProtectedBlockReason(room, entry.action, entry.x, entry.y, entry.z)) {
       state.blocks.delete(key);
       changed = true;
     }
@@ -1292,7 +2559,8 @@ function emitRoomSnapshot(socket, room, reason = "sync") {
     round: state.round,
     dailyLeaderboard: serializeDailyLeaderboard(12),
     stock: serializeBlockStock(player?.stock),
-    weaponId: sanitizeWeaponId(player?.weaponId)
+    weaponId: sanitizeWeaponId(player?.weaponId),
+    weaponState: serializePlayerWeaponState(player)
   });
 }
 
@@ -1352,6 +2620,7 @@ function getDefaultRoom() {
   return room;
 }
 
+prewarmServerStaticCollisionWorlds();
 getDefaultRoom();
 dailyLeaderboardState = loadDailyLeaderboardState();
 
@@ -1707,6 +2976,7 @@ function sanitizePlayerState(raw = {}) {
     yaw: normalizeYaw(raw.yaw, 0),
     pitch: clampNumber(raw.pitch, -1.55, 1.55, 0),
     crouched: Boolean(raw.crouched),
+    aiming: Boolean(raw.aiming),
     updatedAt: Date.now()
   };
 }
@@ -1748,13 +3018,9 @@ function sanitizeBlockPayload(raw = {}) {
 }
 
 function sanitizeShootPayload(raw = {}) {
-  const targetId = String(raw.targetId ?? "").trim();
-  if (!targetId) {
-    return null;
-  }
   const parsedDamage = Math.trunc(Number(raw.damage));
   const damage = Number.isFinite(parsedDamage) && parsedDamage > 0 ? parsedDamage : null;
-  return { targetId, damage };
+  return { damage };
 }
 
 function sanitizeHazardPayload(raw = {}) {
@@ -1995,14 +3261,16 @@ function joinDefaultRoom(socket, options = {}) {
     id: socket.id,
     name,
     weaponId,
+    weaponState: createPlayerWeaponState(weaponId),
     role,
     team: assignedTeam,
-    state: getSpawnStateForTeam(assignedTeam, room),
+    state: getRandomizedSpawnStateForTeam(assignedTeam, room),
     stock: createDefaultBlockStock(),
     hp: 100,
     respawnAt: 0,
     spawnShieldUntil: Date.now() + RESPAWN_SHIELD_MS,
     lastShotAt: 0,
+    lastStateCorrectionAt: 0,
     respawnTimer: null,
     kills: 0,
     deaths: 0,
@@ -2106,6 +3374,13 @@ if (typeof dailyLeaderboardResetInterval.unref === "function") {
   dailyLeaderboardResetInterval.unref();
 }
 
+serverSecurityLogInterval = setInterval(() => {
+  flushServerSecurityTelemetry();
+}, SERVER_SECURITY_LOG_FLUSH_MS);
+if (typeof serverSecurityLogInterval.unref === "function") {
+  serverSecurityLogInterval.unref();
+}
+
 io.on("connection", (socket) => {
   playerCount += 1;
   socket.data.playerName = `PLAYER_${Math.floor(Math.random() * 9000 + 1000)}`;
@@ -2201,33 +3476,102 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (Number(state.round?.startedAt ?? 0) > 0 && !Boolean(state.round?.ended)) {
+      ack(ackFn, { ok: false, error: "라운드 중에는 무기를 변경할 수 없습니다" });
+      return;
+    }
+
     if (sanitizeWeaponId(player.weaponId) !== weaponId) {
       player.weaponId = weaponId;
+      ensurePlayerWeaponState(player, { reset: true });
+      player.lastShotAt = 0;
       touchRoomState(room);
       emitRoomUpdate(room);
     }
 
-    ack(ackFn, { ok: true, weaponId, room: serializeRoom(room) });
+    emitPlayerInventoryUpdate(socket, player, room);
+    ack(ackFn, { ok: true, weaponId, room: serializeRoom(room), weaponState: serializePlayerWeaponState(player) });
   });
 
-  socket.on("player:sync", (payload = {}) => {
+  socket.on("player:reload", (ackFn) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
     const state = getRoomState(room);
     const player = state.players.get(socket.id);
     if (!player) {
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
     if ((Number.isFinite(player.hp) ? player.hp : 100) <= 0) {
+      ack(ackFn, { ok: false, error: "부활 후 다시 시도해 주세요", weaponState: serializePlayerWeaponState(player) });
       return;
     }
 
-    const nextState = sanitizePlayerState(payload);
+    const reloadResult = startPlayerReload(player, Date.now());
+    emitPlayerInventoryUpdate(socket, player, room);
+    if (!reloadResult.ok) {
+      const errorText =
+        reloadResult.reason === "reloading"
+          ? "이미 장전 중입니다"
+          : reloadResult.reason === "full_mag"
+            ? "탄창이 이미 가득 찼습니다"
+            : "예비 탄약이 없습니다";
+      ack(ackFn, {
+        ok: false,
+        error: errorText,
+        reason: reloadResult.reason,
+        weaponState: serializePlayerWeaponState(player)
+      });
+      return;
+    }
+
+    ack(ackFn, { ok: true, weaponState: serializePlayerWeaponState(player) });
+  });
+
+  socket.on("player:sync", (payload = {}) => {
+    recordPlayerSyncProcessed();
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      recordPlayerSyncReject("not_in_room");
+      return;
+    }
+
+    const state = getRoomState(room);
+    const player = state.players.get(socket.id);
+    if (!player) {
+      recordPlayerSyncReject("unknown_player");
+      return;
+    }
+    if ((Number.isFinite(player.hp) ? player.hp : 100) <= 0) {
+      recordPlayerSyncReject("dead_player");
+      return;
+    }
+
+    const syncResult = clampPlayerSyncState(room, player, payload);
+    const nextState = syncResult.state;
     player.state = nextState;
+    if (syncResult.corrected) {
+      recordPlayerSyncCorrection(syncResult);
+    }
+
+    if (
+      syncResult.corrected &&
+      syncResult.correctionDistance >= SERVER_POSITION_CORRECTION_DISTANCE &&
+      Date.now() - Number(player.lastStateCorrectionAt ?? 0) >= SERVER_POSITION_CORRECTION_COOLDOWN_MS
+    ) {
+      player.lastStateCorrectionAt = Date.now();
+      recordPlayerSyncCorrectionEmit();
+      socket.emit("player:correction", {
+        state: nextState,
+        reason: "movement_validation"
+      });
+    }
 
     socket.to(room.code).emit("player:sync", {
       id: player.id,
@@ -2382,6 +3726,7 @@ io.on("connection", (socket) => {
       return;
     }
     const protectedReason = getProtectedBlockReason(
+      room,
       sanitized.action,
       sanitized.x,
       sanitized.y,
@@ -2391,6 +3736,24 @@ io.on("connection", (socket) => {
       ack(ackFn, {
         ok: false,
         error: "3D 로비 보호 구역은 수정할 수 없습니다",
+        roomStateRevision: state.revision,
+        stock: serializeBlockStock(playerStock)
+      });
+      return;
+    }
+    if (protectedReason === "spawn" || protectedReason === "base_floor") {
+      ack(ackFn, {
+        ok: false,
+        error: "스폰 보호 구역은 수정할 수 없습니다",
+        roomStateRevision: state.revision,
+        stock: serializeBlockStock(playerStock)
+      });
+      return;
+    }
+    if (!canPlayerReachBlockUpdate(player, sanitized)) {
+      ack(ackFn, {
+        ok: false,
+        error: "블록 상호작용 가능 거리 밖입니다",
         roomStateRevision: state.revision,
         stock: serializeBlockStock(playerStock)
       });
@@ -2455,10 +3818,7 @@ io.on("connection", (socket) => {
     });
 
     const serializedStock = serializeBlockStock(playerStock);
-    socket.emit("inventory:update", {
-      stock: serializedStock,
-      roomStateRevision: roomState.revision
-    });
+    emitPlayerInventoryUpdate(socket, player, room);
     ack(ackFn, {
       ok: true,
       roomStateRevision: roomState.revision,
@@ -2467,49 +3827,45 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("pvp:shoot", (payload = {}) => {
+  socket.on("pvp:shoot", (payload = {}, ackFn) => {
+    recordPvpShotProcessed();
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
+      recordPvpShotReject("not_in_room");
+      ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
 
     const state = getRoomState(room);
     if (isRoundEnded(state)) {
+      recordPvpShotReject("round_ended");
+      ack(ackFn, { ok: false, error: "라운드가 종료되어 재시작 대기 중입니다" });
       return;
     }
     const shooter = state.players.get(socket.id);
     if (!shooter) {
+      recordPvpShotReject("unknown_player");
+      ack(ackFn, { ok: false, error: "플레이어를 찾을 수 없습니다" });
       return;
     }
     if (findCarriedFlagTeam(state.flags, shooter.id)) {
+      recordPvpShotReject("flag_carrier");
+      ack(ackFn, { ok: false, error: "깃발 운반 중에는 사격할 수 없습니다" });
       return;
     }
 
     const sanitized = sanitizeShootPayload(payload);
     if (!sanitized) {
-      return;
-    }
-
-    const target = state.players.get(sanitized.targetId);
-    if (!target || target.id === shooter.id) {
-      return;
-    }
-
-    const shooterTeam = shooter.team ?? null;
-    const targetTeam = target.team ?? null;
-    const validTeamFight =
-      (shooterTeam === "alpha" || shooterTeam === "bravo") &&
-      (targetTeam === "alpha" || targetTeam === "bravo") &&
-      shooterTeam !== targetTeam;
-
-    if (!validTeamFight) {
+      recordPvpShotReject("invalid_payload");
+      ack(ackFn, { ok: false, error: "잘못된 사격 데이터입니다" });
       return;
     }
 
     const shooterHp = Number.isFinite(shooter.hp) ? shooter.hp : 100;
-    const currentHp = Number.isFinite(target.hp) ? target.hp : 100;
-    if (shooterHp <= 0 || currentHp <= 0) {
+    if (shooterHp <= 0) {
+      recordPvpShotReject("dead_shooter");
+      ack(ackFn, { ok: false, error: "부활 후 다시 시도해 주세요", weaponState: serializePlayerWeaponState(shooter) });
       return;
     }
 
@@ -2517,40 +3873,76 @@ io.on("connection", (socket) => {
     if ((Number(shooter.spawnShieldUntil) || 0) > now) {
       shooter.spawnShieldUntil = 0;
     }
+
+    updatePlayerWeaponStateProgress(shooter, now);
+    const weaponDef = getWeaponDefinition(shooter.weaponId ?? DEFAULT_WEAPON_ID);
+    const minShotIntervalMs = getServerWeaponCadenceMs(shooter.weaponId ?? DEFAULT_WEAPON_ID);
+    const previousShotAt = Number(shooter.lastShotAt) || 0;
+    if (previousShotAt > 0 && now - previousShotAt < minShotIntervalMs) {
+      recordPvpShotReject("rate_limited");
+      emitPlayerInventoryUpdate(socket, shooter, room);
+      ack(ackFn, {
+        ok: false,
+        error: "발사 간격이 너무 빠릅니다",
+        reason: "rate_limited",
+        weaponState: serializePlayerWeaponState(shooter)
+      });
+      return;
+    }
+
+    const ammoResult = consumePlayerShotAmmo(shooter, now);
+    if (!ammoResult.ok) {
+      recordPvpShotReject(ammoResult.reason === "reloading" ? "weapon_reloading" : "weapon_empty");
+      emitPlayerInventoryUpdate(socket, shooter, room);
+      ack(ackFn, {
+        ok: false,
+        error: ammoResult.reason === "reloading" ? "장전 중입니다" : "탄약이 없습니다",
+        reason: ammoResult.reason,
+        weaponState: serializePlayerWeaponState(shooter)
+      });
+      return;
+    }
+
+    shooter.lastShotAt = now;
+    emitPlayerInventoryUpdate(socket, shooter, room);
+
+    const resolvedShot = resolveValidatedShotImpact(state, shooter, sanitized.damage);
+    if (!resolvedShot) {
+      recordPvpShotMiss();
+      ack(ackFn, { ok: true, hit: false, weaponState: serializePlayerWeaponState(shooter) });
+      return;
+    }
+
+    const { target, validatedHit } = resolvedShot;
+    const currentHp = Number.isFinite(target.hp) ? target.hp : 100;
+    if (currentHp <= 0) {
+      recordPvpShotReject("target_dead");
+      ack(ackFn, { ok: true, hit: false, weaponState: serializePlayerWeaponState(shooter) });
+      return;
+    }
+
     if ((Number(target.spawnShieldUntil) || 0) > now) {
+      recordPvpShotImmune();
       socket.emit("pvp:immune", {
         targetId: target.id,
         until: Number(target.spawnShieldUntil),
         reason: "respawn_shield"
       });
+      ack(ackFn, {
+        ok: true,
+        hit: false,
+        immune: true,
+        weaponState: serializePlayerWeaponState(shooter)
+      });
       return;
     }
 
-    const weaponDef = getWeaponDefinition(shooter.weaponId ?? DEFAULT_WEAPON_ID);
-    const cadenceSeconds = Math.max(
-      Number(weaponDef.shotCooldown) || 0,
-      Number(weaponDef.magazineSize) === 1 ? Number(weaponDef.reloadDuration) || 0 : 0
-    );
-    const minShotIntervalMs = Math.max(50, Math.round(cadenceSeconds * 1000 * 0.85));
-    const previousShotAt = Number(shooter.lastShotAt) || 0;
-    if (previousShotAt > 0 && now - previousShotAt < minShotIntervalMs) {
-      return;
-    }
-    shooter.lastShotAt = now;
-    const weaponBaseDamage = Math.max(1, Math.trunc(Number(weaponDef.damage) || PVP_DEFAULT_DAMAGE));
-    const maxHitMultiplier = Math.max(1, Number(weaponDef.headshotMultiplier ?? 1) || 1);
-    const weaponMaxDamage = Math.max(
-      Math.round(weaponBaseDamage * maxHitMultiplier),
-      Math.round(
-        Math.trunc(Number(weaponDef.pelletDamage ?? weaponBaseDamage) || weaponBaseDamage) *
-          Math.max(1, Math.trunc(Number(weaponDef.pelletCount ?? 1) || 1)) *
-          maxHitMultiplier
-      )
-    );
-    const requestedDamage = Math.trunc(Number(sanitized.damage ?? weaponBaseDamage) || weaponBaseDamage);
-    const appliedDamage = Math.max(1, Math.min(weaponMaxDamage, requestedDamage));
+    const appliedDamage =
+      Math.max(0, Math.trunc(Number(resolvedShot.appliedDamage) || 0)) ||
+      getValidatedShotDamage(weaponDef, sanitized.damage, validatedHit.distance, validatedHit.hitZone);
     const nextHp = Math.max(0, currentHp - appliedDamage);
     const killed = nextHp <= 0;
+    recordPvpShotHit({ killed });
     const shouldEmitRoomUpdate = killed;
     let respawnAt = 0;
 
@@ -2617,6 +4009,14 @@ io.on("connection", (socket) => {
     if (shouldEmitRoomUpdate) {
       emitRoomUpdate(room);
     }
+    ack(ackFn, {
+      ok: true,
+      hit: true,
+      killed,
+      victimId: target.id,
+      damage: appliedDamage,
+      weaponState: serializePlayerWeaponState(shooter)
+    });
   });
 
   socket.on("player:hazard", (payload = {}, ackFn) => {
@@ -2972,6 +4372,7 @@ httpServer.on("error", (error) => {
 });
 
 process.on("beforeExit", () => {
+  flushServerSecurityTelemetry(true);
   flushPersistentWorldSnapshot();
   flushDailyLeaderboardSnapshot();
 });
@@ -2981,6 +4382,11 @@ process.on("SIGINT", () => {
     clearInterval(dailyLeaderboardResetInterval);
     dailyLeaderboardResetInterval = null;
   }
+  if (serverSecurityLogInterval) {
+    clearInterval(serverSecurityLogInterval);
+    serverSecurityLogInterval = null;
+  }
+  flushServerSecurityTelemetry(true);
   flushPersistentWorldSnapshot();
   flushDailyLeaderboardSnapshot();
   process.exit(0);
@@ -2991,6 +4397,11 @@ process.on("SIGTERM", () => {
     clearInterval(dailyLeaderboardResetInterval);
     dailyLeaderboardResetInterval = null;
   }
+  if (serverSecurityLogInterval) {
+    clearInterval(serverSecurityLogInterval);
+    serverSecurityLogInterval = null;
+  }
+  flushServerSecurityTelemetry(true);
   flushPersistentWorldSnapshot();
   flushDailyLeaderboardSnapshot();
   process.exit(0);

@@ -184,7 +184,7 @@ export function generateTrainingCompoundMap(builder) {
       alphaBase: { x: -40, y: 0, z: 0 },
       bravoBase: { x: 36, y: 0, z: 0 },
       alphaFlag: { x: -24, y: 0, z: 0 },
-      bravoFlag: { x: 46, y: 0, z: 0 },
+      bravoFlag: { x: 52, y: 0, z: 0 },
       mid: { x: 8, y: 0, z: 0 },
       trainingSpawn: { x: -46, y: 0, z: 0 },
       halfExtent

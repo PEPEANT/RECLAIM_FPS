@@ -90,6 +90,61 @@ function readStockValue(stockPayload, typeId) {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
+function readPlayerRoomState(roomPayload, socketId) {
+  const players = Array.isArray(roomPayload?.players) ? roomPayload.players : [];
+  const player = players.find((entry) => String(entry?.id ?? "") === String(socketId ?? ""));
+  return player?.state && typeof player.state === "object" ? player.state : null;
+}
+
+function readPlayerStateFromList(players, socketId) {
+  const list = Array.isArray(players) ? players : [];
+  const player = list.find((entry) => String(entry?.id ?? "") === String(socketId ?? ""));
+  return player?.state && typeof player.state === "object" ? player.state : null;
+}
+
+function getYawPitchTowards(from, to) {
+  const dx = Number(to?.x ?? 0) - Number(from?.x ?? 0);
+  const dy = Number(to?.y ?? 0) - Number(from?.y ?? 0);
+  const dz = Number(to?.z ?? 0) - Number(from?.z ?? 0);
+  const horizontal = Math.hypot(dx, dz);
+  return {
+    yaw: Math.atan2(-dx, -dz),
+    pitch: Math.atan2(dy, Math.max(0.0001, horizontal))
+  };
+}
+
+async function movePlayerTowards(socket, fromState, toState, { stepDistance = 2.4, delayMs = 240 } = {}) {
+  let current = {
+    x: Number(fromState?.x ?? 0),
+    y: Number(fromState?.y ?? 1.75),
+    z: Number(fromState?.z ?? 0)
+  };
+  const target = {
+    x: Number(toState?.x ?? current.x),
+    y: Number(toState?.y ?? current.y),
+    z: Number(toState?.z ?? current.z)
+  };
+  let distance = Math.hypot(target.x - current.x, target.y - current.y, target.z - current.z);
+  while (distance > stepDistance) {
+    const scale = stepDistance / Math.max(0.0001, distance);
+    const next = {
+      x: current.x + (target.x - current.x) * scale,
+      y: current.y + (target.y - current.y) * scale,
+      z: current.z + (target.z - current.z) * scale
+    };
+    const aim = getYawPitchTowards(current, next);
+    socket.emit("player:sync", { ...next, ...aim });
+    current = next;
+    await sleep(delayMs);
+    distance = Math.hypot(target.x - current.x, target.y - current.y, target.z - current.z);
+  }
+
+  const finalAim = getYawPitchTowards(current, target);
+  socket.emit("player:sync", { ...target, ...finalAim });
+  await sleep(delayMs);
+  return { ...target, ...finalAim };
+}
+
 async function checkSyntax() {
   const files = [
     "src/main.js",
@@ -414,6 +469,9 @@ async function checkSocketServer() {
     const teamGuest = await emitWithAck(c2, "room:set-team", { team: "bravo" });
     assert(teamHost?.ok === true, `host team select failed: ${JSON.stringify(teamHost)}`);
     assert(teamGuest?.ok === true, `guest team select failed: ${JSON.stringify(teamGuest)}`);
+    await waitFor(() => !!readPlayerStateFromList(latestRoomPlayers, c1.id), 4000);
+    const hostState = readPlayerStateFromList(latestRoomPlayers, c1.id);
+    assert(hostState, `host state missing after team set: ${JSON.stringify(latestRoomPlayers)}`);
 
     const snapshotAck = await emitWithAck(c1, "room:request-snapshot");
     assert(snapshotAck?.ok === true, `room:request-snapshot failed: ${JSON.stringify(snapshotAck)}`);
@@ -436,15 +494,32 @@ async function checkSocketServer() {
     const bravoFlagAt = snapshotAck?.snapshot?.flags?.bravo?.at ?? roundMap.bravoFlag ?? { x: 44, y: 0, z: 0 };
     await waitFor(() => snapshotReceived, 3000);
 
+    const spawnProtectAck = await emitWithAck(c1, "block:update", {
+      action: "place",
+      x: Math.round(Number(alphaHome.x ?? 0)),
+      y: 4,
+      z: Math.round(Number(alphaHome.z ?? 0)),
+      typeId: 6
+    });
+    assert(
+      spawnProtectAck?.ok === false &&
+        String(spawnProtectAck?.error ?? "").includes("스폰 보호 구역"),
+      `spawn protection place should fail: ${JSON.stringify(spawnProtectAck)}`
+    );
+
     const baselineTypeId = 6;
     const baselineStock = readStockValue(snapshotAck?.snapshot?.stock, baselineTypeId);
     assert(baselineStock > 0, `invalid baseline stock: ${baselineStock}`);
+    const outwardDx = Number(hostState.x ?? 0) >= 0 ? 8 : -8;
+    const stockX = Math.round(Number(hostState.x ?? 0)) + outwardDx;
+    const stockY = 8;
+    const stockZ = Math.round(Number(hostState.z ?? 0)) + 2;
 
     const stockPlaceAck = await emitWithAck(c1, "block:update", {
       action: "place",
-      x: 120,
-      y: 5,
-      z: 40,
+      x: stockX,
+      y: stockY,
+      z: stockZ,
       typeId: baselineTypeId
     });
     assert(stockPlaceAck?.ok === true, `block:update place ack failed: ${JSON.stringify(stockPlaceAck)}`);
@@ -455,9 +530,9 @@ async function checkSocketServer() {
 
     const stockRemoveAck = await emitWithAck(c1, "block:update", {
       action: "remove",
-      x: 120,
-      y: 5,
-      z: 40,
+      x: stockX,
+      y: stockY,
+      z: stockZ,
       typeId: baselineTypeId
     });
     assert(stockRemoveAck?.ok === true, `block:update remove ack failed: ${JSON.stringify(stockRemoveAck)}`);
@@ -466,12 +541,32 @@ async function checkSocketServer() {
       `stock did not recover after remove: ${JSON.stringify(stockRemoveAck)}`
     );
 
-    c1.emit("player:sync", { x: bravoFlagAt.x, y: 1.75, z: bravoFlagAt.z, yaw: 0, pitch: 0 });
-    await sleep(80);
+    const emptyRemoveAck = await emitWithAck(c1, "block:update", {
+      action: "remove",
+      x: stockX,
+      y: stockY + 2,
+      z: stockZ,
+      typeId: 8
+    });
+    assert(
+      emptyRemoveAck?.ok === false,
+      `empty remove should fail instead of minting stock: ${JSON.stringify(emptyRemoveAck)}`
+    );
+    assert(
+      readStockValue(emptyRemoveAck?.stock, baselineTypeId) === baselineStock,
+      `stock changed after empty remove: ${JSON.stringify(emptyRemoveAck)}`
+    );
+
+    let c1State = hostState;
+    c1State = await movePlayerTowards(c1, c1State, {
+      x: bravoFlagAt.x,
+      y: 1.75,
+      z: bravoFlagAt.z
+    });
     const pickupAck = await emitWithAck(c1, "ctf:interact");
     assert(pickupAck?.ok === true, `ctf:interact failed: ${JSON.stringify(pickupAck)}`);
     await waitFor(() => ctfPickupSeen, 4000);
-    c1.emit("player:sync", { x: alphaHome.x, y: 1.75, z: alphaHome.z, yaw: 0, pitch: 0 });
+    await movePlayerTowards(c1, c1State, { x: alphaHome.x, y: 1.75, z: alphaHome.z });
     await waitFor(() => ctfCaptureSeen, 4000);
 
     const left = await emitWithAck(c2, "room:leave");

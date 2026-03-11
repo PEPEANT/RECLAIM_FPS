@@ -95,6 +95,29 @@ export class WeaponSystem {
     return true;
   }
 
+  applyState(state = null) {
+    if (!state || typeof state !== "object") {
+      return false;
+    }
+
+    const nextWeapon = getWeaponDefinition(state.weaponId ?? this.weaponId);
+    this.configure(nextWeapon, { resetAmmo: false });
+    this.ammo = Math.max(
+      0,
+      Math.min(this.magazineSize, Math.trunc(Number(state.ammo ?? this.ammo) || this.ammo || 0))
+    );
+    this.reserve = Math.max(
+      0,
+      Math.min(this.defaultReserve, Math.trunc(Number(state.reserve ?? this.reserve) || this.reserve || 0))
+    );
+    this.reloading = Boolean(state.reloading);
+    this.reloadTimer = this.reloading
+      ? Math.max(0, Number(state.reloadRemainingMs ?? 0) / 1000)
+      : 0;
+    this.cooldownTimer = Math.max(0, Number(state.cooldownRemainingMs ?? 0) / 1000);
+    return true;
+  }
+
   refill(amount = 0) {
     let remaining = Math.max(0, Math.trunc(Number(amount) || 0));
     if (remaining <= 0) {

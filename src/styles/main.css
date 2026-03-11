@@ -3865,6 +3865,57 @@ body.ui-mode-build .hud-right {
   }
 }
 
+body.ui-mobile .hud-center,
+body.ui-mobile .hud-right {
+  min-width: auto;
+}
+
+body.ui-mobile .hud-center {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 1px);
+  bottom: auto;
+  left: 50%;
+  min-width: auto;
+  padding: 0;
+  transform: translateX(-50%);
+  background: transparent;
+  border: 0;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+body.ui-mobile .hud-health-shell {
+  gap: 6px;
+  padding: 0;
+}
+
+body.ui-mobile .hud-health-icon {
+  font-size: 0.88rem;
+}
+
+body.ui-mobile .hud-health-label {
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+}
+
+body.ui-mobile .hud-health-number {
+  font-size: 1.04rem;
+  letter-spacing: 0.04em;
+}
+
+body.ui-mobile .hud-right {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 2px);
+  right: max(10px, env(safe-area-inset-right, 0px));
+  bottom: auto;
+  padding: 0;
+  gap: 3px;
+  background: transparent;
+  border: 0;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
 @media (max-height: 500px) and (orientation: landscape) {
   .hud-center {
     top: env(safe-area-inset-top, 0px);

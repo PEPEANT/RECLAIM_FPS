@@ -6,7 +6,7 @@ import { VoxelWorld } from "./build/VoxelWorld.js";
 import { BuildSystem } from "./build/BuildSystem.js";
 import { SoundSystem } from "./audio/SoundSystem.js";
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../shared/gameModes.js";
-import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE, PVP_RESPAWN_MS } from "../shared/matchConfig.js";
+import { CTF_PICKUP_RADIUS, CTF_WIN_SCORE } from "../shared/matchConfig.js";
 import {
   getInitialOnlineMapId,
   getNextOnlineMapId,
@@ -27,6 +27,62 @@ import {
 } from "./viewModels/toolViewModels.js";
 import { createWeaponViewModel } from "./weapons/weaponModels.js";
 import { CollapseSystem } from "./world/CollapseSystem.js";
+import {
+  applyNetworkWeaponState as applyOnlineWeaponState,
+  emitPvpShot as emitOnlinePvpShot,
+  handlePvpDamage as handleOnlinePvpDamage,
+  handlePvpImmune as handleOnlinePvpImmune,
+  pushSelectedWeaponToServer as pushOnlineSelectedWeaponToServer,
+  requestWeaponReload as requestOnlineWeaponReload
+} from "./online/onlineCombatNetworking.js";
+import {
+  applyRoomSnapshot as applyOnlineRoomSnapshot,
+  joinDefaultRoom as joinOnlineDefaultRoom,
+  renderRoomList as renderOnlineRoomList,
+  requestRoomList as requestOnlineRoomList,
+  requestRoomSnapshot as requestOnlineRoomSnapshot,
+  setLobbyState as setOnlineLobbyState,
+  setupLobbySocket as setupOnlineLobbySocket
+} from "./online/onlineSession.js";
+import {
+  applyOnlineStatePayload as applyOnlineMatchStatePayload,
+  beginRespawnCountdown as beginOnlineRespawnCountdown,
+  handleOnlineMatchEnd as handleOnlineMatchStateEnd,
+  handlePlayerRespawn as handleOnlinePlayerRespawn,
+  setOnlineRoundState as setNetworkOnlineRoundState,
+  showOnlineCtfEvent as showNetworkOnlineCtfEvent,
+  updateOnlineRoundCountdown as updateNetworkOnlineRoundCountdown,
+  updateRespawnCountdown as updateOnlineRespawnStateCountdown
+} from "./online/onlineMatchState.js";
+import {
+  applyLobbyRemotePreviewTargets as applyOnlineLobbyRemotePreviewTargets,
+  applyRemoteCrouchPose as applyOnlineRemoteCrouchPose,
+  applyRemoteState as applyOnlineRemoteState,
+  clearRemoteDowned as clearOnlineRemoteDowned,
+  clearRemotePlayers as clearOnlineRemotePlayers,
+  createRemoteNameTag as createOnlineRemoteNameTag,
+  createRemotePlayer as createOnlineRemotePlayer,
+  ensureRemotePlayer as ensureOnlineRemotePlayer,
+  getLobbyRemotePreviewTransform as getOnlineLobbyRemotePreviewTransform,
+  getSharedRemoteBoxGeometry as getOnlineSharedRemoteBoxGeometry,
+  handleRemotePlayerSync as handleOnlineRemotePlayerSync,
+  removeRemotePlayer as removeOnlineRemotePlayer,
+  setRemoteDowned as setOnlineRemoteDowned,
+  syncLobbyPlayerStateFromPayload as syncOnlineLobbyPlayerStateFromPayload,
+  syncRemotePlayersFromLobby as syncOnlineRemotePlayersFromLobby,
+  updateRemotePlayers as updateOnlineRemotePlayers,
+  updateRemoteVisual as updateOnlineRemoteVisual
+} from "./online/remotePlayers.js";
+import {
+  refreshOnlineStatus as refreshOnlineLobbyStatus,
+  renderTabScoreboard as renderOnlineTabScoreboard,
+  setTabScoreboardVisible as setOnlineTabScoreboardVisible,
+  syncOnlineHubSummary as syncOnlineLobbyHubSummary,
+  updateFlagInteractUi as updateOnlineFlagInteractUi,
+  updateLobbyControls as updateOnlineLobbyControls,
+  updateLobbyQuickPanel as updateOnlineLobbyQuickPanel,
+  updateTeamScoreHud as updateOnlineTeamScoreHud
+} from "./online/onlineLobbyUi.js";
 
 const PLAYER_HEIGHT = 1.75;
 const PLAYER_CROUCH_HEIGHT = 1.18;
@@ -81,9 +137,6 @@ const ADAPTIVE_QUALITY_STRIKE_LIMIT = 2;
 const CTF_INTERACT_COOLDOWN_MS = 260;
 const MOBILE_SPRINT_THRESHOLD = 0.94;
 const FLAG_CARRIER_SPEED_MULTIPLIER = 0.9;
-const PVP_HIT_SCORE = 10;
-const PVP_KILL_SCORE = 100;
-const PVP_IMMUNE_HINT_COOLDOWN_MS = 420;
 const MAX_ACTIVE_HIT_SPARKS = 56;
 const BLOCK_KEY_SEPARATOR = "|";
 const LOCAL_DEATH_FALL_MS = 460;
@@ -353,6 +406,38 @@ function formatTeamLabel(team) {
   return "중립";
 }
 
+const ONLINE_SESSION_CONFIG = Object.freeze({
+  formatTeamLabel,
+  onlineMapId: ONLINE_MAP_ID,
+  onlineMaxPlayers: ONLINE_MAX_PLAYERS,
+  onlineRoomCode: ONLINE_ROOM_CODE,
+  remoteSyncInterval: REMOTE_SYNC_INTERVAL
+});
+const ONLINE_MATCH_STATE_CONFIG = Object.freeze({
+  formatTeamLabel,
+  normalizeTeamId,
+  remoteSyncInterval: REMOTE_SYNC_INTERVAL
+});
+const REMOTE_PLAYERS_CONFIG = Object.freeze({
+  formatTeamLabel,
+  lobbyRemotePreviewStep: LOBBY_REMOTE_PREVIEW_STEP,
+  lobbyRemoteRingBaseRadius: LOBBY3D_REMOTE_RING_BASE_RADIUS,
+  lobbyRemoteRingBaseSlots: LOBBY3D_REMOTE_RING_BASE_SLOTS,
+  lobbyRemoteRingStepRadius: LOBBY3D_REMOTE_RING_STEP_RADIUS,
+  playerCrouchHeight: PLAYER_CROUCH_HEIGHT,
+  playerHeight: PLAYER_HEIGHT,
+  playerSprint: PLAYER_SPRINT,
+  remoteDeathFallMs: REMOTE_DEATH_FALL_MS,
+  remoteDeathOffsetY: REMOTE_DEATH_OFFSET_Y,
+  remoteDeathRoll: REMOTE_DEATH_ROLL,
+  remoteNameTagDistance: REMOTE_NAME_TAG_DISTANCE
+});
+const ONLINE_LOBBY_UI_CONFIG = Object.freeze({
+  normalizeTeamId,
+  onlineMaxPlayers: ONLINE_MAX_PLAYERS,
+  onlineRoomCode: ONLINE_ROOM_CODE
+});
+
 function toBlockKey(x, y, z) {
   return `${x}${BLOCK_KEY_SEPARATOR}${y}${BLOCK_KEY_SEPARATOR}${z}`;
 }
@@ -610,6 +695,7 @@ export class Game {
       this.allowUnlockedLook = true;
       this.mouseLookEnabled = true;
     }
+    this.syncMobileBodyClass();
 
     this.mobileControlsEl = document.getElementById("mobile-controls");
     this.mobileJoystickEl = document.getElementById("mobile-joystick");
@@ -998,48 +1084,7 @@ export class Game {
   }
 
   syncOnlineHubSummary() {
-    const { connected, connecting, retrying } = this.getOnlineConnectionUiState();
-    const inRoom = !!this.lobbyState.roomCode;
-    const roomCount = Math.max(
-      0,
-      Math.trunc(
-        Number(inRoom ? this.lobbyState.players.length : this.onlineRoomCount) || 0
-      )
-    );
-    const roomName = inRoom ? this.lobbyState.roomCode : ONLINE_ROOM_CODE;
-    const mapMeta = this.getCurrentMapDisplayMeta();
-
-    if (this.mpActiveRoomNameEl) {
-      this.mpActiveRoomNameEl.textContent = roomName || ONLINE_ROOM_CODE;
-    }
-    if (this.mpActiveRoomStateEl) {
-      let text = "오프라인";
-      let state = "offline";
-      if (connected && inRoom) {
-        text = `${roomCount}/${ONLINE_MAX_PLAYERS} 활성`;
-        state = "online";
-      } else if (connected) {
-        text = "자동 참가 중";
-        state = "online";
-      } else if (connecting) {
-        text = retrying ? "재시도 중" : "연결 중";
-        state = "offline";
-      }
-      this.mpActiveRoomStateEl.textContent = text;
-      this.mpActiveRoomStateEl.dataset.state = state;
-    }
-    if (this.mpActiveMapNameEl) {
-      this.mpActiveMapNameEl.textContent = mapMeta.name;
-    }
-    if (this.mpActiveMapDescEl) {
-      this.mpActiveMapDescEl.textContent = connected
-        ? `${mapMeta.description} · ${roomCount}/${ONLINE_MAX_PLAYERS} 접속`
-        : connecting && retrying
-          ? `${mapMeta.description} · 서버 재연결 시도 중`
-          : connecting
-            ? `${mapMeta.description} · 서버 연결 중`
-            : `${mapMeta.description} · 서버 오프라인`;
-    }
+    syncOnlineLobbyHubSummary(this, ONLINE_LOBBY_UI_CONFIG);
   }
 
   syncWeaponSelectionUi() {
@@ -4167,59 +4212,15 @@ export class Game {
     targetScore = this.onlineTargetScore,
     announce = false
   } = {}) {
-    const normalizedWinner = normalizeTeamId(winnerTeam);
-    const nextEnded = Boolean(ended);
-    const nextRestartAt =
-      Number.isFinite(Number(restartAt)) && Number(restartAt) > 0 ? Math.trunc(Number(restartAt)) : 0;
-
-    if (Number.isFinite(Number(targetScore)) && Number(targetScore) > 0) {
-      this.onlineTargetScore = Math.trunc(Number(targetScore));
-    }
-
-    const changed =
-      this.onlineRoundEnded !== nextEnded ||
-      this.onlineRoundWinnerTeam !== normalizedWinner ||
-      this.onlineRoundRestartAt !== nextRestartAt;
-
-    this.onlineRoundEnded = nextEnded;
-    this.onlineRoundWinnerTeam = normalizedWinner;
-    this.onlineRoundRestartAt = nextRestartAt;
-    if (!nextEnded) {
-      this.onlineRoundLastSecond = -1;
-      return;
-    }
-
-    if (changed || announce) {
-      const winnerLabel = formatTeamLabel(normalizedWinner);
-      const remainSec =
-        nextRestartAt > Date.now() ? Math.max(1, Math.ceil((nextRestartAt - Date.now()) / 1000)) : 1;
-      const nextMapMeta = this.getNextOnlineMapDisplayMeta();
-      const statusText = `${winnerLabel} 승리! ${remainSec}초 후 ${nextMapMeta.name} 전장으로 이동합니다`;
-      this.hud.setStatus(statusText, false, 1.0);
-      if (announce) {
-        this.chat?.addSystemMessage(statusText, "system");
-      }
-      this.onlineRoundLastSecond = remainSec;
-    }
+    setNetworkOnlineRoundState(
+      this,
+      { ended, winnerTeam, restartAt, targetScore, announce },
+      ONLINE_MATCH_STATE_CONFIG
+    );
   }
 
   updateOnlineRoundCountdown() {
-    if (!this.onlineRoundEnded) {
-      return;
-    }
-    const remainMs = this.onlineRoundRestartAt - Date.now();
-    const remainSec = remainMs > 0 ? Math.max(1, Math.ceil(remainMs / 1000)) : 0;
-    if (remainSec === this.onlineRoundLastSecond) {
-      return;
-    }
-    this.onlineRoundLastSecond = remainSec;
-    const winnerLabel = formatTeamLabel(this.onlineRoundWinnerTeam);
-    const nextMapMeta = this.getNextOnlineMapDisplayMeta();
-    const statusText =
-      remainSec > 0
-        ? `${winnerLabel} 승리! ${remainSec}초 후 ${nextMapMeta.name} 전장으로 이동합니다`
-        : `${nextMapMeta.name} 전장으로 이동 중...`;
-    this.hud.setStatus(statusText, false, 0.95);
+    updateNetworkOnlineRoundCountdown(this, ONLINE_MATCH_STATE_CONFIG);
   }
 
   getPlayerNameById(id) {
@@ -4277,208 +4278,11 @@ export class Game {
   }
 
   showOnlineCtfEvent(event = {}) {
-    const type = String(event.type ?? "").trim();
-    if (!type) {
-      return;
-    }
-
-    const byPlayerId = String(event.byPlayerId ?? "");
-    const byName = this.getPlayerNameById(byPlayerId);
-    const byTeam = normalizeTeamId(event.byTeam);
-    const flagTeam = normalizeTeamId(event.flagTeam);
-    const myTeam = normalizeTeamId(this.getMyTeam());
-    const isMine = byPlayerId && byPlayerId === this.getMySocketId();
-
-    if (type === "pickup") {
-      const flagLabel = formatTeamLabel(flagTeam);
-      const isFriendlyCarrier = myTeam && byTeam && myTeam === byTeam;
-      const isFriendlyFlagLost = myTeam && flagTeam && myTeam === flagTeam && byTeam !== myTeam;
-      if (isMine) {
-        this.announceGameplayEvent("적 깃발 확보", {
-          alert: false,
-          duration: 2.5,
-          statusText: "적 깃발 탈취 성공! 아군 거점으로 복귀하세요"
-        });
-      } else if (isFriendlyFlagLost) {
-        this.announceGameplayEvent(`${flagLabel} 깃발 탈취당함`, {
-          alert: true,
-          duration: 2.7,
-          statusText: `${byName}이(가) ${flagLabel} 깃발을 탈취했습니다`
-        });
-      } else if (isFriendlyCarrier) {
-        this.announceGameplayEvent(`${byName}이(가) 적 깃발 확보`, {
-          alert: false,
-          duration: 2.4,
-          statusText: `${byName}이(가) ${flagLabel} 깃발을 탈취했습니다`
-        });
-      } else {
-        this.announceGameplayEvent(`${byName}이(가) ${flagLabel} 깃발 탈취`, {
-          alert: false,
-          duration: 2.2
-        });
-      }
-      return;
-    }
-
-    if (type === "capture") {
-      const isFriendlyScore = myTeam && byTeam && myTeam === byTeam;
-      const teamScore = Number(event.teamScore);
-      const scoreSuffix = Number.isFinite(teamScore) && teamScore > 0 ? ` (${teamScore}점)` : "";
-      if (isMine) {
-        this.announceGameplayEvent(`깃발 반납 성공${scoreSuffix}`, {
-          alert: false,
-          duration: 2.6,
-          statusText: `깃발 점수 +1 획득${scoreSuffix}`
-        });
-      } else if (isFriendlyScore) {
-        this.announceGameplayEvent(`${byName}이(가) 점수 +1 확보`, {
-          alert: false,
-          duration: 2.5,
-          statusText: `${byName}이(가) 아군 기지에 깃발을 가져왔습니다${scoreSuffix}`
-        });
-      } else {
-        this.announceGameplayEvent("적 팀이 깃발 점수를 획득했습니다", {
-          alert: true,
-          duration: 2.7,
-          statusText: `${byName}이(가) 깃발 점수 +1 획득${scoreSuffix}`
-        });
-      }
-      return;
-    }
-
-    if (type === "reset") {
-      const isFriendlyFlag = myTeam && flagTeam && myTeam === flagTeam;
-      const text = isFriendlyFlag
-        ? `${formatTeamLabel(flagTeam)} 깃발이 기지로 복귀했습니다`
-        : "깃발이 원래 위치로 복귀했습니다";
-      this.announceGameplayEvent(text, {
-        alert: false,
-        duration: 1.8,
-        statusDuration: 0.85
-      });
-      return;
-    }
-
-    if (type === "start") {
-      this.announceGameplayEvent("깃발전 시작", {
-        alert: false,
-        duration: 1.9,
-        statusText: "깃발전 시작: 적 기지 깃발을 탈취하세요"
-      });
-      return;
-    }
-
-    if (type === "match_end") {
-      const winner = formatTeamLabel(normalizeTeamId(event.winnerTeam));
-      this.announceGameplayEvent(`${winner} 팀 승리`, {
-        alert: false,
-        duration: 2.3,
-        statusDuration: 1.1
-      });
-    }
+    showNetworkOnlineCtfEvent(this, event, ONLINE_MATCH_STATE_CONFIG);
   }
 
   applyOnlineStatePayload(payload = {}, { showEvent = false } = {}) {
-    this.onlineCtf.mode = normalizeGameMode(payload?.mode ?? this.onlineCtf.mode ?? DEFAULT_GAME_MODE);
-    if (Number.isFinite(Number(payload?.targetScore)) && Number(payload.targetScore) > 0) {
-      this.onlineTargetScore = Math.trunc(Number(payload.targetScore));
-    }
-
-    const revision = Number(payload.revision);
-    if (Number.isFinite(revision)) {
-      this.onlineCtf.revision = Math.max(this.onlineCtf.revision, Math.trunc(revision));
-    }
-
-    const readCoord = (value, fallback) => {
-      const num = Number(value);
-      return Number.isFinite(num) ? num : fallback;
-    };
-
-    const flagsPayload =
-      payload?.flags && typeof payload.flags === "object" ? payload.flags : null;
-    const legacyCenterFlagPayload =
-      !flagsPayload && payload?.flag && typeof payload.flag === "object" ? payload.flag : null;
-    const readFlagPayload = (team) => {
-      if (flagsPayload) {
-        return flagsPayload[team] ?? null;
-      }
-      return legacyCenterFlagPayload;
-    };
-
-    for (const team of ["alpha", "bravo"]) {
-      const target = this.onlineCtf.flags[team];
-      const homeFallback = team === "alpha" ? this.objective.alphaFlagHome : this.objective.bravoFlagHome;
-      const flagPayload = readFlagPayload(team);
-
-      if (flagPayload?.home) {
-        target.home.set(
-          readCoord(flagPayload.home.x, homeFallback.x),
-          readCoord(flagPayload.home.y, homeFallback.y),
-          readCoord(flagPayload.home.z, homeFallback.z)
-        );
-      } else {
-        target.home.copy(homeFallback);
-      }
-
-      if (flagPayload?.at) {
-        target.at.set(
-          readCoord(flagPayload.at.x, target.home.x),
-          readCoord(flagPayload.at.y, target.home.y),
-          readCoord(flagPayload.at.z, target.home.z)
-        );
-      } else {
-        target.at.copy(target.home);
-      }
-
-      const carrierId = String(flagPayload?.carrierId ?? "").trim();
-      target.carrierId = carrierId || null;
-    }
-
-    const scoreAlpha = Number(payload?.score?.alpha);
-    const scoreBravo = Number(payload?.score?.bravo);
-    if (Number.isFinite(scoreAlpha)) {
-      this.onlineCtf.score.alpha = Math.trunc(scoreAlpha);
-    }
-    if (Number.isFinite(scoreBravo)) {
-      this.onlineCtf.score.bravo = Math.trunc(scoreBravo);
-    }
-
-    const capAlpha = Number(payload?.captures?.alpha);
-    const capBravo = Number(payload?.captures?.bravo);
-    if (Number.isFinite(capAlpha)) {
-      this.onlineCtf.captures.alpha = Math.trunc(capAlpha);
-    }
-    if (Number.isFinite(capBravo)) {
-      this.onlineCtf.captures.bravo = Math.trunc(capBravo);
-    }
-
-    const roundPayload = payload?.round ?? null;
-    this.setOnlineRoundState({
-      ended: Boolean(roundPayload?.ended),
-      winnerTeam: roundPayload?.winnerTeam ?? null,
-      restartAt: roundPayload?.restartAt ?? 0,
-      targetScore: payload?.targetScore ?? this.onlineTargetScore,
-      announce: false
-    });
-
-    if (this.activeMatchMode === "online") {
-      const myTeam = normalizeTeamId(this.getMyTeam());
-      if (myTeam) {
-        this.state.captures = Number(this.onlineCtf.captures[myTeam] ?? 0);
-      }
-      this.state.objectiveText = this.getOnlineObjectiveText();
-    }
-
-    this.syncOnlineFlagMeshes();
-    this.updateTeamScoreHud();
-    if (this.tabBoardVisible) {
-      this.renderTabScoreboard();
-    }
-
-    if (showEvent) {
-      this.showOnlineCtfEvent(payload?.event ?? null);
-    }
-
+    applyOnlineMatchStatePayload(this, payload, { showEvent }, ONLINE_MATCH_STATE_CONFIG);
   }
 
   syncOnlineFlagMeshes() {
@@ -4548,82 +4352,7 @@ export class Game {
   }
 
   applyRoomSnapshot(payload = {}) {
-    this.applyDailyLeaderboardPayload(payload.dailyLeaderboard ?? null);
-    const incomingMapId = normalizeOnlineMapId(
-      payload.mapId ?? payload.state?.mapId ?? this.lobbyState.state?.mapId ?? this.onlineMapId
-    );
-    this.onlineMapId = incomingMapId;
-    if (!this.isRunning || this.activeMatchMode === "online") {
-      this.mapId = incomingMapId;
-    }
-    const roundStartedAt = Math.max(0, Number(payload.round?.startedAt ?? 0) || 0);
-    const roundEnded = Boolean(payload.round?.ended);
-    const snapshotRevision = Math.max(0, Math.trunc(Number(payload.revision) || 0));
-    const snapshotUpdatedAt = Math.max(0, Math.trunc(Number(payload.updatedAt) || 0));
-    const blocks = Array.isArray(payload.blocks) ? payload.blocks : null;
-    const snapshotKey = `${incomingMapId}|${snapshotRevision}|${snapshotUpdatedAt}|${roundStartedAt}|${blocks?.length ?? -1}`;
-    if (roundStartedAt > 0) {
-      this.lastRoomStartedAt = Math.max(this.lastRoomStartedAt, roundStartedAt);
-    }
-    if (
-      roundStartedAt > 0 &&
-      !roundEnded &&
-      (!this.isRunning || this.activeMatchMode !== "online")
-    ) {
-      this.start({ mode: "online" });
-      return;
-    }
-    if (payload.weaponId) {
-      this.applySelectedWeapon(payload.weaponId, {
-        persist: true,
-        syncToServer: false,
-        resetAmmo: false,
-        announce: false
-      });
-    }
-    if (snapshotKey === this.lastAppliedRoomSnapshotKey) {
-      this.latestRoomSnapshot = payload;
-      this.applyInventorySnapshot(payload.stock, { quiet: true });
-      this.applyOnlineStatePayload(payload, { showEvent: false });
-      return;
-    }
-    this.lastAppliedRoomSnapshotKey = snapshotKey;
-    this.latestRoomSnapshot = payload;
-    this.resetDynamicBlockState(blocks ?? []);
-    if (!blocks) {
-      return;
-    }
-    const shouldApplyOnlineWorld = this.activeMatchMode === "online" && this.isRunning;
-    if (!shouldApplyOnlineWorld) {
-      return;
-    }
-    this.applyInventorySnapshot(payload.stock, { quiet: true });
-
-    this.mapId = incomingMapId;
-    this.voxelWorld.generateTerrain({ mapId: this.mapId });
-    for (const entry of blocks) {
-      const update = this.normalizeDynamicBlockUpdate(entry);
-      if (!update) {
-        continue;
-      }
-      if (update.action === "place") {
-        this.voxelWorld.setBlock(update.x, update.y, update.z, update.typeId);
-      } else {
-        this.voxelWorld.removeBlock(update.x, update.y, update.z);
-      }
-    }
-    this.pendingRemoteBlocks.clear();
-    this.setupObjectives();
-    this.applyOnlineStatePayload(payload, { showEvent: false });
-
-    if (this.activeMatchMode === "online" && this.isRunning) {
-      if (
-        this.isPlayerCollidingAt(this.playerPosition.x, this.playerPosition.y, this.playerPosition.z)
-      ) {
-        this.setOnlineSpawnFromLobby();
-      }
-      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
-    }
+    applyOnlineRoomSnapshot(this, payload, ONLINE_SESSION_CONFIG);
   }
 
   applyInventorySnapshot(stockPayload = null, { quiet = true } = {}) {
@@ -4632,6 +4361,10 @@ export class Game {
       this.hud.setStatus("블록 수량 동기화", false, 0.45);
     }
     return changed;
+  }
+
+  applyNetworkWeaponState(weaponState = null) {
+    return applyOnlineWeaponState(this, weaponState);
   }
 
   normalizeDynamicBlockUpdate(entry = {}) {
@@ -5336,129 +5069,15 @@ export class Game {
   }
 
   setTabScoreboardVisible(visible) {
-    const show = Boolean(
-      visible &&
-        this.tabScoreboardEl &&
-        this.activeMatchMode === "online" &&
-        (this.isRunning || this.isLobby3DActive()) &&
-        !this.isGameOver
-    );
-    this.tabBoardVisible = show;
-    if (this.mobileTabBtn) {
-      this.mobileTabBtn.classList.toggle("is-active", show);
-      this.mobileTabBtn.setAttribute("aria-pressed", show ? "true" : "false");
-    }
-    if (!this.tabScoreboardEl) {
-      return;
-    }
-    this.tabScoreboardEl.classList.toggle("show", show);
-    this.tabScoreboardEl.setAttribute("aria-hidden", show ? "false" : "true");
-    if (show) {
-      this.renderTabScoreboard();
-    }
+    setOnlineTabScoreboardVisible(this, visible, ONLINE_LOBBY_UI_CONFIG);
   }
 
   renderTabScoreboard() {
-    if (!this.tabAlphaListEl || !this.tabBravoListEl) {
-      return;
-    }
-
-    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
-    const myId = this.getMySocketId();
-    const teamOrder = ["alpha", "bravo"];
-    const teamScore = this.onlineCtf?.score ?? { alpha: 0, bravo: 0 };
-
-    for (const team of teamOrder) {
-      const listEl = team === "alpha" ? this.tabAlphaListEl : this.tabBravoListEl;
-      const countEl = team === "alpha" ? this.tabAlphaCountEl : this.tabBravoCountEl;
-      const scoreValue = Number(teamScore?.[team] ?? 0);
-      const teamPlayers = players
-        .filter((player) => normalizeTeamId(player?.team) === team)
-        .sort((a, b) => {
-          const capturesA = Number(a?.captures ?? 0);
-          const capturesB = Number(b?.captures ?? 0);
-          if (capturesA !== capturesB) {
-            return capturesB - capturesA;
-          }
-          const killsA = Number(a?.kills ?? 0);
-          const killsB = Number(b?.kills ?? 0);
-          if (killsA !== killsB) {
-            return killsB - killsA;
-          }
-          const deathsA = Number(a?.deaths ?? 0);
-          const deathsB = Number(b?.deaths ?? 0);
-          if (deathsA !== deathsB) {
-            return deathsA - deathsB;
-          }
-          return String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
-        });
-
-      if (countEl) {
-        countEl.textContent = `${Number.isFinite(scoreValue) ? Math.trunc(scoreValue) : 0}점 · ${teamPlayers.length}명`;
-      }
-
-      listEl.innerHTML = "";
-      if (teamPlayers.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "tab-player-empty";
-        empty.textContent = "대기 중";
-        listEl.appendChild(empty);
-        continue;
-      }
-
-      for (const player of teamPlayers) {
-        const row = document.createElement("div");
-        row.className = "tab-player-row";
-        if (String(player?.id ?? "") === myId) {
-          row.classList.add("is-self");
-        }
-
-        const name = document.createElement("span");
-        name.className = "tab-player-name";
-        name.textContent = String(player?.name ?? "PLAYER");
-        row.appendChild(name);
-
-        const meta = document.createElement("span");
-        meta.className = "tab-player-meta";
-        const kills = Math.max(0, Math.trunc(Number(player?.kills ?? 0)));
-        const deaths = Math.max(0, Math.trunc(Number(player?.deaths ?? 0)));
-        const captures = Math.max(0, Math.trunc(Number(player?.captures ?? 0)));
-        meta.textContent =
-          String(player?.id ?? "") === myId
-            ? `K ${kills} / D ${deaths} / C ${captures} | YOU`
-            : `K ${kills} / D ${deaths} / C ${captures}`;
-        row.appendChild(meta);
-
-        listEl.appendChild(row);
-      }
-    }
+    renderOnlineTabScoreboard(this, ONLINE_LOBBY_UI_CONFIG);
   }
 
   updateTeamScoreHud() {
-    if (!this.ctfScoreboardEl || !this.ctfScoreAlphaEl || !this.ctfScoreBravoEl) {
-      return;
-    }
-
-    const show = this.activeMatchMode === "online" && this.isRunning && !this.isGameOver;
-    if (this.scoreHudState.show !== show) {
-      this.ctfScoreboardEl.classList.toggle("show", show);
-      this.ctfScoreboardEl.setAttribute("aria-hidden", show ? "false" : "true");
-      this.scoreHudState.show = show;
-    }
-    if (!show) {
-      return;
-    }
-
-    const alpha = Math.max(0, Math.trunc(Number(this.onlineCtf?.score?.alpha ?? 0)));
-    const bravo = Math.max(0, Math.trunc(Number(this.onlineCtf?.score?.bravo ?? 0)));
-    if (this.scoreHudState.alpha !== alpha) {
-      this.ctfScoreAlphaEl.textContent = String(alpha);
-      this.scoreHudState.alpha = alpha;
-    }
-    if (this.scoreHudState.bravo !== bravo) {
-      this.ctfScoreBravoEl.textContent = String(bravo);
-      this.scoreHudState.bravo = bravo;
-    }
+    updateOnlineTeamScoreHud(this);
   }
 
   canLocalPickupCenterFlag() {
@@ -5511,22 +5130,7 @@ export class Game {
   }
 
   updateFlagInteractUi() {
-    if (!this.flagInteractBtnEl) {
-      return;
-    }
-
-    const showFlagInteractButton = this.canLocalPickupCenterFlag();
-    const show = showFlagInteractButton;
-    const nextMode = showFlagInteractButton ? "flag" : "none";
-    if (show === this.flagInteractVisible && nextMode === this.flagInteractMode) {
-      return;
-    }
-
-    this.flagInteractVisible = show;
-    this.flagInteractMode = nextMode;
-    this.flagInteractBtnEl.textContent = "깃발 탈취";
-    this.flagInteractBtnEl.classList.toggle("show", show);
-    this.flagInteractBtnEl.setAttribute("aria-hidden", show ? "false" : "true");
+    updateOnlineFlagInteractUi(this);
   }
 
   requestCenterFlagInteract({ source = "key" } = {}) {
@@ -5570,24 +5174,7 @@ export class Game {
   }
 
   handleOnlineMatchEnd(payload = {}) {
-    if (this.activeMatchMode !== "online") {
-      return;
-    }
-
-    const winnerTeam = normalizeTeamId(payload?.winnerTeam);
-    const restartAt = Number(payload?.restartAt);
-    const targetScore = Number(payload?.targetScore);
-    this.setOnlineRoundState({
-      ended: true,
-      winnerTeam,
-      restartAt,
-      targetScore,
-      announce: true
-    });
-    this.leftMouseDown = false;
-    this.rightMouseAiming = false;
-    this.isAiming = false;
-    this.handlePrimaryActionUp();
+    handleOnlineMatchStateEnd(this, payload, ONLINE_MATCH_STATE_CONFIG);
   }
 
   setRespawnBanner(message = "", visible = false) {
@@ -5608,134 +5195,52 @@ export class Game {
   }
 
   beginRespawnCountdown(respawnAtRaw = null) {
-    const parsedRespawnAt = Number(respawnAtRaw);
-    this.isRespawning = true;
-    this.respawnEndAt =
-      Number.isFinite(parsedRespawnAt) && parsedRespawnAt > Date.now()
-        ? parsedRespawnAt
-        : Date.now() + PVP_RESPAWN_MS;
-    this.respawnLastSecond = -1;
-    this.localDeathAnimStartAt = Date.now();
-    this.localDeathAnimBlend = 0;
-    this.leftMouseDown = false;
-    this.rightMouseAiming = false;
-    this.isAiming = false;
-    this.handlePrimaryActionUp();
-
-    const initialSeconds = Math.max(1, Math.ceil((this.respawnEndAt - Date.now()) / 1000));
-    const message = `사망 - ${initialSeconds}초 후 부활합니다`;
-    this.setRespawnBanner(message, true);
-    this.hud.setStatus(message, true, 1.0);
+    beginOnlineRespawnCountdown(this, respawnAtRaw);
   }
 
   updateRespawnCountdown() {
-    if (!this.isRespawning) {
-      this.setRespawnBanner("", false);
-      return;
-    }
-
-    const remainingMs = this.respawnEndAt - Date.now();
-    if (remainingMs <= 0) {
-      if (this.respawnLastSecond !== 0) {
-        this.respawnLastSecond = 0;
-        this.setRespawnBanner("곧 부활합니다...", true);
-        this.hud.setStatus("부활 중...", true, 0.5);
-      }
-      return;
-    }
-
-    const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
-    if (seconds === this.respawnLastSecond) {
-      return;
-    }
-    this.respawnLastSecond = seconds;
-    const message = `사망 - ${seconds}초 후 부활합니다`;
-    this.setRespawnBanner(message, true);
-    this.hud.setStatus(message, true, 1.0);
+    updateOnlineRespawnStateCountdown(this);
   }
 
   handlePlayerRespawn(payload = {}) {
-    if (this.activeMatchMode !== "online") {
+    handleOnlinePlayerRespawn(this, payload, ONLINE_MATCH_STATE_CONFIG);
+  }
+
+  handlePlayerCorrection(payload = {}) {
+    if (this.activeMatchMode !== "online" || !this.isRunning || this.isGameOver || this.isRespawning) {
       return;
     }
 
-    const id = String(payload.id ?? "").trim();
-    if (!id) {
-      return;
-    }
-
-    const hpRaw = Number(payload.hp);
-    const hp = Number.isFinite(hpRaw) ? Math.max(0, Math.min(100, Math.trunc(hpRaw))) : 100;
-    const spawnShieldUntil = Number(payload.spawnShieldUntil);
     const state = payload?.state ?? null;
-    const myId = this.getMySocketId();
-
-    this.syncLobbyPlayerStateFromPayload(id, {
-      state,
-      hp,
-      respawnAt: 0,
-      spawnShieldUntil
-    });
-
-    if (id === myId) {
-      this.state.health = hp;
-      this.state.killStreak = 0;
-      this.hud.setKillStreak(0);
-      this.isRespawning = false;
-      this.respawnEndAt = 0;
-      this.respawnLastSecond = -1;
-      this.localDeathAnimStartAt = 0;
-      this.localDeathAnimBlend = 0;
-      this.setRespawnBanner("", false);
-
-      const x = Number(state?.x);
-      const y = Number(state?.y);
-      const z = Number(state?.z);
-      const yaw = Number(state?.yaw);
-      const pitch = Number(state?.pitch);
-      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-        const safeSpawn = this.findSafeSpawnPlacement(x, z, y);
-        if (safeSpawn) {
-          this.applySpawnPlacement(safeSpawn, {
-            yaw: Number.isFinite(yaw) ? yaw : this.yaw,
-            pitch: Number.isFinite(pitch) ? pitch : 0
-          });
-        } else {
-          this.applySpawnPlacement(
-            { x, y, z },
-            {
-              yaw: Number.isFinite(yaw) ? yaw : this.yaw,
-              pitch: Number.isFinite(pitch) ? pitch : 0
-            }
-          );
-        }
-        if (this.isPlayerCollidingAt(this.playerPosition.x, this.playerPosition.y, this.playerPosition.z)) {
-          this.setOnlineSpawnFromLobby();
-        }
-      } else {
-        this.setOnlineSpawnFromLobby();
-      }
-      if (Number.isFinite(spawnShieldUntil) && spawnShieldUntil > Date.now()) {
-        const shieldSeconds = Math.max(1, Math.ceil((spawnShieldUntil - Date.now()) / 1000));
-        this.hud.setStatus(`부활 완료 - ${shieldSeconds}초 보호`, false, 1.1);
-      } else {
-        this.hud.setStatus("부활 완료", false, 0.8);
-      }
-      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+    const x = Number(state?.x);
+    const y = Number(state?.y);
+    const z = Number(state?.z);
+    const yaw = Number(state?.yaw);
+    const pitch = Number(state?.pitch);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       return;
     }
 
-    const lobbyPlayer =
-      this.lobbyState.players.find((player) => String(player?.id ?? "") === id) ?? {
-        id,
-        name: "PLAYER",
-        team: null
-      };
-    const remote = this.ensureRemotePlayer(lobbyPlayer);
-    if (remote && state) {
-      this.applyRemoteState(remote, state, true);
-      this.clearRemoteDowned(remote);
+    const safePlacement = this.findSafeSpawnPlacement(x, z, y);
+    if (safePlacement) {
+      this.applySpawnPlacement(safePlacement, {
+        yaw: Number.isFinite(yaw) ? yaw : this.yaw,
+        pitch: Number.isFinite(pitch) ? pitch : this.pitch
+      });
+    } else {
+      this.applySpawnPlacement(
+        { x, y, z },
+        {
+          yaw: Number.isFinite(yaw) ? yaw : this.yaw,
+          pitch: Number.isFinite(pitch) ? pitch : this.pitch
+        }
+      );
     }
+
+    if (this.isPlayerCollidingAt(this.playerPosition.x, this.playerPosition.y, this.playerPosition.z)) {
+      this.setOnlineSpawnFromLobby();
+    }
+    this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
   }
 
   isEnemyTeam(team) {
@@ -5811,309 +5316,31 @@ export class Game {
   }
 
   createRemoteNameTag(name, team) {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    const safeName = String(name ?? "PLAYER").slice(0, 16);
-    const teamLabel = formatTeamLabel(team);
-    const displayName = `[${teamLabel}] ${safeName}`;
-
-    if (ctx) {
-      const teamColor = this.getTeamColor(team);
-      const r = (teamColor >> 16) & 0xff;
-      const g = (teamColor >> 8) & 0xff;
-      const b = teamColor & 0xff;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "rgba(8, 14, 23, 0.72)";
-      ctx.fillRect(12, 24, canvas.width - 24, 80);
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.95)`;
-      ctx.lineWidth = 4;
-      ctx.strokeRect(12, 24, canvas.width - 24, 80);
-      ctx.font = "700 46px Segoe UI, Arial, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = "rgba(225, 242, 255, 0.98)";
-      ctx.fillText(displayName, canvas.width * 0.5, canvas.height * 0.5 + 2);
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-
-    const material = new THREE.SpriteMaterial({
-      map: texture,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false
-    });
-    const sprite = new THREE.Sprite(material);
-    sprite.scale.set(2.9, 0.72, 1);
-    sprite.renderOrder = 6;
-    return sprite;
+    return createOnlineRemoteNameTag(this, name, team, REMOTE_PLAYERS_CONFIG);
   }
 
   getSharedRemoteBoxGeometry(width, height, depth) {
-    const key = `${width}|${height}|${depth}`;
-    const cached = this.remoteBoxGeometryCache.get(key);
-    if (cached) {
-      return cached;
-    }
-    const geometry = new THREE.BoxGeometry(width, height, depth);
-    geometry.userData.sharedRemote = true;
-    this.remoteBoxGeometryCache.set(key, geometry);
-    return geometry;
+    return getOnlineSharedRemoteBoxGeometry(this, width, height, depth);
   }
 
   createRemotePlayer(player = {}) {
-    const team = player.team ?? null;
-    const weaponId = sanitizeWeaponId(player.weaponId);
-    const uniformColor = this.getTeamUniformColor(team);
-    const patchColor = this.getTeamColor(team);
-    const group = new THREE.Group();
-    group.visible = false;
-
-    const bodyMaterial = new THREE.MeshStandardMaterial({
-      color: uniformColor,
-      roughness: 0.58,
-      metalness: 0.12
-    });
-    const headMaterial = new THREE.MeshStandardMaterial({
-      color: 0xffc29f,
-      roughness: 0.6,
-      metalness: 0.05
-    });
-    const darkMaterial = new THREE.MeshStandardMaterial({
-      color: 0x2b3013,
-      roughness: 0.52,
-      metalness: 0.12
-    });
-    const detailMaterial = new THREE.MeshStandardMaterial({
-      color: 0x1b2a38,
-      roughness: 0.4,
-      metalness: 0.56
-    });
-    const patchMaterial = new THREE.MeshStandardMaterial({
-      color: patchColor,
-      emissive: patchColor,
-      emissiveIntensity: 0.34,
-      roughness: 0.34,
-      metalness: 0.28
-    });
-
-    const makePart = (w, h, d, material, x, y, z) => {
-      const mesh = new THREE.Mesh(this.getSharedRemoteBoxGeometry(w, h, d), material);
-      mesh.position.set(x, y, z);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      return mesh;
-    };
-
-    const legL = makePart(0.22, 0.78, 0.22, bodyMaterial, -0.17, 0.46, 0);
-    const legR = makePart(0.22, 0.78, 0.22, bodyMaterial, 0.17, 0.46, 0);
-    const shoeL = makePart(0.28, 0.14, 0.34, detailMaterial, -0.17, 0.1, 0.03);
-    const shoeR = makePart(0.28, 0.14, 0.34, detailMaterial, 0.17, 0.1, 0.03);
-
-    const torso = makePart(0.64, 0.9, 0.38, bodyMaterial, 0, 1.26, 0);
-    const chestRig = makePart(0.56, 0.24, 0.4, darkMaterial, 0, 1.44, -0.06);
-    const backpack = makePart(0.48, 0.66, 0.24, darkMaterial, 0, 1.28, 0.31);
-    const shoulderPatchL = makePart(0.2, 0.14, 0.03, patchMaterial, -0.35, 1.58, -0.2);
-    const shoulderPatchR = makePart(0.2, 0.14, 0.03, patchMaterial, 0.35, 1.58, -0.2);
-    const chestPatch = makePart(0.34, 0.1, 0.03, patchMaterial, 0, 1.38, -0.22);
-
-    const headPivot = new THREE.Group();
-    headPivot.position.set(0, 1.95, 0);
-    const head = makePart(0.36, 0.36, 0.36, headMaterial, 0, 0, 0);
-    const helmet = makePart(0.42, 0.22, 0.42, darkMaterial, 0, 0.2, 0);
-    const helmetBrim = makePart(0.46, 0.06, 0.48, darkMaterial, 0, 0.1, -0.03);
-    const eyeL = makePart(0.055, 0.055, 0.055, detailMaterial, -0.09, 0.04, -0.19);
-    eyeL.castShadow = false;
-    const eyeR = makePart(0.055, 0.055, 0.055, detailMaterial, 0.09, 0.04, -0.19);
-    eyeR.castShadow = false;
-    headPivot.add(head, helmet, helmetBrim, eyeL, eyeR);
-
-    const armR = makePart(0.18, 0.68, 0.18, bodyMaterial, 0.32, 1.47, -0.08);
-    armR.rotation.x = -1.04;
-    armR.rotation.z = -0.22;
-    const armL = makePart(0.18, 0.68, 0.18, bodyMaterial, -0.28, 1.45, -0.02);
-    armL.rotation.x = -0.9;
-    armL.rotation.z = 0.18;
-
-    const handR = makePart(0.14, 0.14, 0.14, headMaterial, 0.16, 1.14, -0.57);
-    const handL = makePart(0.14, 0.14, 0.14, headMaterial, -0.14, 1.27, -0.46);
-
-    const weaponAnchor = this.createRemoteWeaponModel(weaponId, detailMaterial, darkMaterial);
-
-    const nameTag = this.createRemoteNameTag(player.name, team);
-    nameTag.position.set(0, 2.72, 0);
-
-    group.add(
-      legL,
-      legR,
-      shoeL,
-      shoeR,
-      torso,
-      chestRig,
-      backpack,
-      shoulderPatchL,
-      shoulderPatchR,
-      chestPatch,
-      headPivot,
-      armL,
-      armR,
-      handL,
-      handR,
-      weaponAnchor,
-      nameTag
-    );
-    this.scene.add(group);
-
-    return {
-      id: String(player.id ?? ""),
-      name: String(player.name ?? "PLAYER"),
-      team,
-      weaponId,
-      group,
-      nameTag,
-      bodyMaterial,
-      headMaterial,
-      darkMaterial,
-      detailMaterial,
-      patchMaterial,
-      shoulderPatchL,
-      shoulderPatchR,
-      chestPatch,
-      backpack,
-      torso,
-      chestRig,
-      backpackBaseY: backpack.position.y,
-      headPivot,
-      headPivotBaseY: headPivot.position.y,
-      torsoBaseY: torso.position.y,
-      chestRigBaseY: chestRig.position.y,
-      armL,
-      armR,
-      armLBaseX: armL.rotation.x,
-      armRBaseX: armR.rotation.x,
-      armLBaseY: armL.position.y,
-      armRBaseY: armR.position.y,
-      handL,
-      handR,
-      handLBaseY: handL.position.y,
-      handRBaseY: handR.position.y,
-      weaponAnchor,
-      legL,
-      legR,
-      legLBaseY: legL.position.y,
-      legRBaseY: legR.position.y,
-      shoeL,
-      shoeR,
-      shoeLBaseY: shoeL.position.y,
-      shoeRBaseY: shoeR.position.y,
-      targetPosition: new THREE.Vector3(),
-      targetYaw: 0,
-      yaw: 0,
-      hasValidState: false,
-      crouched: false,
-      prevPosition: new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN),
-      walkPhase: 0,
-      isDowned: false,
-      downedStartAt: 0,
-      downedBlend: 0
-    };
+    return createOnlineRemotePlayer(this, player, REMOTE_PLAYERS_CONFIG);
   }
 
   updateRemoteVisual(remote, { name, team, weaponId }) {
-    const nextName = String(name ?? remote.name ?? "PLAYER");
-    const nextTeam = team ?? null;
-    const nextWeaponId = sanitizeWeaponId(weaponId ?? remote.weaponId);
-    const teamChanged = remote.team !== nextTeam;
-    const nameChanged = remote.name !== nextName;
-    const weaponChanged = remote.weaponId !== nextWeaponId;
-    if (!teamChanged && !nameChanged && !weaponChanged) {
-      return;
-    }
-
-    remote.name = nextName;
-    remote.team = nextTeam;
-    remote.weaponId = nextWeaponId;
-    const teamColor = this.getTeamColor(nextTeam);
-    remote.bodyMaterial.color.setHex(this.getTeamUniformColor(nextTeam));
-    remote.patchMaterial?.color?.setHex(teamColor);
-    remote.patchMaterial?.emissive?.setHex(teamColor);
-    if (weaponChanged) {
-      if (remote.weaponAnchor) {
-        remote.group.remove(remote.weaponAnchor);
-      }
-      remote.weaponAnchor = this.createRemoteWeaponModel(
-        remote.weaponId,
-        remote.detailMaterial,
-        remote.darkMaterial
-      );
-      remote.group.add(remote.weaponAnchor);
-    }
-
-    if (remote.nameTag) {
-      remote.group.remove(remote.nameTag);
-      remote.nameTag.material.map?.dispose();
-      remote.nameTag.material.dispose();
-    }
-    remote.nameTag = this.createRemoteNameTag(remote.name, remote.team);
-    remote.nameTag.position.set(0, 2.72, 0);
-    remote.group.add(remote.nameTag);
+    updateOnlineRemoteVisual(this, remote, { name, team, weaponId }, REMOTE_PLAYERS_CONFIG);
   }
 
   ensureRemotePlayer(player) {
-    const id = String(player?.id ?? "");
-    if (!id) {
-      return null;
-    }
-
-    let remote = this.remotePlayers.get(id);
-    if (!remote) {
-      remote = this.createRemotePlayer(player);
-      this.remotePlayers.set(id, remote);
-    } else {
-      this.updateRemoteVisual(remote, player);
-    }
-    return remote;
+    return ensureOnlineRemotePlayer(this, player, REMOTE_PLAYERS_CONFIG);
   }
 
   removeRemotePlayer(id) {
-    const key = String(id ?? "");
-    if (!key) {
-      return;
-    }
-
-    const remote = this.remotePlayers.get(key);
-    if (!remote) {
-      return;
-    }
-
-    this.scene.remove(remote.group);
-    remote.group.traverse((child) => {
-      if (child.isMesh) {
-        if (!child.geometry?.userData?.sharedRemote) {
-          child.geometry?.dispose?.();
-        }
-      }
-    });
-    remote.nameTag?.material?.map?.dispose?.();
-    remote.nameTag?.material?.dispose?.();
-    remote.bodyMaterial.dispose();
-    remote.headMaterial.dispose();
-    remote.darkMaterial?.dispose?.();
-    remote.detailMaterial.dispose();
-    remote.patchMaterial?.dispose?.();
-    this.remotePlayers.delete(key);
+    removeOnlineRemotePlayer(this, id);
   }
 
   clearRemotePlayers() {
-    for (const id of this.remotePlayers.keys()) {
-      this.removeRemotePlayer(id);
-    }
+    clearOnlineRemotePlayers(this);
   }
 
   getSupportedPlayerY(
@@ -6183,438 +5410,43 @@ export class Game {
   }
 
   syncLobbyPlayerStateFromPayload(id, patch = {}) {
-    const key = String(id ?? "").trim();
-    if (!key || !Array.isArray(this.lobbyState.players)) {
-      return;
-    }
-
-    const lobbyPlayer = this.lobbyState.players.find((entry) => String(entry?.id ?? "") === key);
-    if (!lobbyPlayer) {
-      return;
-    }
-
-    if (patch.team !== undefined) {
-      lobbyPlayer.team = patch.team ?? null;
-    }
-    if (patch.weaponId !== undefined) {
-      lobbyPlayer.weaponId = sanitizeWeaponId(patch.weaponId);
-    }
-    if (patch.state !== undefined) {
-      lobbyPlayer.state = patch.state ?? null;
-    }
-    if (patch.hp !== undefined) {
-      lobbyPlayer.hp = Number(patch.hp ?? lobbyPlayer.hp ?? 100);
-    }
-    if (patch.respawnAt !== undefined) {
-      lobbyPlayer.respawnAt = Number(patch.respawnAt ?? 0);
-    }
-    if (patch.spawnShieldUntil !== undefined) {
-      lobbyPlayer.spawnShieldUntil = Number(patch.spawnShieldUntil ?? 0);
-    }
+    syncOnlineLobbyPlayerStateFromPayload(this, id, patch);
   }
 
   applyRemoteState(remote, state, snap = false) {
-    if (!remote || !state) {
-      return;
-    }
-    if (this.isLobby3DActive() && !this.isRunning) {
-      return;
-    }
-
-    const x = Number(state.x);
-    const y = Number(state.y);
-    const z = Number(state.z);
-    const yaw = Number(state.yaw);
-    const crouched = Boolean(state.crouched);
-    const remotePlayerHeight = crouched ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
-      return;
-    }
-
-    const supportedPlayerY = this.getSupportedPlayerY(x, z, y, {
-      maxDrop: snap ? 5 : 2.25,
-      maxRise: snap ? 1.4 : 0.7,
-      fallbackToGlobalSurface: true,
-      playerHeight: remotePlayerHeight
-    });
-    let resolvedY = y;
-    if (Number.isFinite(supportedPlayerY)) {
-      if (resolvedY < supportedPlayerY - 0.08) {
-        resolvedY = supportedPlayerY;
-      } else if (snap && resolvedY <= supportedPlayerY + 1.1) {
-        resolvedY = supportedPlayerY;
-      } else if (Math.abs(resolvedY - supportedPlayerY) <= 0.2) {
-        resolvedY = supportedPlayerY;
-      }
-    }
-
-    remote.targetPosition.set(x, resolvedY - remotePlayerHeight, z);
-    remote.targetYaw = Number.isFinite(yaw) ? yaw : 0;
-    remote.crouched = crouched;
-    this.applyRemoteCrouchPose(remote, crouched);
-    remote.hasValidState = true;
-    remote.group.visible = true;
-
-    const driftSq = remote.group.position.distanceToSquared(remote.targetPosition);
-    if (snap || !Number.isFinite(remote.prevPosition.x) || driftSq >= 18 * 18) {
-      remote.group.position.copy(remote.targetPosition);
-      remote.yaw = remote.targetYaw;
-      remote.group.rotation.y = remote.yaw;
-      remote.prevPosition.copy(remote.group.position);
-      remote.group.updateMatrixWorld(true);
-    }
+    applyOnlineRemoteState(this, remote, state, snap, REMOTE_PLAYERS_CONFIG);
   }
 
   applyRemoteCrouchPose(remote, crouched = false) {
-    if (!remote) {
-      return;
-    }
-    const crouchBlend = crouched ? 1 : 0;
-    if (remote.torso) {
-      remote.torso.position.y = (remote.torsoBaseY ?? remote.torso.position.y) - 0.28 * crouchBlend;
-    }
-    if (remote.chestRig) {
-      remote.chestRig.position.y = (remote.chestRigBaseY ?? remote.chestRig.position.y) - 0.24 * crouchBlend;
-    }
-    if (remote.backpack) {
-      remote.backpack.position.y = (remote.backpackBaseY ?? remote.backpack.position.y) - 0.26 * crouchBlend;
-    }
-    if (remote.headPivot) {
-      remote.headPivot.position.y = (remote.headPivotBaseY ?? remote.headPivot.position.y) - 0.36 * crouchBlend;
-    }
-    if (remote.armL) {
-      remote.armL.position.y = (remote.armLBaseY ?? remote.armL.position.y) - 0.22 * crouchBlend;
-    }
-    if (remote.armR) {
-      remote.armR.position.y = (remote.armRBaseY ?? remote.armR.position.y) - 0.22 * crouchBlend;
-    }
-    if (remote.handL) {
-      remote.handL.position.y = (remote.handLBaseY ?? remote.handL.position.y) - 0.2 * crouchBlend;
-    }
-    if (remote.handR) {
-      remote.handR.position.y = (remote.handRBaseY ?? remote.handR.position.y) - 0.2 * crouchBlend;
-    }
-    if (remote.legL) {
-      remote.legL.position.y = (remote.legLBaseY ?? remote.legL.position.y) - 0.04 * crouchBlend;
-      remote.legL.rotation.x = crouched ? -0.88 : 0;
-    }
-    if (remote.legR) {
-      remote.legR.position.y = (remote.legRBaseY ?? remote.legR.position.y) - 0.04 * crouchBlend;
-      remote.legR.rotation.x = crouched ? 0.88 : 0;
-    }
-    if (remote.shoeL) {
-      remote.shoeL.position.y = (remote.shoeLBaseY ?? remote.shoeL.position.y) + 0.04 * crouchBlend;
-    }
-    if (remote.shoeR) {
-      remote.shoeR.position.y = (remote.shoeRBaseY ?? remote.shoeR.position.y) + 0.04 * crouchBlend;
-    }
-    if (remote.nameTag) {
-      remote.nameTag.position.y = crouched ? 2.36 : 2.72;
-    }
+    applyOnlineRemoteCrouchPose(remote, crouched);
   }
 
   setRemoteDowned(remote, respawnAtRaw = 0) {
-    if (!remote) {
-      return;
-    }
-    if (!remote.isDowned) {
-      remote.downedStartAt = Date.now();
-    }
-    remote.isDowned = true;
-    remote.downedBlend = Math.max(remote.downedBlend, 0.02);
-    const respawnAt = Number(respawnAtRaw);
-    if (Number.isFinite(respawnAt) && respawnAt > 0) {
-      // Keep for potential future countdown UI per remote player.
-      remote.respawnAt = Math.trunc(respawnAt);
-    } else {
-      remote.respawnAt = 0;
-    }
+    setOnlineRemoteDowned(remote, respawnAtRaw);
   }
 
   clearRemoteDowned(remote) {
-    if (!remote) {
-      return;
-    }
-    remote.isDowned = false;
-    remote.downedStartAt = 0;
-    remote.downedBlend = 0;
-    remote.respawnAt = 0;
-    if (remote.group) {
-      remote.group.rotation.z = 0;
-    }
-    this.applyRemoteCrouchPose(remote, remote.crouched);
-    if (remote.shoeL && remote.shoeR) {
-      remote.shoeL.rotation.x = 0;
-      remote.shoeR.rotation.x = 0;
-    }
-    if (remote.armL && remote.armR) {
-      remote.armL.rotation.x = Number.isFinite(remote.armLBaseX) ? remote.armLBaseX : -1.02;
-      remote.armR.rotation.x = Number.isFinite(remote.armRBaseX) ? remote.armRBaseX : -0.96;
-    }
-    if (remote.handL && remote.handR) {
-      remote.handL.rotation.x = 0;
-      remote.handR.rotation.x = 0;
-    }
+    clearOnlineRemoteDowned(remote);
   }
 
   getLobbyRemotePreviewTransform(index = 0) {
-    const safeIndex = Math.max(0, Math.trunc(index));
-    let remaining = safeIndex;
-    let ring = 0;
-    let slots = LOBBY3D_REMOTE_RING_BASE_SLOTS;
-    while (remaining >= slots) {
-      remaining -= slots;
-      ring += 1;
-      slots += 2;
-    }
-
-    const angle = (Math.PI * 2 * remaining) / Math.max(1, slots) + ring * 0.28;
-    const radius = LOBBY3D_REMOTE_RING_BASE_RADIUS + ring * LOBBY3D_REMOTE_RING_STEP_RADIUS;
-    const x = this.lobby3d.centerX + Math.cos(angle) * radius;
-    const z = this.lobby3d.centerZ + Math.sin(angle) * radius;
-    const y = this.lobby3d.floorY + PLAYER_HEIGHT + 0.92 + ring * 0.06;
-    const yaw = Math.atan2(this.lobby3d.centerX - x, this.lobby3d.centerZ - z);
-
-    return { x, y, z, yaw };
+    return getOnlineLobbyRemotePreviewTransform(this, index, REMOTE_PLAYERS_CONFIG);
   }
 
   applyLobbyRemotePreviewTargets() {
-    if (!this.isLobby3DActive()) {
-      return;
-    }
-
-    const myId = this.getMySocketId();
-    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
-    const remoteIds = [];
-    for (const player of players) {
-      const id = String(player?.id ?? "");
-      if (!id || id === myId) {
-        continue;
-      }
-      if (!this.remotePlayers.has(id)) {
-        continue;
-      }
-      remoteIds.push(id);
-    }
-
-    const signature = remoteIds.join("|");
-    if (signature === this.lobby3d.remotePreviewSignature) {
-      return;
-    }
-    this.lobby3d.remotePreviewSignature = signature;
-
-    let previewIndex = 0;
-    for (const id of remoteIds) {
-      const remote = this.remotePlayers.get(id);
-      if (!remote) {
-        continue;
-      }
-      const pose = this.getLobbyRemotePreviewTransform(previewIndex);
-      remote.hasValidState = true;
-      remote.group.visible = true;
-      remote.targetPosition.set(pose.x, pose.y - PLAYER_HEIGHT, pose.z);
-      remote.targetYaw = pose.yaw;
-      this.clearRemoteDowned(remote);
-      previewIndex += 1;
-    }
+    applyOnlineLobbyRemotePreviewTargets(this, REMOTE_PLAYERS_CONFIG);
   }
 
   syncRemotePlayersFromLobby() {
-    if (this.activeMatchMode !== "online") {
-      this.clearRemotePlayers();
-      return;
-    }
-
-    const myId = this.getMySocketId();
-    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
-    const liveIds = new Set();
-
-    for (const player of players) {
-      const id = String(player?.id ?? "");
-      if (!id || id === myId) {
-        continue;
-      }
-
-      liveIds.add(id);
-      const hadRemote = this.remotePlayers.has(id);
-      const remote = this.ensureRemotePlayer(player);
-      if (!remote) {
-        continue;
-      }
-      if (player.state) {
-        this.applyRemoteState(remote, player.state, !hadRemote);
-      } else if (!this.isLobby3DActive()) {
-        remote.hasValidState = false;
-        remote.group.visible = false;
-      }
-      const hp = Number(player?.hp);
-      if (Number.isFinite(hp) && hp <= 0) {
-        this.setRemoteDowned(remote, player?.respawnAt ?? 0);
-      } else {
-        this.clearRemoteDowned(remote);
-      }
-    }
-
-    for (const id of this.remotePlayers.keys()) {
-      if (!liveIds.has(id)) {
-        this.removeRemotePlayer(id);
-      }
-    }
+    syncOnlineRemotePlayersFromLobby(this, REMOTE_PLAYERS_CONFIG);
   }
 
   handleRemotePlayerSync(payload = {}) {
-    const id = String(payload.id ?? "");
-    if (!id || id === this.getMySocketId()) {
-      return;
-    }
-
-    this.syncLobbyPlayerStateFromPayload(id, {
-      team: payload.team ?? null,
-      weaponId: payload.weaponId ?? null,
-      state: payload.state ?? null
-    });
-
-    const remote = this.ensureRemotePlayer({
-      id,
-      name: payload.name ?? "PLAYER",
-      team: payload.team ?? null,
-      weaponId: payload.weaponId ?? null
-    });
-    if (!remote) {
-      return;
-    }
-
-    this.applyRemoteState(remote, payload.state, false);
+    handleOnlineRemotePlayerSync(this, payload, REMOTE_PLAYERS_CONFIG);
   }
 
   updateRemotePlayers(delta) {
-    if (this.activeMatchMode !== "online") {
-      return;
-    }
-    if (this.remotePlayers.size === 0) {
-      this.syncOnlineFlagMeshes();
-      return;
-    }
-    const lobbyPreviewActive = this.isLobby3DActive() && !this.isRunning;
-    if (lobbyPreviewActive) {
-      this.applyLobbyRemotePreviewTargets();
-    }
-
-    let effectiveDelta = Math.max(0, Number(delta) || 0);
-    if (lobbyPreviewActive) {
-      this.lobbyRemotePreviewAccumulator += effectiveDelta;
-      if (this.lobbyRemotePreviewAccumulator < LOBBY_REMOTE_PREVIEW_STEP) {
-        this.syncOnlineFlagMeshes();
-        return;
-      }
-      effectiveDelta = this.lobbyRemotePreviewAccumulator;
-      this.lobbyRemotePreviewAccumulator = 0;
-    } else {
-      this.lobbyRemotePreviewAccumulator = 0;
-    }
-
-    const smooth = THREE.MathUtils.clamp(effectiveDelta * 11, 0.08, 0.92);
-
-    for (const remote of this.remotePlayers.values()) {
-      if (!remote.hasValidState) {
-        remote.group.visible = false;
-        continue;
-      }
-      remote.group.visible = true;
-      if (!Number.isFinite(remote.prevPosition.x)) {
-        remote.prevPosition.copy(remote.group.position);
-      }
-      const prevX = remote.group.position.x;
-      const prevZ = remote.group.position.z;
-      remote.group.position.lerp(remote.targetPosition, smooth);
-      const yawDiff = Math.atan2(
-        Math.sin(remote.targetYaw - remote.yaw),
-        Math.cos(remote.targetYaw - remote.yaw)
-      );
-      remote.yaw += yawDiff * smooth;
-      remote.group.rotation.y = remote.yaw;
-      remote.group.rotation.x = 0;
-      if (lobbyPreviewActive) {
-        remote.group.rotation.z = 0;
-        remote.prevPosition.set(remote.group.position.x, remote.group.position.y, remote.group.position.z);
-        if (remote.nameTag) {
-          remote.nameTag.visible = true;
-        }
-        continue;
-      }
-
-      if (remote.isDowned) {
-        const elapsed = Math.max(0, Date.now() - remote.downedStartAt);
-        const t = THREE.MathUtils.clamp(elapsed / REMOTE_DEATH_FALL_MS, 0, 1);
-        remote.downedBlend = Math.max(remote.downedBlend, t);
-      } else if (remote.downedBlend > 0) {
-        remote.downedBlend = Math.max(0, remote.downedBlend - effectiveDelta * 4.8);
-      }
-
-      if (remote.downedBlend > 0) {
-        remote.group.position.y -= REMOTE_DEATH_OFFSET_Y * remote.downedBlend;
-      }
-      remote.group.rotation.z = REMOTE_DEATH_ROLL * remote.downedBlend;
-
-      const moveSpeed =
-        Math.hypot(remote.group.position.x - prevX, remote.group.position.z - prevZ) /
-        Math.max(effectiveDelta, 1e-5);
-      const moveRatio = THREE.MathUtils.clamp(moveSpeed / PLAYER_SPRINT, 0, 1);
-      if (remote.isDowned || remote.downedBlend > 0.2) {
-        remote.walkPhase = 0;
-      } else {
-        remote.walkPhase += effectiveDelta * (6 + moveRatio * 8);
-      }
-      const swing = Math.sin(remote.walkPhase) * 0.55 * moveRatio;
-      const crouchBlend = remote.crouched ? 1 : 0;
-      if (remote.legL && remote.legR) {
-        const crouchLegBase = 0.88 * crouchBlend;
-        remote.legL.rotation.x = crouchLegBase + swing * (1 - crouchBlend * 0.7);
-        remote.legR.rotation.x = -crouchLegBase - swing * (1 - crouchBlend * 0.7);
-      }
-      if (remote.shoeL && remote.shoeR) {
-        remote.shoeL.rotation.x = swing * 0.45;
-        remote.shoeR.rotation.x = -swing * 0.45;
-      }
-      if (remote.armL && remote.armR) {
-        const armSwing = swing * 0.2;
-        remote.armL.rotation.x = (remote.armLBaseX ?? -1.02) + armSwing;
-        remote.armR.rotation.x = (remote.armRBaseX ?? -0.96) - armSwing;
-      }
-      if (remote.handL && remote.handR) {
-        remote.handL.rotation.x = swing * 0.1;
-        remote.handR.rotation.x = -swing * 0.1;
-      }
-      if (remote.headPivot) {
-        const breath = Math.sin(remote.walkPhase * 0.5 + remote.yaw) * 0.018;
-        const baseY = remote.headPivotBaseY ?? remote.headPivot.position.y;
-        remote.headPivot.position.y =
-          baseY - 0.36 * crouchBlend + breath * (0.55 + moveRatio * 0.45);
-      }
-      if (remote.backpack) {
-        const breath = Math.sin(remote.walkPhase * 0.5 + remote.yaw + 0.3) * 0.012;
-        const baseY = remote.backpackBaseY ?? remote.backpack.position.y;
-        remote.backpack.position.y =
-          baseY - 0.26 * crouchBlend + breath * (0.5 + moveRatio * 0.4);
-      }
-      remote.prevPosition.set(remote.group.position.x, remote.group.position.y, remote.group.position.z);
-
-      this._remoteHead.copy(remote.group.position);
-      this._remoteHead.y += (remote.crouched ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT) + 0.72;
-      this._toRemote.copy(this._remoteHead).sub(this.camera.position);
-      const distance = this._toRemote.length();
-
-      if (remote.nameTag) {
-        const hideEnemyName = !lobbyPreviewActive && this.isEnemyTeam(remote.team);
-        const hideForDeath = remote.isDowned || remote.downedBlend > 0.2;
-        remote.nameTag.visible =
-          !hideForDeath && !hideEnemyName && distance <= REMOTE_NAME_TAG_DISTANCE;
-      }
-    }
-
-    if (this.activeMatchMode === "online") {
-      this.syncOnlineFlagMeshes();
-    }
+    updateOnlineRemotePlayers(this, delta, REMOTE_PLAYERS_CONFIG);
   }
 
   setSingleSpawnFromTraining() {
@@ -6866,7 +5698,8 @@ export class Game {
       z: Number(this.playerPosition.z.toFixed(3)),
       yaw: Number(this.yaw.toFixed(4)),
       pitch: Number(this.pitch.toFixed(4)),
-      crouched: this.isCrouching
+      crouched: this.isCrouching,
+      aiming: this.isAiming || this.rightMouseAiming
     });
   }
 
@@ -6950,243 +5783,20 @@ export class Game {
     return best;
   }
 
-  emitPvpShot(targetId, damage = null) {
-    if (!targetId || this.activeMatchMode !== "online") {
-      return;
-    }
+  emitPvpShot(damage = null) {
+    emitOnlinePvpShot(this, damage);
+  }
 
-    const socket = this.chat?.socket;
-    if (!socket?.connected || !this.lobbyState.roomCode) {
-      return;
-    }
-
-    const payload = { targetId };
-    const parsedDamage = Math.trunc(Number(damage));
-    if (Number.isFinite(parsedDamage) && parsedDamage > 0) {
-      payload.damage = parsedDamage;
-    }
-    socket.emit("pvp:shoot", payload);
+  requestWeaponReload() {
+    return requestOnlineWeaponReload(this);
   }
 
   handlePvpImmune(payload = {}) {
-    if (this.activeMatchMode !== "online" || !this.isRunning || this.isGameOver) {
-      return;
-    }
-
-    const targetId = String(payload?.targetId ?? "");
-    if (!targetId) {
-      return;
-    }
-
-    const now = Date.now();
-    if (now < this.pvpImmuneHintUntil) {
-      return;
-    }
-    this.pvpImmuneHintUntil = now + PVP_IMMUNE_HINT_COOLDOWN_MS;
-    this.hud.setStatus("대상이 리스폰 보호 중입니다.", true, 0.55);
+    handleOnlinePvpImmune(this, payload);
   }
 
   handlePvpDamage(payload = {}) {
-    if (this.activeMatchMode !== "online") {
-      return;
-    }
-
-    const attackerId = String(payload.attackerId ?? "");
-    const victimId = String(payload.victimId ?? "");
-    const damage = Math.max(0, Number(payload.damage ?? 0));
-    const killed = Boolean(payload.killed);
-    const victimHealth = Number(payload.victimHealth);
-    const respawnAt = Number(payload.respawnAt);
-    const hazardReason = String(payload.hazardReason ?? "").trim();
-    const attackerStreak = Math.max(0, Math.trunc(Number(payload.attackerStreak) || 0));
-    const victimStreakLost = Math.max(0, Math.trunc(Number(payload.victimStreakLost) || 0));
-    const myId = this.getMySocketId();
-    const teamScore = payload?.teamScore ?? null;
-    const teamCaptures = payload?.teamCaptures ?? null;
-    let lobbyChanged = false;
-
-    if (!myId) {
-      return;
-    }
-
-    const updateLobbyPlayer = (playerId, updater) => {
-      const id = String(playerId ?? "").trim();
-      if (!id) {
-        return;
-      }
-      const player = this.lobbyState.players.find((entry) => String(entry?.id ?? "") === id);
-      if (!player) {
-        return;
-      }
-      updater(player);
-      lobbyChanged = true;
-    };
-
-    if (teamScore) {
-      const alpha = Number(teamScore.alpha);
-      const bravo = Number(teamScore.bravo);
-      if (Number.isFinite(alpha)) {
-        this.onlineCtf.score.alpha = Math.trunc(alpha);
-      }
-      if (Number.isFinite(bravo)) {
-        this.onlineCtf.score.bravo = Math.trunc(bravo);
-      }
-    }
-
-    if (teamCaptures) {
-      const alpha = Number(teamCaptures.alpha);
-      const bravo = Number(teamCaptures.bravo);
-      if (Number.isFinite(alpha)) {
-        this.onlineCtf.captures.alpha = Math.trunc(alpha);
-      }
-      if (Number.isFinite(bravo)) {
-        this.onlineCtf.captures.bravo = Math.trunc(bravo);
-      }
-    }
-
-    const attackerKills = Number(payload.attackerKills);
-    if (Number.isFinite(attackerKills)) {
-      updateLobbyPlayer(attackerId, (player) => {
-        player.kills = Math.max(0, Math.trunc(attackerKills));
-      });
-    }
-
-    if (attackerId && Number.isFinite(attackerStreak)) {
-      updateLobbyPlayer(attackerId, (player) => {
-        player.killStreak = Math.max(0, Math.trunc(attackerStreak));
-      });
-    }
-
-    const victimDeaths = Number(payload.victimDeaths);
-    if (Number.isFinite(victimDeaths)) {
-      updateLobbyPlayer(victimId, (player) => {
-        player.deaths = Math.max(0, Math.trunc(victimDeaths));
-      });
-    }
-
-    updateLobbyPlayer(victimId, (player) => {
-      if (killed) {
-        player.hp = 0;
-        player.respawnAt = Number.isFinite(respawnAt) ? Math.max(0, Math.trunc(respawnAt)) : 0;
-        player.killStreak = 0;
-        return;
-      }
-
-      if (Number.isFinite(victimHealth)) {
-        const nextHp = Math.max(0, Math.min(100, Math.trunc(victimHealth)));
-        const currentHp = Number.isFinite(player.hp) ? Math.trunc(player.hp) : nextHp;
-        player.hp = Math.min(currentHp, nextHp);
-      }
-      player.respawnAt = 0;
-    });
-
-    if (victimId && victimId !== myId) {
-      const remoteVictim = this.remotePlayers.get(victimId);
-      if (remoteVictim) {
-        if (killed) {
-          this.setRemoteDowned(remoteVictim, respawnAt);
-        } else if (Number.isFinite(victimHealth) && victimHealth > 0) {
-          this.clearRemoteDowned(remoteVictim);
-        }
-      }
-    }
-
-    if (attackerId === myId) {
-      if (killed) {
-        this.state.kills += 1;
-        this.state.score += PVP_KILL_SCORE;
-        this.hud.pulseHitmarker();
-        this.hud.setStatus(`+${PVP_KILL_SCORE} 처치`, false, 0.55);
-
-        this.state.killStreak = Math.max(1, attackerStreak || 1);
-        this.state.lastKillTime = this.clock.getElapsedTime();
-        this.hud.setKillStreak(this.state.killStreak);
-      } else if (damage > 0) {
-        this.state.score += PVP_HIT_SCORE;
-        this.hud.pulseHitmarker();
-      }
-    }
-
-    if (victimId === myId) {
-      this.hud.flashDamage();
-
-      if (killed) {
-        this.state.health = 0;
-        this.state.killStreak = 0;
-        this.hud.setKillStreak(0);
-        this.beginRespawnCountdown(respawnAt);
-      } else {
-        const fallbackHealth = Math.max(0, this.state.health - damage);
-        const nextHealth = Number.isFinite(victimHealth) ? victimHealth : fallbackHealth;
-        const clampedServerHealth = Math.max(0, Math.min(100, nextHealth));
-        // Never allow local health to increase on damage packets.
-        this.state.health = Math.min(this.state.health, clampedServerHealth);
-        if (hazardReason === "fall") {
-          this.hud.setStatus(`낙하 피해 -${damage}`, true, 0.45);
-        } else if (hazardReason === "void") {
-          this.hud.setStatus("낙사 피해", true, 0.7);
-        } else {
-          this.hud.setStatus(`피해 -${damage}`, true, 0.35);
-        }
-      }
-    }
-
-    if (killed) {
-      const attackerName = attackerId ? this.getPlayerNameById(attackerId) : "환경";
-      const victimName = victimId ? this.getPlayerNameById(victimId) : "플레이어";
-
-      if (attackerId === myId) {
-        this.addChatMessage(`${victimName} 처치`, "kill");
-        if (attackerStreak >= 3) {
-          this.announceGameplayEvent(`${attackerStreak}연속 처치`, {
-            alert: false,
-            duration: 2.1,
-            statusText: `${victimName} 처치. ${attackerStreak}연속 처치 중`,
-            logText: `${attackerStreak}연속 처치`,
-            statusDuration: 0.75
-          });
-        }
-        if (victimStreakLost >= 3) {
-          this.chat?.addSystemMessage(`${victimName}의 ${victimStreakLost}연속 처치를 끊었습니다`, "system");
-        }
-      } else if (victimId === myId) {
-        const deathText =
-          hazardReason === "fall" || hazardReason === "void"
-            ? "환경 피해로 쓰러졌습니다"
-            : `${attackerName}에게 처치당했습니다`;
-        this.announceGameplayEvent(deathText, {
-          alert: true,
-          duration: 2.1,
-          statusDuration: 0.72
-        });
-        if (attackerStreak >= 3 && attackerId) {
-          this.announceGameplayEvent(`${attackerName} ${attackerStreak}연속 처치`, {
-            alert: true,
-            duration: 2.5,
-            statusText: `${attackerName}이(가) ${attackerStreak}연속 처치 중입니다`,
-            logText: `${attackerName}이(가) ${attackerStreak}연속 처치 중입니다`,
-            statusDuration: 0.85
-          });
-        }
-      } else if (attackerStreak >= 3 && attackerId) {
-        this.announceGameplayEvent(`${attackerName} ${attackerStreak}연속 처치`, {
-          alert: false,
-          duration: 1.9,
-          statusText: `${attackerName}이(가) ${victimName} 처치`,
-          logText: `${attackerName}이(가) ${attackerStreak}연속 처치 중입니다`,
-          statusDuration: 0.7
-        });
-      } else if (victimStreakLost >= 3 && attackerId) {
-        this.chat?.addSystemMessage(
-          `${attackerName}이(가) ${victimName}의 ${victimStreakLost}연속 처치를 저지했습니다`,
-          "system"
-        );
-      }
-    }
-
-    if (lobbyChanged && this.tabBoardVisible) {
-      this.renderTabScoreboard();
-    }
+    handleOnlinePvpDamage(this, payload);
   }
 
   computeFallDamage(dropHeight) {
@@ -8039,13 +6649,7 @@ export class Game {
       if (this.isLobby3DActive() && !this.isRunning) {
         return;
       }
-      if (!this.buildSystem.isGunMode()) {
-        this.hud.setStatus("장전하려면 총 모드로 전환하세요.", true, 0.75);
-        return;
-      }
-      if (this.weapon.startReload()) {
-        this.hud.setStatus("장전 중...", true, 0.55);
-      }
+      this.requestWeaponReload();
     });
     bindUtilityTap(this.mobileTabBtn, () => {
       this.setTabScoreboardVisible(!this.tabBoardVisible);
@@ -8199,6 +6803,7 @@ export class Game {
         this.mobileModeLocked = true;
         this.allowUnlockedLook = true;
         this.mouseLookEnabled = true;
+        this.syncMobileBodyClass();
         this.setupMobileControls();
         this.updateMobileControlsVisibility();
       },
@@ -8343,8 +6948,8 @@ export class Game {
       if (event.code === "KeyR") {
         if (!this.buildSystem.isGunMode()) {
           this.hud.setStatus("3번 키로 총 모드로 전환하세요.", true, 0.9);
-        } else if (this.weapon.startReload()) {
-          this.hud.setStatus("장전 중...", true, 0.6);
+        } else {
+          this.requestWeaponReload();
         }
       }
 
@@ -9001,6 +7606,7 @@ export class Game {
       this.allowUnlockedLook = true;
       this.mouseLookEnabled = true;
     }
+    this.syncMobileBodyClass();
     if (this.mobileEnabled && !this._mobileBound) {
       this.setupMobileControls();
     }
@@ -9358,13 +7964,16 @@ export class Game {
     }
 
     if (this.activeMatchMode === "online") {
+      let predictedDamage = 0;
       if (onlineDamageByTarget.size > 0) {
         this.hud.pulseHitmarker();
         this.sound.playHitCue(strongestHitZone);
-        for (const [targetId, totalDamage] of onlineDamageByTarget.entries()) {
-          this.emitPvpShot(targetId, totalDamage);
+        for (const totalDamage of onlineDamageByTarget.values()) {
+          predictedDamage += Math.max(0, Math.trunc(Number(totalDamage) || 0));
         }
       }
+
+      this.emitPvpShot(predictedDamage > 0 ? predictedDamage : null);
 
       for (const spark of pelletHitPoints) {
         this.spawnHitSpark(spark.point, spark);
@@ -10120,12 +8729,17 @@ export class Game {
     requestAnimationFrame(() => this.loop());
   }
 
+  syncMobileBodyClass() {
+    document.body.classList.toggle("ui-mobile", this.mobileEnabled);
+  }
+
   onResize() {
     this.mobileEnabled = this.mobileModeLocked || isLikelyTouchDevice();
     if (this.mobileEnabled) {
       this.mobileModeLocked = true;
       this.allowUnlockedLook = true;
     }
+    this.syncMobileBodyClass();
     if (this.mobileEnabled && !this._mobileBound) {
       this.setupMobileControls();
     }
@@ -10459,230 +9073,23 @@ export class Game {
   }
 
   setupLobbySocket() {
-    const socket = this.chat?.socket;
-    if (!socket || this._lobbySocketBound) {
-      return;
-    }
-
-    this._lobbySocketBound = true;
-
-    socket.on("connect", () => {
-      this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: false });
-      this.refreshOnlineStatus();
-      this.requestRoomList();
-      this.joinDefaultRoom();
-    });
-
-    socket.on("disconnect", () => {
-      this._joiningDefaultRoom = false;
-      this.refreshOnlineStatus();
-      this.setLobbyState(null);
-      this.renderRoomList([]);
-      this.clearRemotePlayers();
-    });
-
-    socket.on("room:list", (rooms) => {
-      this.renderRoomList(rooms);
-    });
-
-    socket.on("room:update", (room) => {
-      this.setLobbyState(room);
-      this.requestRoomList();
-    });
-
-    socket.on("leaderboard:daily", (payload = {}) => {
-      this.applyDailyLeaderboardPayload(payload);
-    });
-
-    socket.on("room:snapshot", (payload) => {
-      this.applyRoomSnapshot(payload);
-    });
-
-    socket.on("portal:entered", (payload = {}) => {
-      this.handleLobbyPortalEntered(payload);
-    });
-
-    socket.on("inventory:update", (payload = {}) => {
-      this.applyInventorySnapshot(payload.stock, { quiet: true });
-    });
-
-    socket.on("player:sync", (payload) => {
-      this.handleRemotePlayerSync(payload);
-    });
-
-    socket.on("block:update", (payload) => {
-      this.applyRemoteBlockUpdate(payload);
-    });
-
-    socket.on("pvp:damage", (payload) => {
-      this.handlePvpDamage(payload);
-    });
-
-    socket.on("pvp:immune", (payload) => {
-      this.handlePvpImmune(payload);
-    });
-
-    socket.on("player:respawn", (payload) => {
-      this.handlePlayerRespawn(payload);
-    });
-
-    socket.on("ctf:update", (payload) => {
-      this.applyOnlineStatePayload(payload, { showEvent: true });
-    });
-
-    socket.on("match:end", (payload) => {
-      this.handleOnlineMatchEnd(payload);
-    });
-
-    socket.on("room:started", ({ code, startedAt, mapId }) => {
-      if (!code || this.lobbyState.roomCode !== code) {
-        return;
-      }
-      const roundMapId = normalizeOnlineMapId(mapId ?? this.onlineMapId);
-      this.onlineMapId = roundMapId;
-      if (!this.isRunning || this.activeMatchMode === "online") {
-        this.mapId = roundMapId;
-      }
-      const startedAtNum = Number(startedAt);
-      const roundStartedAt = Number.isFinite(startedAtNum) ? Math.max(0, Math.trunc(startedAtNum)) : 0;
-      if (roundStartedAt > 0 && this.lastRoomStartedAt > 0 && roundStartedAt <= this.lastRoomStartedAt) {
-        return;
-      }
-      if (roundStartedAt > 0) {
-        this.lastRoomStartedAt = roundStartedAt;
-      }
-
-      const alreadyRunningOnline =
-        this.activeMatchMode === "online" && this.isRunning && !this.onlineRoundEnded;
-      this.setOnlineRoundState({
-        ended: false,
-        winnerTeam: null,
-        restartAt: 0,
-        targetScore: this.onlineTargetScore,
-        announce: false
-      });
-      if (alreadyRunningOnline) {
-        this.hud.setStatus(`온라인 라운드 갱신 (${code})`, false, 0.8);
-        this.requestRoomSnapshot();
-        return;
-      }
-      const mapMeta = MAP_DISPLAY_META[roundMapId] ?? this.getCurrentMapDisplayMeta();
-      this.hud.setStatus(`온라인 매치 시작: ${mapMeta.name}`, false, 1);
-      this.start({ mode: "online" });
-    });
-
-    socket.on("room:error", (message) => {
-      const text = String(message ?? "로비 오류");
-      this.hud.setStatus(text, true, 1.2);
-      if (this.mpStatusEl) {
-        this.mpStatusEl.textContent = `로비 오류: ${text}`;
-        this.mpStatusEl.dataset.state = "error";
-      }
-    });
-
-    this.requestRoomList();
-    this.joinDefaultRoom();
+    setupOnlineLobbySocket(this, ONLINE_SESSION_CONFIG);
   }
 
   requestRoomList() {
-    const socket = this.chat?.socket;
-    if (!socket || !socket.connected) {
-      this.renderRoomList([]);
-      return;
-    }
-    socket.emit("room:list");
+    requestOnlineRoomList(this);
   }
 
   requestRoomSnapshot() {
-    const socket = this.chat?.socket;
-    if (!socket || !socket.connected || !this.lobbyState.roomCode) {
-      return;
-    }
-
-    socket.emit("room:request-snapshot", (response = {}) => {
-      if (!response.ok) {
-        return;
-      }
-      const snapshot = response.snapshot ?? null;
-      if (snapshot) {
-        this.applyRoomSnapshot(snapshot);
-      }
-    });
+    requestOnlineRoomSnapshot(this, ONLINE_SESSION_CONFIG);
   }
 
   joinDefaultRoom({ force = false } = {}) {
-    const socket = this.chat?.socket;
-    if (!socket || !socket.connected) {
-      return;
-    }
-
-    if (this.lobbyState.roomCode === ONLINE_ROOM_CODE) {
-      return;
-    }
-
-    const now = Date.now();
-    if (!force && now < this._nextAutoJoinAt) {
-      return;
-    }
-    if (this._joiningDefaultRoom) {
-      return;
-    }
-
-    this._joiningDefaultRoom = true;
-    socket.emit("room:quick-join", {
-      name: this.chat?.playerName,
-      role: this.onlineEntryRole
-    }, (response = {}) => {
-      this._joiningDefaultRoom = false;
-      if (!response.ok) {
-        this._nextAutoJoinAt = Date.now() + 1800;
-        this.hud.setStatus(response.error ?? "온라인 방 참가에 실패했습니다.", true, 1);
-        this.refreshOnlineStatus();
-        return;
-      }
-      this._nextAutoJoinAt = 0;
-      this.setLobbyState(response.room ?? null);
-      this.pushSelectedWeaponToServer(this.selectedWeaponId, { quiet: true });
-      this.refreshOnlineStatus();
-    });
+    joinOnlineDefaultRoom(this, { force }, ONLINE_SESSION_CONFIG);
   }
 
   renderRoomList(rooms) {
-    if (!this.mpRoomListEl) {
-      this.syncOnlineHubSummary();
-      return;
-    }
-
-    const list = Array.isArray(rooms) ? rooms : [];
-    const connected = !!this.chat?.isConnected?.();
-    if (!connected) {
-      this.onlineRoomCount = 0;
-      this.mpRoomListEl.innerHTML =
-        '<div class="mp-empty">서버 연결을 시도 중입니다. 잠시 후 다시 시도해 주세요.</div>';
-      this.syncOnlineHubSummary();
-      return;
-    }
-
-    const globalRoom =
-      list.find((room) => String(room.code ?? "").toUpperCase() === ONLINE_ROOM_CODE) ??
-      list[0] ??
-      null;
-    if (!globalRoom) {
-      this.onlineRoomCount = 0;
-      this.mpRoomListEl.innerHTML = '<div class="mp-empty">GLOBAL 방 정보를 불러오지 못했습니다.</div>';
-      this.syncOnlineHubSummary();
-      return;
-    }
-
-    const playerCount = Number(globalRoom.count ?? this.lobbyState.players.length ?? 0);
-    this.onlineRoomCount = Math.max(0, Math.trunc(playerCount));
-    this.mpRoomListEl.innerHTML =
-      `<div class="mp-room-row is-single">` +
-      `<div class="mp-room-label">${ONLINE_ROOM_CODE}  ${playerCount}/${ONLINE_MAX_PLAYERS}` +
-      `<span class="mp-room-host">24시간 운영</span>` +
-      `</div>` +
-      `</div>`;
-    this.syncOnlineHubSummary();
+    renderOnlineRoomList(this, rooms, ONLINE_SESSION_CONFIG);
   }
 
   syncLobbyNicknameInputs(name, { force = false } = {}) {
@@ -10804,123 +9211,7 @@ export class Game {
   }
 
   updateLobbyQuickPanel() {
-    if (!this.lobbyQuickPanelEl) {
-      return;
-    }
-    const show = false;
-    if (this._lastLobbyQuickPanelVisible !== show) {
-      this.lobbyQuickPanelEl.classList.toggle("show", show);
-      this.lobbyQuickPanelEl.setAttribute("aria-hidden", show ? "false" : "true");
-      this._lastLobbyQuickPanelVisible = show;
-    }
-    if (!show) {
-      return;
-    }
-
-    const connected = !!this.chat?.isConnected?.();
-    const inRoom = Boolean(this.lobbyState.roomCode);
-    const players = Array.isArray(this.lobbyState.players) ? this.lobbyState.players : [];
-    const count = players.length;
-    const alphaCount = players.filter((player) => player?.team === "alpha").length;
-    const bravoCount = players.filter((player) => player?.team === "bravo").length;
-
-    if (this.lobbyQuickCountEl) {
-      let nextText = "";
-      if (!connected) {
-        nextText = "서버 연결 중...";
-      } else if (!inRoom) {
-        nextText = "GLOBAL 자동 참가 중...";
-      } else {
-        nextText =
-          `대기 인원 ${count}/${ONLINE_MAX_PLAYERS} | 블루 ${alphaCount} 레드 ${bravoCount} | TAB 순위`;
-      }
-      if (nextText !== this._lastLobbyQuickCountText) {
-        this.lobbyQuickCountEl.textContent = nextText;
-        this._lastLobbyQuickCountText = nextText;
-      }
-    }
-
-    if (this.lobbyQuickGuideEl) {
-      let guideText = "";
-      if (!connected) {
-        guideText = "연결 후 포탈(훈련장/온라인 허브/시뮬라크 월드) 사용 가능";
-      } else if (!inRoom) {
-        guideText = "GLOBAL 참가 대기 중 · 이동 WASD · 순위 TAB · 채팅 T/Enter";
-      } else {
-        guideText = "포탈 4개 사용 가능 · 닉네임 변경 가능 · 순위 TAB";
-      }
-      if (guideText !== this._lastLobbyQuickGuideText) {
-        this.lobbyQuickGuideEl.textContent = guideText;
-        this._lastLobbyQuickGuideText = guideText;
-      }
-    }
-
-    if (this.lobbyQuickRankListEl) {
-      const myName = String(this.chat?.playerName ?? "")
-        .trim()
-        .toLowerCase();
-      const rankMode = connected && inRoom ? "live" : connected ? "queue" : "offline";
-      const ranked = this.getDailyLeaderboardRows(6);
-      const rankPayload = ranked
-        .map((entry) => {
-          const name = String(entry?.name ?? "PLAYER");
-          const captures = Math.max(0, Math.trunc(Number(entry?.captures ?? 0)));
-          const kills = Math.max(0, Math.trunc(Number(entry?.kills ?? 0)));
-          const deaths = Math.max(0, Math.trunc(Number(entry?.deaths ?? 0)));
-          const rank = Math.max(1, Math.trunc(Number(entry?.rank ?? 0) || 0));
-          return `${rank}:${name}:${captures}:${kills}:${deaths}`;
-        })
-        .join("|");
-      const rankSignature = `${rankMode}|${rankPayload}`;
-      if (rankSignature !== this._lastLobbyQuickRankSignature) {
-        this.lobbyQuickRankListEl.innerHTML = "";
-        if (rankMode !== "live") {
-          const emptyEl = document.createElement("div");
-          emptyEl.className = "lobby-quick-rank-empty";
-          emptyEl.textContent =
-            rankMode === "offline" ? "서버 연결 후 순위가 표시됩니다." : "GLOBAL 참가 후 순위가 표시됩니다.";
-          this.lobbyQuickRankListEl.appendChild(emptyEl);
-        } else if (ranked.length === 0) {
-          const emptyEl = document.createElement("div");
-          emptyEl.className = "lobby-quick-rank-empty";
-          emptyEl.textContent = "순위 데이터 대기 중...";
-          this.lobbyQuickRankListEl.appendChild(emptyEl);
-        } else {
-          ranked.forEach((entry, index) => {
-            const row = document.createElement("div");
-            row.className = "lobby-quick-rank-row";
-            const rowName = String(entry?.name ?? "")
-              .trim()
-              .toLowerCase();
-            if (rowName && myName && rowName === myName) {
-              row.classList.add("is-self");
-            }
-
-            const posEl = document.createElement("span");
-            posEl.className = "rank-pos";
-            const rank = Math.max(1, Math.trunc(Number(entry?.rank ?? index + 1)));
-            posEl.textContent = `${rank}.`;
-            row.appendChild(posEl);
-
-            const nameEl = document.createElement("span");
-            nameEl.className = "rank-name";
-            nameEl.textContent = String(entry?.name ?? "PLAYER");
-            row.appendChild(nameEl);
-
-            const captures = Math.max(0, Math.trunc(Number(entry?.captures ?? 0)));
-            const kills = Math.max(0, Math.trunc(Number(entry?.kills ?? 0)));
-            const deaths = Math.max(0, Math.trunc(Number(entry?.deaths ?? 0)));
-            const metaEl = document.createElement("span");
-            metaEl.className = "rank-meta";
-            metaEl.textContent = `C${captures} K${kills} D${deaths}`;
-            row.appendChild(metaEl);
-
-            this.lobbyQuickRankListEl.appendChild(row);
-          });
-        }
-        this._lastLobbyQuickRankSignature = rankSignature;
-      }
-    }
+    updateOnlineLobbyQuickPanel(this, ONLINE_LOBBY_UI_CONFIG);
   }
 
   pushLobbyNicknameToServer(name) {
@@ -10959,204 +9250,11 @@ export class Game {
   }
 
   pushSelectedWeaponToServer(weaponId = this.selectedWeaponId, { quiet = true } = {}) {
-    const safeWeaponId = sanitizeWeaponId(weaponId);
-    const socket = this.chat?.socket;
-    if (!socket || !socket.connected || !this.lobbyState.roomCode) {
-      return;
-    }
-
-    socket.emit("player:set-weapon", { weaponId: safeWeaponId }, (response = {}) => {
-      if (!response.ok) {
-        if (!quiet) {
-          this.hud.setStatus(response.error ?? "총기 선택 반영에 실패했습니다.", true, 1);
-        }
-        return;
-      }
-
-      this.applySelectedWeapon(response.weaponId ?? safeWeaponId, {
-        persist: true,
-        syncToServer: false,
-        resetAmmo: false,
-        announce: false
-      });
-      if (response.room) {
-        this.setLobbyState(response.room);
-      }
-      if (!quiet) {
-        const weapon = getWeaponDefinition(response.weaponId ?? safeWeaponId);
-        this.hud.setStatus(`허브 총기 선택: ${weapon.name}`, false, 0.8);
-      }
-    });
+    pushOnlineSelectedWeaponToServer(this, weaponId, { quiet });
   }
 
   setLobbyState(room) {
-    if (!room) {
-      this.applyDailyLeaderboardPayload(null);
-      this.lobbyState.roomCode = null;
-      this.lobbyState.hostId = null;
-      this.lobbyState.players = [];
-      this.lobbyState.selectedTeam = null;
-      this.lobbyState.state = null;
-      this.onlineRoomCount = 0;
-      this.lastRoomStartedAt = 0;
-      this.latestRoomSnapshot = null;
-      this.lastAppliedRoomSnapshotKey = "";
-      this.onlineMapId = ONLINE_MAP_ID;
-      this.pendingRemoteBlocks.clear();
-      this.clearRemotePlayers();
-      this.setOnlineRoundState({
-        ended: false,
-        winnerTeam: null,
-        restartAt: 0,
-        targetScore: CTF_WIN_SCORE,
-        announce: false
-      });
-      this.setTabScoreboardVisible(false);
-      this.mpLobbyEl?.classList.add("hidden");
-      if (this.mpRoomTitleEl) {
-        this.mpRoomTitleEl.textContent = "로비";
-      }
-      if (this.mpRoomSubtitleEl) {
-        this.mpRoomSubtitleEl.textContent = "미접속 상태";
-      }
-      if (this.mpPlayerListEl) {
-        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">플레이어를 기다리는 중...</div>';
-      }
-      this.mpTeamAlphaBtn?.classList.remove("is-active");
-      this.mpTeamBravoBtn?.classList.remove("is-active");
-      if (this.mpTeamAlphaCountEl) {
-        this.mpTeamAlphaCountEl.textContent = "0";
-      }
-      if (this.mpTeamBravoCountEl) {
-        this.mpTeamBravoCountEl.textContent = "0";
-      }
-      this.refreshOnlineStatus();
-      this.updateTeamScoreHud();
-      this.updateFlagInteractUi();
-      this.syncLobby3DPortalState();
-      this.syncLobbyNicknameInputs(this.chat?.playerName ?? "", { force: false });
-      this.updateLobbyQuickPanel();
-      this.syncOnlineHubSummary();
-      return;
-    }
-
-    this.lobbyState.roomCode = String(room.code ?? "");
-    this.lobbyState.hostId = String(room.hostId ?? "");
-    this.lobbyState.players = Array.isArray(room.players) ? room.players : [];
-    this.lobbyState.state = room?.state ?? null;
-    this.onlineRoomCount = this.lobbyState.players.length;
-    const roomMapId = normalizeOnlineMapId(room?.state?.mapId ?? this.onlineMapId);
-    this.onlineMapId = roomMapId;
-    if (!this.isRunning || this.activeMatchMode === "online") {
-      this.mapId = roomMapId;
-    }
-    this.applyDailyLeaderboardPayload(room.dailyLeaderboard ?? null);
-
-    const myId = this.chat?.socket?.id ?? "";
-    const me = this.lobbyState.players.find((player) => player.id === myId) ?? null;
-    this.lobbyState.selectedTeam = me?.team ?? null;
-    this.applyInventorySnapshot(me?.stock ?? null, { quiet: true });
-    if (me?.weaponId) {
-      this.applySelectedWeapon(me.weaponId, {
-        persist: true,
-        syncToServer: false,
-        resetAmmo: false,
-        announce: false
-      });
-    }
-    if (me?.name) {
-      this.chat?.setPlayerName?.(me.name);
-      this.syncLobbyNicknameInputs(me.name, { force: false });
-    }
-
-    if (this.mpRoomTitleEl) {
-      this.mpRoomTitleEl.textContent = `${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;
-    }
-
-    if (this.mpPlayerListEl) {
-      this.mpPlayerListEl.innerHTML = "";
-      for (const player of this.lobbyState.players) {
-        const line = document.createElement("div");
-        line.className = "mp-player-row";
-        if (player.id === myId) {
-          line.classList.add("is-self");
-        }
-
-        const name = document.createElement("span");
-        name.className = "mp-player-name";
-        name.textContent = player.name;
-        line.appendChild(name);
-
-        if (player.id === myId) {
-          const selfTag = document.createElement("span");
-          selfTag.className = "mp-tag self-tag";
-          selfTag.textContent = "나";
-          line.appendChild(selfTag);
-        }
-
-        if (player.team) {
-          const teamTag = document.createElement("span");
-          teamTag.className = `mp-tag team-${String(player.team).toLowerCase()}`;
-          teamTag.textContent = formatTeamLabel(player.team);
-          line.appendChild(teamTag);
-        }
-
-        const weaponTag = document.createElement("span");
-        weaponTag.className = "mp-tag weapon-tag";
-        weaponTag.textContent = getWeaponDefinition(player.weaponId).name;
-        line.appendChild(weaponTag);
-
-        if (player.id === this.lobbyState.hostId) {
-          const hostTag = document.createElement("span");
-          hostTag.className = "mp-tag host-tag";
-          hostTag.textContent = "방장";
-          line.appendChild(hostTag);
-        }
-
-        this.mpPlayerListEl.appendChild(line);
-      }
-
-      if (this.lobbyState.players.length === 0) {
-        this.mpPlayerListEl.innerHTML = '<div class="mp-empty">플레이어를 기다리는 중...</div>';
-      }
-    }
-
-    const alphaCount = this.lobbyState.players.filter((player) => player.team === "alpha").length;
-    const bravoCount = this.lobbyState.players.filter((player) => player.team === "bravo").length;
-    if (this.mpTeamAlphaCountEl) {
-      this.mpTeamAlphaCountEl.textContent = `${alphaCount}`;
-    }
-    if (this.mpTeamBravoCountEl) {
-      this.mpTeamBravoCountEl.textContent = `${bravoCount}`;
-    }
-
-    if (this.mpRoomSubtitleEl) {
-      const mapMeta = this.getCurrentMapDisplayMeta();
-      this.mpRoomSubtitleEl.textContent = `${mapMeta.name} | ${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS}`;
-    }
-
-    this.mpTeamAlphaBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "alpha");
-    this.mpTeamBravoBtn?.classList.toggle("is-active", this.lobbyState.selectedTeam === "bravo");
-    this.mpLobbyEl?.classList.remove("hidden");
-    this.applyOnlineStatePayload(room?.state ?? {}, {
-      showEvent: false
-    });
-    this.syncRemotePlayersFromLobby();
-    if (this.isLobby3DActive() && !this.isRunning) {
-      this.applyLobbyRemotePreviewTargets();
-    }
-    if (this.tabBoardVisible) {
-      this.renderTabScoreboard();
-    }
-    if (this.activeMatchMode === "online" && this.isRunning) {
-      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
-    }
-    this.updateTeamScoreHud();
-    this.updateFlagInteractUi();
-    this.refreshOnlineStatus();
-    this.syncLobby3DPortalState();
-    this.updateLobbyQuickPanel();
-    this.syncOnlineHubSummary();
+    setOnlineLobbyState(this, room, ONLINE_SESSION_CONFIG);
   }
 
   applyLobbyNickname({ source = "menu", syncToServer = false, value = "" } = {}) {
@@ -11332,171 +9430,11 @@ export class Game {
   }
 
   updateLobbyControls() {
-    const { connected, connecting, retrying } = this.getOnlineConnectionUiState();
-    const inRoom = !!this.lobbyState.roomCode;
-    const in3dLobby = this.isLobby3DActive();
-    const isHost = this.isCurrentRoomHost();
-    const canUseHostControls = this.canUseHostControls();
-    const canStart = connected && inRoom;
-    const hostPanelVisible = canUseHostControls && this.menuMode === "online";
-    this.syncOnlineHubSummary();
-
-    if (this.mpCreateBtn) {
-      this.mpCreateBtn.disabled = true;
-      this.mpCreateBtn.classList.add("hidden");
-    }
-    if (this.mpNameInput) {
-      this.mpNameInput.disabled = false;
-      this.mpNameInput.readOnly = false;
-      this.mpNameInput.title = "";
-    }
-    if (this.lobbyQuickNameInput) {
-      this.lobbyQuickNameInput.disabled = false;
-      this.lobbyQuickNameInput.readOnly = false;
-    }
-    if (this.lobbyQuickNameSaveBtn) {
-      this.lobbyQuickNameSaveBtn.disabled = false;
-    }
-    if (this.mpJoinBtn) {
-      this.mpJoinBtn.disabled = true;
-      this.mpJoinBtn.classList.add("hidden");
-    }
-    if (this.mpCodeInput) {
-      this.mpCodeInput.disabled = true;
-      this.mpCodeInput.classList.add("hidden");
-    }
-    if (this.mpStartBtn) {
-      this.mpStartBtn.disabled = !canStart;
-      if (!connected && connecting) {
-        this.mpStartBtn.textContent = retrying ? "서버 재시도 중..." : "서버 연결 중...";
-      } else if (!connected) {
-        this.mpStartBtn.textContent = "서버 오프라인";
-      } else if (!inRoom) {
-        this.mpStartBtn.textContent = "방 자동 참가 중...";
-      } else if (canUseHostControls) {
-        this.mpStartBtn.textContent = "온라인 라운드 시작";
-      } else {
-        this.mpStartBtn.textContent = "온라인 바로 입장";
-      }
-    }
-    if (this.mpLeaveBtn) {
-      this.mpLeaveBtn.disabled = true;
-      this.mpLeaveBtn.classList.add("hidden");
-    }
-    if (this.mpCopyCodeBtn) {
-      this.mpCopyCodeBtn.disabled = true;
-      this.mpCopyCodeBtn.classList.add("hidden");
-    }
-    if (this.mpTeamAlphaBtn) {
-      this.mpTeamAlphaBtn.disabled = !inRoom;
-      this.mpTeamAlphaBtn.classList.add("hidden");
-    }
-    if (this.mpTeamBravoBtn) {
-      this.mpTeamBravoBtn.disabled = !inRoom;
-      this.mpTeamBravoBtn.classList.add("hidden");
-    }
-    if (this.mpRefreshBtn) {
-      this.mpRefreshBtn.disabled = !connected;
-    }
-    if (this.mpEnterLobbyBtn) {
-      if (in3dLobby) {
-        this.mpEnterLobbyBtn.textContent = "대기방 접속 중";
-      } else if (!connected && connecting) {
-        this.mpEnterLobbyBtn.textContent = retrying ? "서버 재시도 중..." : "서버 연결 중...";
-      } else if (!connected) {
-        this.mpEnterLobbyBtn.textContent = "서버 오프라인";
-      } else if (!inRoom) {
-        this.mpEnterLobbyBtn.textContent = "대기방 자동 준비 중...";
-      } else {
-        this.mpEnterLobbyBtn.textContent = "대기방 입장";
-      }
-      this.mpEnterLobbyBtn.disabled = !connected && !in3dLobby;
-    }
-    if (this.mpOpenTrainingBtn) {
-      this.mpOpenTrainingBtn.disabled = false;
-    }
-    if (this.mpOpenSimulacBtn) {
-      this.mpOpenSimulacBtn.disabled = false;
-    }
-    if (this.hostCommandPanelEl) {
-      this.hostCommandPanelEl.classList.toggle("hidden", !hostPanelVisible);
-      this.hostCommandPanelEl.toggleAttribute("hidden", !hostPanelVisible);
-      this.hostCommandPanelEl.setAttribute("aria-hidden", hostPanelVisible ? "false" : "true");
-    }
-    this.startLayoutEl?.classList.toggle("host-panel-hidden", !hostPanelVisible);
-    if (this.hostCommandStateEl) {
-      if (!inRoom) {
-        this.hostCommandStateEl.textContent = "방 자동 참가 중";
-      } else if (!canUseHostControls) {
-        this.hostCommandStateEl.textContent = "방장 전용";
-      } else if (!connected && connecting) {
-        this.hostCommandStateEl.textContent = retrying ? "재연결 중" : "연결 중";
-      } else if (!connected) {
-        this.hostCommandStateEl.textContent = "오프라인";
-      } else {
-        const mapMeta = MAP_DISPLAY_META[this.onlineMapId] ?? this.getCurrentMapDisplayMeta();
-        this.hostCommandStateEl.textContent = `현재 ${mapMeta.name}`;
-      }
-    }
-    if (this.hostStartForestBtn) {
-      this.hostStartForestBtn.disabled = !connected || !inRoom || !canUseHostControls;
-    }
-    if (this.hostStartCityBtn) {
-      this.hostStartCityBtn.disabled = !connected || !inRoom || !canUseHostControls;
-    }
-    if (this.hostOpenLobbyBtn) {
-      this.hostOpenLobbyBtn.disabled = !canUseHostControls || (!connected && !in3dLobby);
-    }
-    if (this.hostOpenTrainingBtn) {
-      this.hostOpenTrainingBtn.disabled = !canUseHostControls;
-    }
-    if (this.hostOpenSimulacBtn) {
-      this.hostOpenSimulacBtn.disabled = !canUseHostControls;
-    }
-    this.syncLobby3DPortalState();
-    this.updateLobbyQuickPanel();
+    updateOnlineLobbyControls(this, ONLINE_LOBBY_UI_CONFIG);
   }
 
   refreshOnlineStatus() {
-    if (!this.mpStatusEl) {
-      this.updateLobbyControls();
-      return;
-    }
-
-    if (!this.chat) {
-      this.mpStatusEl.textContent = "서버: 채팅 모듈 없음";
-      this.mpStatusEl.dataset.state = "offline";
-      this.updateLobbyControls();
-      return;
-    }
-
-    const { connected, connecting, retrying } = this.getOnlineConnectionUiState();
-
-    if (connecting) {
-      this.mpStatusEl.textContent = retrying ? "서버: 오프라인 · 재시도 중..." : "서버: 연결 중...";
-      this.mpStatusEl.dataset.state = "offline";
-      this.updateLobbyControls();
-      return;
-    }
-
-    if (!connected) {
-      this.mpStatusEl.textContent = "서버: 오프라인";
-      this.mpStatusEl.dataset.state = "offline";
-      this.updateLobbyControls();
-      return;
-    }
-
-    if (this.lobbyState.roomCode) {
-      this.mpStatusEl.textContent = `서버: 온라인 | ${this.lobbyState.roomCode} (${this.lobbyState.players.length}/${ONLINE_MAX_PLAYERS})`;
-      this.mpStatusEl.dataset.state = "online";
-      this.updateLobbyControls();
-      return;
-    }
-
-    this.mpStatusEl.textContent = "서버: 온라인 | 방 자동 참가 중...";
-    this.mpStatusEl.dataset.state = "online";
-    this.joinDefaultRoom();
-    this.updateLobbyControls();
+    refreshOnlineLobbyStatus(this, ONLINE_LOBBY_UI_CONFIG);
   }
 }
 

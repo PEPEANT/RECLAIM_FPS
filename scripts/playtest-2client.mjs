@@ -7,17 +7,6 @@ import { getNextOnlineMapId, getOnlineMapConfig } from "../src/shared/onlineMapR
 const HOST = "127.0.0.1";
 const START_PORT = 3301;
 const END_PORT = 5300;
-const RUN_COORD_SEED = Math.trunc(Date.now() % 97) + Math.floor(Math.random() * 53) + 19;
-const RUN_BASE_X = Math.max(-210, Math.min(210, 24 + RUN_COORD_SEED));
-const RUN_BASE_Z = Math.max(-210, Math.min(210, -24 - RUN_COORD_SEED));
-const RUN_BLOCK_Y = 96;
-
-function makeRunCoord(dx, dz) {
-  return {
-    x: RUN_BASE_X + Math.trunc(dx),
-    z: RUN_BASE_Z + Math.trunc(dz)
-  };
-}
 
 function assert(condition, message) {
   if (!condition) {
@@ -60,15 +49,13 @@ function emitAck(socket, event, payload = undefined) {
 }
 
 function hasPlacedBlock(snapshotPayload, x, y, z) {
-  const list = Array.isArray(snapshotPayload?.snapshot?.blocks)
-    ? snapshotPayload.snapshot.blocks
-    : [];
+  const list = Array.isArray(snapshotPayload?.snapshot?.blocks) ? snapshotPayload.snapshot.blocks : [];
   return list.some(
     (entry) =>
       entry?.action === "place" &&
-      Number(entry?.x) === x &&
-      Number(entry?.y) === y &&
-      Number(entry?.z) === z
+      Number(entry?.x) === Number(x) &&
+      Number(entry?.y) === Number(y) &&
+      Number(entry?.z) === Number(z)
   );
 }
 
@@ -78,6 +65,12 @@ function readMyTeam(room, socketId) {
   return me?.team ?? null;
 }
 
+function readPlayerState(room, socketId) {
+  const players = Array.isArray(room?.players) ? room.players : [];
+  const me = players.find((player) => String(player?.id ?? "") === String(socketId));
+  return me?.state && typeof me.state === "object" ? me.state : null;
+}
+
 function readStockValue(stockPayload, typeId) {
   const parsedTypeId = Math.trunc(Number(typeId) || 0);
   if (!parsedTypeId) {
@@ -85,6 +78,100 @@ function readStockValue(stockPayload, typeId) {
   }
   const value = Number(stockPayload?.[parsedTypeId] ?? stockPayload?.[String(parsedTypeId)] ?? 0);
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function getYawPitchTowards(from, to) {
+  const dx = Number(to?.x ?? 0) - Number(from?.x ?? 0);
+  const dy = Number(to?.y ?? 0) - Number(from?.y ?? 0);
+  const dz = Number(to?.z ?? 0) - Number(from?.z ?? 0);
+  const horizontal = Math.hypot(dx, dz);
+  return {
+    yaw: Math.atan2(-dx, -dz),
+    pitch: Math.atan2(dy, Math.max(0.0001, horizontal))
+  };
+}
+
+async function movePlayerTowards(socket, fromState, toState, { stepDistance = 2.4, delayMs = 240 } = {}) {
+  let current = {
+    x: Number(fromState?.x ?? 0),
+    y: Number(fromState?.y ?? 1.75),
+    z: Number(fromState?.z ?? 0)
+  };
+  const target = {
+    x: Number(toState?.x ?? current.x),
+    y: Number(toState?.y ?? current.y),
+    z: Number(toState?.z ?? current.z)
+  };
+  let distance = Math.hypot(target.x - current.x, target.y - current.y, target.z - current.z);
+
+  while (distance > stepDistance) {
+    const scale = stepDistance / Math.max(0.0001, distance);
+    const next = {
+      x: current.x + (target.x - current.x) * scale,
+      y: current.y + (target.y - current.y) * scale,
+      z: current.z + (target.z - current.z) * scale
+    };
+    const aim = getYawPitchTowards(current, next);
+    socket.emit("player:sync", { ...next, ...aim });
+    current = next;
+    await sleep(delayMs);
+    distance = Math.hypot(target.x - current.x, target.y - current.y, target.z - current.z);
+  }
+
+  const finalAim = getYawPitchTowards(current, target);
+  socket.emit("player:sync", { ...target, ...finalAim });
+  await sleep(delayMs);
+  return { ...target, ...finalAim };
+}
+
+function getReachableBlockFromState(state, { dx = 2, dz = 2, dy = 2, typeId = 6 } = {}) {
+  return {
+    x: Math.round(Number(state?.x ?? 0)) + Math.trunc(dx),
+    y: Math.max(4, Math.round(Number(state?.y ?? 1.75)) + Math.trunc(dy)),
+    z: Math.round(Number(state?.z ?? 0)) + Math.trunc(dz),
+    typeId
+  };
+}
+
+function getSharedReachableBlock(stateA, stateB, { dy = 2, typeId = 2 } = {}) {
+  return {
+    x: Math.round((Number(stateA?.x ?? 0) + Number(stateB?.x ?? 0)) / 2),
+    y: Math.max(
+      4,
+      Math.round((Number(stateA?.y ?? 1.75) + Number(stateB?.y ?? 1.75)) / 2) + Math.trunc(dy)
+    ),
+    z: Math.round((Number(stateA?.z ?? 0) + Number(stateB?.z ?? 0)) / 2),
+    typeId
+  };
+}
+
+function buildReachableBlockPositions(state, count, typeId = 6) {
+  const positions = [];
+  const baseX = Math.round(Number(state?.x ?? 0));
+  const baseY = 8;
+  const baseZ = Math.round(Number(state?.z ?? 0));
+  const outwardSignX = baseX >= 0 ? 1 : -1;
+
+  for (let radius = 4; positions.length < count && radius <= 8; radius += 1) {
+    const x = baseX + outwardSignX * radius * 2;
+    const dzOrder = [0];
+    for (let offset = 1; offset <= radius; offset += 1) {
+      dzOrder.push(offset, -offset);
+    }
+    for (const dz of dzOrder) {
+      if (positions.length >= count) {
+        break;
+      }
+      positions.push({
+        x,
+        y: baseY,
+        z: baseZ + dz * 2,
+        typeId
+      });
+    }
+  }
+
+  return positions;
 }
 
 async function createServerProcess() {
@@ -110,25 +197,24 @@ async function createServerProcess() {
   });
 
   await waitFor(() => ready || server.exitCode !== null, 7000);
-  assert(server.exitCode === null && ready, `서버 기동 실패\n${bootLog}`);
+  assert(server.exitCode === null && ready, `server boot failed\n${bootLog}`);
 
   return { server, port };
 }
 
 function connectClient(url) {
-  const socket = io(url, {
+  return io(url, {
     transports: ["websocket"],
     reconnection: true,
     reconnectionAttempts: 8,
     reconnectionDelay: 120,
     timeout: 5000
   });
-  return socket;
 }
 
 async function waitConnected(socket, name) {
   await waitFor(() => socket.connected, 6000);
-  assert(socket.connected, `${name} 연결 실패`);
+  assert(socket.connected, `${name} failed to connect`);
 }
 
 async function scenarioReconnectAndJoinInProgress(url) {
@@ -143,56 +229,66 @@ async function scenarioReconnectAndJoinInProgress(url) {
       emitAck(b, "room:quick-join", { name: "PLAY_B" })
     ]);
 
-    assert(joinA?.ok === true && joinB?.ok === true, "A/B room join 실패");
-    assert(readMyTeam(joinA?.room, a.id), "A 자동 팀 배정 실패");
-    assert(readMyTeam(joinB?.room, b.id), "B 자동 팀 배정 실패");
+    assert(joinA?.ok === true && joinB?.ok === true, "reconnect scenario join failed");
+    assert(readMyTeam(joinA?.room, a.id), "A team assignment missing");
+    assert(readMyTeam(joinB?.room, b.id), "B team assignment missing");
 
-    const basePos = makeRunCoord(1, 1);
-    const latePos = makeRunCoord(2, 1);
-    const baseBlock = { x: basePos.x, y: RUN_BLOCK_Y, z: basePos.z, typeId: 3 };
-    const lateBlock = { x: latePos.x, y: RUN_BLOCK_Y, z: latePos.z, typeId: 4 };
+    const stateA = readPlayerState(joinA?.room, a.id);
+    const stateB = readPlayerState(joinB?.room, b.id);
+    assert(stateA && stateB, "quick-join player state missing");
 
-    a.emit("block:update", { action: "place", ...baseBlock });
-    await sleep(120);
+    const movedStateA = await movePlayerTowards(a, stateA, {
+      x: Number(stateA.x ?? 0) + (Number(stateA.x ?? 0) >= 0 ? 8 : -8),
+      y: Number(stateA.y ?? 1.75),
+      z: Number(stateA.z ?? 0)
+    });
+
+    const baseBlock = getReachableBlockFromState(movedStateA, {
+      dx: Number(movedStateA.x ?? 0) >= 0 ? 4 : -4,
+      dz: 2,
+      typeId: 3
+    });
+    const movedStateB = await movePlayerTowards(b, stateB, {
+      x: Number(stateB.x ?? 0) + (Number(stateB.x ?? 0) >= 0 ? 8 : -8),
+      y: Number(stateB.y ?? 1.75),
+      z: Number(stateB.z ?? 0)
+    });
+    const lateBlock = getReachableBlockFromState(movedStateB, {
+      dx: Number(movedStateB.x ?? 0) >= 0 ? 4 : -4,
+      dz: 2,
+      typeId: 4
+    });
+
+    const basePlaceAck = await emitAck(a, "block:update", { action: "place", ...baseBlock });
+    assert(basePlaceAck?.ok === true, `base block place failed: ${JSON.stringify(basePlaceAck)}`);
 
     a.disconnect();
     await sleep(120);
-    b.emit("block:update", { action: "place", ...lateBlock });
-    await sleep(120);
+
+    const latePlaceAck = await emitAck(b, "block:update", { action: "place", ...lateBlock });
+    assert(latePlaceAck?.ok === true, `late block place failed: ${JSON.stringify(latePlaceAck)}`);
 
     const aRe = connectClient(url);
     opened.push(aRe);
     await waitConnected(aRe, "A-reconnect");
     const joinRe = await emitAck(aRe, "room:quick-join", { name: "PLAY_A" });
-    assert(joinRe?.ok === true, "A 재접속 join 실패");
+    assert(joinRe?.ok === true, "A reconnect join failed");
 
     const snapRe = await emitAck(aRe, "room:request-snapshot");
-    assert(snapRe?.ok === true, "A 재접속 snapshot 실패");
-    assert(
-      hasPlacedBlock(snapRe, baseBlock.x, baseBlock.y, baseBlock.z),
-      "재접속 스냅샷: 기존 블록 누락"
-    );
-    assert(
-      hasPlacedBlock(snapRe, lateBlock.x, lateBlock.y, lateBlock.z),
-      "재접속 스냅샷: 접속 중단 기간 블록 누락"
-    );
+    assert(snapRe?.ok === true, "A reconnect snapshot failed");
+    assert(hasPlacedBlock(snapRe, baseBlock.x, baseBlock.y, baseBlock.z), "reconnect snapshot missing base block");
+    assert(hasPlacedBlock(snapRe, lateBlock.x, lateBlock.y, lateBlock.z), "reconnect snapshot missing late block");
 
     const c = connectClient(url);
     opened.push(c);
     await waitConnected(c, "C-mid-join");
     const joinC = await emitAck(c, "room:quick-join", { name: "PLAY_C" });
-    assert(joinC?.ok === true, "C 중간합류 join 실패");
+    assert(joinC?.ok === true, "C mid-join failed");
 
     const snapC = await emitAck(c, "room:request-snapshot");
-    assert(snapC?.ok === true, "C 중간합류 snapshot 실패");
-    assert(
-      hasPlacedBlock(snapC, baseBlock.x, baseBlock.y, baseBlock.z),
-      "중간합류 스냅샷: 기존 블록 누락"
-    );
-    assert(
-      hasPlacedBlock(snapC, lateBlock.x, lateBlock.y, lateBlock.z),
-      "중간합류 스냅샷: 최신 블록 누락"
-    );
+    assert(snapC?.ok === true, "C snapshot failed");
+    assert(hasPlacedBlock(snapC, baseBlock.x, baseBlock.y, baseBlock.z), "mid-join snapshot missing base block");
+    assert(hasPlacedBlock(snapC, lateBlock.x, lateBlock.y, lateBlock.z), "mid-join snapshot missing late block");
   } finally {
     for (const socket of opened) {
       socket.disconnect();
@@ -211,39 +307,71 @@ async function scenarioConcurrentBuild(url) {
       emitAck(a, "room:quick-join", { name: "BUILD_A" }),
       emitAck(b, "room:quick-join", { name: "BUILD_B" })
     ]);
-    assert(joinA?.ok === true && joinB?.ok === true, "동시건설 join 실패");
+    assert(joinA?.ok === true && joinB?.ok === true, "concurrent build join failed");
 
-    const p1Pos = makeRunCoord(11, 11);
-    const p2Pos = makeRunCoord(12, 11);
-    const samePos = makeRunCoord(13, 11);
-    const p1 = { x: p1Pos.x, y: RUN_BLOCK_Y, z: p1Pos.z, typeId: 5 };
-    const p2 = { x: p2Pos.x, y: RUN_BLOCK_Y, z: p2Pos.z, typeId: 6 };
-    const same = { x: samePos.x, y: RUN_BLOCK_Y, z: samePos.z, typeId: 2 };
+    const stateA = readPlayerState(joinA?.room, a.id);
+    const stateB = readPlayerState(joinB?.room, b.id);
+    assert(stateA && stateB, "concurrent build state missing");
 
-    a.emit("block:update", { action: "place", ...p1 });
-    b.emit("block:update", { action: "place", ...p2 });
+    const movedStateA = await movePlayerTowards(a, stateA, {
+      x: Number(stateA.x ?? 0) + (Number(stateA.x ?? 0) >= 0 ? 8 : -8),
+      y: Number(stateA.y ?? 1.75),
+      z: Number(stateA.z ?? 0)
+    });
+    const movedStateB = await movePlayerTowards(b, stateB, {
+      x: Number(movedStateA.x ?? 0) + 6,
+      y: Number(movedStateA.y ?? 1.75),
+      z: Number(movedStateA.z ?? 0)
+    });
 
-    b.emit("block:update", { action: "place", ...same });
-    a.emit("block:update", { action: "remove", x: same.x, y: same.y, z: same.z });
-    await sleep(220);
+    const p1 = getReachableBlockFromState(movedStateA, {
+      dx: Number(movedStateA.x ?? 0) >= 0 ? 4 : -4,
+      dz: 2,
+      typeId: 5
+    });
+    const p2 = getReachableBlockFromState(movedStateB, {
+      dx: Number(movedStateB.x ?? 0) >= 0 ? 6 : -6,
+      dz: 2,
+      typeId: 6
+    });
+    const shared = getReachableBlockFromState(movedStateA, {
+      dx: Number(movedStateA.x ?? 0) >= 0 ? 6 : -6,
+      dz: 0,
+      typeId: 2
+    });
+
+    const p1Ack = await emitAck(a, "block:update", { action: "place", ...p1 });
+    const p2Ack = await emitAck(b, "block:update", { action: "place", ...p2 });
+    assert(p1Ack?.ok === true, `p1 place failed: ${JSON.stringify(p1Ack)}`);
+    assert(p2Ack?.ok === true, `p2 place failed: ${JSON.stringify(p2Ack)}`);
+
+    const sharedPlaceAck = await emitAck(b, "block:update", { action: "place", ...shared });
+    const sharedRemoveAck = await emitAck(a, "block:update", {
+      action: "remove",
+      x: shared.x,
+      y: shared.y,
+      z: shared.z
+    });
+    assert(sharedPlaceAck?.ok === true, `shared place failed: ${JSON.stringify(sharedPlaceAck)}`);
+    assert(sharedRemoveAck?.ok === true, `shared remove failed: ${JSON.stringify(sharedRemoveAck)}`);
 
     const [snapA, snapB] = await Promise.all([
       emitAck(a, "room:request-snapshot"),
       emitAck(b, "room:request-snapshot")
     ]);
-    assert(snapA?.ok === true && snapB?.ok === true, "동시건설 snapshot 실패");
+    assert(snapA?.ok === true && snapB?.ok === true, "concurrent build snapshot failed");
 
     const blocksA = Array.isArray(snapA?.snapshot?.blocks) ? snapA.snapshot.blocks : [];
     const blocksB = Array.isArray(snapB?.snapshot?.blocks) ? snapB.snapshot.blocks : [];
-
     const sortKey = (entry) =>
       `${entry?.action ?? ""}:${entry?.x ?? 0}:${entry?.y ?? 0}:${entry?.z ?? 0}:${entry?.typeId ?? 0}`;
-    const normA = blocksA.map(sortKey).sort().join("|");
-    const normB = blocksB.map(sortKey).sort().join("|");
 
-    assert(normA === normB, "동시건설 후 A/B 스냅샷 불일치");
-    assert(hasPlacedBlock(snapA, p1.x, p1.y, p1.z), "동시건설 결과: p1 누락");
-    assert(hasPlacedBlock(snapA, p2.x, p2.y, p2.z), "동시건설 결과: p2 누락");
+    assert(
+      blocksA.map(sortKey).sort().join("|") === blocksB.map(sortKey).sort().join("|"),
+      "A/B snapshot mismatch after concurrent build"
+    );
+    assert(hasPlacedBlock(snapA, p1.x, p1.y, p1.z), "p1 missing from snapshot");
+    assert(hasPlacedBlock(snapA, p2.x, p2.y, p2.z), "p2 missing from snapshot");
   } finally {
     a.disconnect();
     b.disconnect();
@@ -254,25 +382,35 @@ async function scenarioConcurrentBuild(url) {
 async function scenarioCombatAndCtfInteraction(url) {
   const a = connectClient(url);
   const b = connectClient(url);
+  let latestRoomA = null;
+  let latestRoomB = null;
 
   try {
+    a.on("room:update", (room = {}) => {
+      latestRoomA = room;
+    });
+    b.on("room:update", (room = {}) => {
+      latestRoomB = room;
+    });
+
     await Promise.all([waitConnected(a, "A"), waitConnected(b, "B")]);
     const [joinA, joinB] = await Promise.all([
       emitAck(a, "room:quick-join", { name: "PVP_A" }),
       emitAck(b, "room:quick-join", { name: "PVP_B" })
     ]);
-    assert(joinA?.ok === true && joinB?.ok === true, "전투 시나리오 join 실패");
+    assert(joinA?.ok === true && joinB?.ok === true, "combat scenario join failed");
+    const weaponAck = await emitAck(a, "player:set-weapon", { weaponId: "spas12" });
+    assert(weaponAck?.ok === true, `combat scenario weapon select failed: ${JSON.stringify(weaponAck)}`);
 
     const hostId = String(joinA?.room?.hostId ?? joinB?.room?.hostId ?? "");
     const starter = hostId && hostId === b.id ? b : a;
     const startAck = await emitAck(starter, "room:start");
-    assert(startAck?.ok === true, "전투 시나리오 room:start 실패");
+    assert(startAck?.ok === true, "combat scenario room:start failed");
 
     const teamA = await emitAck(a, "room:set-team", { team: "alpha" });
     const teamB = await emitAck(b, "room:set-team", { team: "bravo" });
-    assert(teamA?.ok === true && teamB?.ok === true, "전투 시나리오 팀 배정 실패");
+    assert(teamA?.ok === true && teamB?.ok === true, "combat scenario team select failed");
 
-    let sawPvpDamage = false;
     let sawBlockSync = false;
     let pickupCount = 0;
     let captureCount = 0;
@@ -280,25 +418,19 @@ async function scenarioCombatAndCtfInteraction(url) {
     let matchEndRestartAt = 0;
     let roomStartedCount = 0;
     let latestRestartMapId = "";
-
-    a.on("pvp:damage", (payload = {}) => {
-      if (String(payload.attackerId ?? "") === String(a.id) && String(payload.victimId ?? "") === String(b.id)) {
-        sawPvpDamage = true;
-      }
-    });
+    let combatBlockPos = null;
 
     b.on("block:update", (payload = {}) => {
       if (
         String(payload.id ?? "") === String(a.id) &&
         payload.action === "place" &&
-        Number(payload.x) === makeRunCoord(-8, -8).x &&
-        Number(payload.y) === RUN_BLOCK_Y &&
-        Number(payload.z) === makeRunCoord(-8, -8).z
+        Number(payload.x) === Number(combatBlockPos?.x) &&
+        Number(payload.y) === Number(combatBlockPos?.y) &&
+        Number(payload.z) === Number(combatBlockPos?.z)
       ) {
         sawBlockSync = true;
       }
     });
-
     a.on("ctf:update", (payload = {}) => {
       const type = String(payload?.event?.type ?? "");
       if (type === "pickup") {
@@ -307,10 +439,8 @@ async function scenarioCombatAndCtfInteraction(url) {
         captureCount += 1;
       }
     });
-
     a.on("match:end", (payload = {}) => {
-      const winnerTeam = String(payload?.winnerTeam ?? "");
-      if (winnerTeam === "alpha") {
+      if (String(payload?.winnerTeam ?? "") === "alpha") {
         sawMatchEnd = true;
         matchEndRestartAt = Math.max(0, Number(payload?.restartAt ?? 0));
       }
@@ -324,67 +454,117 @@ async function scenarioCombatAndCtfInteraction(url) {
       latestRestartMapId = String(payload?.mapId ?? "");
     });
 
-    const combatBlockPos = makeRunCoord(-8, -8);
-    a.emit("block:update", {
-      action: "place",
-      x: combatBlockPos.x,
-      y: RUN_BLOCK_Y,
-      z: combatBlockPos.z,
-      typeId: 6
-    });
-    await waitFor(() => sawBlockSync, 4000);
+    await waitFor(() => !!readPlayerState(latestRoomA, a.id) && !!readPlayerState(latestRoomB, b.id), 5000);
+    let aState = readPlayerState(latestRoomA, a.id);
+    let bState = readPlayerState(latestRoomB, b.id);
+    assert(aState && bState, "combat player state missing");
 
-    for (let i = 0; i < 12 && !sawPvpDamage; i += 1) {
-      a.emit("pvp:shoot", { targetId: b.id });
-      await sleep(220);
-    }
-    await waitFor(() => sawPvpDamage, 4000);
-
-    const bSame = await emitAck(b, "room:set-team", { team: "alpha" });
-    assert(bSame?.ok === true, "동일 팀 전환 실패");
-    sawPvpDamage = false;
-    a.emit("pvp:shoot", { targetId: b.id });
-    await sleep(500);
-    assert(sawPvpDamage === false, "동일 팀에도 PvP 데미지 발생");
-
-    const bBack = await emitAck(b, "room:set-team", { team: "bravo" });
     const ctfSnapshot = await emitAck(a, "room:request-snapshot");
     const roundMap = getOnlineMapConfig(ctfSnapshot?.snapshot?.mapId);
+    const mid = roundMap?.mid ?? { x: 0, z: 0 };
     const alphaHome = roundMap.alphaBase ?? { x: -35, y: 0, z: 0 };
     const bravoFlagAt = ctfSnapshot?.snapshot?.flags?.bravo?.at ?? roundMap.bravoFlag ?? { x: 44, y: 0, z: 0 };
-    assert(bBack?.ok === true, "적 팀 복귀 실패");
+    const duelA = {
+      x: Number(alphaHome.x ?? 0) + (Number(mid.x ?? 0) - Number(alphaHome.x ?? 0)) * 0.55,
+      y: 1.75,
+      z: Number(alphaHome.z ?? 0) + (Number(mid.z ?? 0) - Number(alphaHome.z ?? 0)) * 0.55
+    };
+    aState = await movePlayerTowards(a, aState, duelA);
+    const duelB = {
+      x: Number(aState.x ?? 0) + 6,
+      y: Number(aState.y ?? 1.75),
+      z: Number(aState.z ?? 0)
+    };
+    bState = await movePlayerTowards(b, bState, duelB);
+
+    combatBlockPos = getReachableBlockFromState(aState, { dx: 10, dz: 2, typeId: 6 });
+    const combatBlockAck = await emitAck(a, "block:update", { action: "place", ...combatBlockPos });
+    assert(combatBlockAck?.ok === true, `combat block place failed: ${JSON.stringify(combatBlockAck)}`);
+    await waitFor(() => sawBlockSync, 4000);
+
+    const duelAim = getYawPitchTowards(aState, bState);
+    a.emit("player:sync", { x: aState.x, y: aState.y, z: aState.z, ...duelAim });
+    await sleep(260);
+    console.log("[playtest-2client] combat: duel setup complete");
+    await sleep(2000);
+    let hitAck = null;
+    for (let i = 0; i < 12; i += 1) {
+      hitAck = await emitAck(a, "pvp:shoot", { targetId: b.id });
+      if (hitAck?.hit) {
+        break;
+      }
+      if (hitAck?.immune) {
+        await sleep(400);
+      }
+      await sleep(220);
+    }
+    assert(hitAck?.hit === true, `expected baseline pvp hit: ${JSON.stringify(hitAck)}`);
+    console.log("[playtest-2client] combat: pvp hit confirmed");
+
+    const bSame = await emitAck(b, "room:set-team", { team: "alpha" });
+    assert(bSame?.ok === true, "friendly-fire team swap failed");
+    await sleep(900);
+    a.emit("player:sync", { x: aState.x, y: aState.y, z: aState.z, ...duelAim });
+    await sleep(260);
+    const friendlyFireAck = await emitAck(a, "pvp:shoot", { targetId: b.id });
+    assert(friendlyFireAck?.hit === false, `friendly-fire should not hit: ${JSON.stringify(friendlyFireAck)}`);
+    console.log("[playtest-2client] combat: friendly fire blocked");
+
+    const bBack = await emitAck(b, "room:set-team", { team: "bravo" });
+    assert(bBack?.ok === true, "team restore failed");
 
     for (let i = 0; i < CTF_WIN_SCORE; i += 1) {
-      a.emit("player:sync", { x: bravoFlagAt.x, y: 1.75, z: bravoFlagAt.z, yaw: 0, pitch: 0 });
-      await sleep(80);
+      aState = await movePlayerTowards(a, aState, { x: bravoFlagAt.x, y: 1.75, z: bravoFlagAt.z });
       const pickupAck = await emitAck(a, "ctf:interact");
-      assert(pickupAck?.ok === true, `ctf:interact 실패 (#${i + 1})`);
+      assert(pickupAck?.ok === true, `ctf interact failed (#${i + 1})`);
       await waitFor(() => pickupCount >= i + 1, 4500);
+      console.log(`[playtest-2client] combat: pickup ${i + 1}/${CTF_WIN_SCORE}`);
+
       if (i === 0) {
-        sawPvpDamage = false;
+        bState = await movePlayerTowards(b, bState, {
+          x: bravoFlagAt.x - 7,
+          y: 1.75,
+          z: bravoFlagAt.z
+        });
+        const carryAim = getYawPitchTowards(aState, bState);
+        a.emit("player:sync", { x: aState.x, y: aState.y, z: aState.z, ...carryAim });
+        await sleep(220);
+        let carrierShotAck = null;
         for (let shot = 0; shot < 4; shot += 1) {
-          a.emit("pvp:shoot", { targetId: b.id });
+          carrierShotAck = await emitAck(a, "pvp:shoot", { targetId: b.id });
+          if (carrierShotAck?.ok === false) {
+            break;
+          }
           await sleep(120);
         }
-        await sleep(320);
-        assert(sawPvpDamage === false, "깃발 운반 중에도 사격 피해가 적용됨");
+        assert(
+          carrierShotAck?.ok === false &&
+            String(carrierShotAck?.error ?? "").includes("깃발 운반 중에는 사격할 수 없습니다"),
+          `flag carrier shot should be rejected: ${JSON.stringify(carrierShotAck)}`
+        );
+        console.log("[playtest-2client] combat: carrier damage blocked");
       }
-      a.emit("player:sync", { x: alphaHome.x, y: 1.75, z: alphaHome.z, yaw: 0, pitch: 0 });
+
+      aState = await movePlayerTowards(a, aState, { x: alphaHome.x, y: 1.75, z: alphaHome.z });
       await waitFor(() => captureCount >= i + 1, 4500);
       await sleep(80);
+      console.log(`[playtest-2client] combat: capture ${i + 1}/${CTF_WIN_SCORE}`);
     }
+
     await waitFor(() => sawMatchEnd, 4500);
+    console.log("[playtest-2client] combat: match end observed");
     const expectedNextMapId = getNextOnlineMapId(ctfSnapshot?.snapshot?.mapId);
     assert(matchEndRestartAt > Date.now(), "match:end restartAt missing or stale");
     await waitFor(() => roomStartedCount >= 2, 12000);
     assert(
       latestRestartMapId === expectedNextMapId,
-      `Expected next map ${expectedNextMapId}, got ${latestRestartMapId || "none"}`
+      `expected next map ${expectedNextMapId}, got ${latestRestartMapId || "none"}`
     );
+
     const rotatedSnapshot = await emitAck(a, "room:request-snapshot");
     assert(
       rotatedSnapshot?.snapshot?.mapId === expectedNextMapId,
-      `Expected rotated snapshot map ${expectedNextMapId}, got ${JSON.stringify(rotatedSnapshot?.snapshot?.mapId)}`
+      `expected rotated snapshot map ${expectedNextMapId}, got ${JSON.stringify(rotatedSnapshot?.snapshot?.mapId)}`
     );
   } finally {
     a.disconnect();
@@ -403,67 +583,53 @@ async function scenarioBlockStockAuthoritative(url) {
       emitAck(a, "room:quick-join", { name: "STOCK_A" }),
       emitAck(b, "room:quick-join", { name: "STOCK_B" })
     ]);
-    assert(joinA?.ok === true && joinB?.ok === true, "재고 시나리오 join 실패");
+    assert(joinA?.ok === true && joinB?.ok === true, "stock scenario join failed");
 
     const baseTypeId = 6;
     const baselineSnapshot = await emitAck(a, "room:request-snapshot");
-    assert(baselineSnapshot?.ok === true, "재고 시나리오 baseline snapshot 실패");
+    assert(baselineSnapshot?.ok === true, "stock baseline snapshot failed");
     const baselineStock = readStockValue(baselineSnapshot?.snapshot?.stock, baseTypeId);
-    assert(baselineStock > 0, `초기 재고가 0입니다 (type=${baseTypeId})`);
+    assert(baselineStock > 0, `initial stock is zero for type=${baseTypeId}`);
 
-    const baseX = -200 + (RUN_COORD_SEED % 20);
-    const baseY = RUN_BLOCK_Y;
-    const baseZ = 70 + (RUN_COORD_SEED % 18);
+    const stateA = readPlayerState(joinA?.room, a.id);
+    assert(stateA, "stock scenario player state missing");
+    const blockPositions = buildReachableBlockPositions(stateA, baselineStock + 6, baseTypeId);
+    assert(blockPositions.length >= baselineStock + 2, "not enough reachable stock positions generated");
+    const firstBlock = blockPositions[0];
 
-    const placeAck = await emitAck(a, "block:update", {
-      action: "place",
-      x: baseX,
-      y: baseY,
-      z: baseZ,
-      typeId: baseTypeId
-    });
-    assert(placeAck?.ok === true, "재고 시나리오 설치 ACK 실패");
+    const placeAck = await emitAck(a, "block:update", { action: "place", ...firstBlock });
+    assert(placeAck?.ok === true, "stock place ack failed");
     assert(
       readStockValue(placeAck?.stock, baseTypeId) === baselineStock - 1,
-      "설치 후 재고 감소가 반영되지 않았습니다"
+      "stock did not decrease after place"
     );
 
     const removeAck = await emitAck(a, "block:update", {
       action: "remove",
-      x: baseX,
-      y: baseY,
-      z: baseZ,
+      x: firstBlock.x,
+      y: firstBlock.y,
+      z: firstBlock.z,
       typeId: baseTypeId
     });
-    assert(removeAck?.ok === true, "재고 시나리오 제거 ACK 실패");
+    assert(removeAck?.ok === true, "stock remove ack failed");
     assert(
       readStockValue(removeAck?.stock, baseTypeId) === baselineStock,
-      "제거 후 재고 회수가 반영되지 않았습니다"
+      "stock did not recover after remove"
     );
 
     let latestStock = baselineStock;
     for (let i = 0; i < baselineStock; i += 1) {
-      const drainAck = await emitAck(a, "block:update", {
-        action: "place",
-        x: baseX + 1 + i,
-        y: baseY,
-        z: baseZ,
-        typeId: baseTypeId
-      });
-      assert(drainAck?.ok === true, `재고 소진 설치 실패 (#${i + 1})`);
+      const block = blockPositions[i + 1];
+      const drainAck = await emitAck(a, "block:update", { action: "place", ...block });
+      assert(drainAck?.ok === true, `stock drain place failed (#${i + 1})`);
       latestStock = readStockValue(drainAck?.stock, baseTypeId);
     }
-    assert(latestStock === 0, `재고 소진 후 수량이 0이 아님 (${latestStock})`);
+    assert(latestStock === 0, `expected stock to reach zero, got ${latestStock}`);
 
-    const denied = await emitAck(a, "block:update", {
-      action: "place",
-      x: baseX + baselineStock + 4,
-      y: baseY,
-      z: baseZ,
-      typeId: baseTypeId
-    });
-    assert(denied?.ok === false, "재고가 0인데 설치가 허용되었습니다");
-    assert(readStockValue(denied?.stock, baseTypeId) === 0, "거부 후 재고 값이 잘못되었습니다");
+    const deniedBlock = blockPositions[baselineStock + 2];
+    const denied = await emitAck(a, "block:update", { action: "place", ...deniedBlock });
+    assert(denied?.ok === false, "place should be denied after stock is exhausted");
+    assert(readStockValue(denied?.stock, baseTypeId) === 0, "denied stock payload should stay at zero");
   } finally {
     a.disconnect();
     b.disconnect();
