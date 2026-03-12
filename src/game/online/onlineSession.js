@@ -387,13 +387,15 @@ export function setLobbyState(game, room, config) {
   game.mpLobbyEl?.classList.remove("hidden");
   game.applyOnlineStatePayload(room?.state ?? {}, { showEvent: false });
   game.syncRemotePlayersFromLobby();
+  game.syncSpectatorStateFromLobby();
+  const waitingToRespawn = game.syncLocalRespawnStateFromLobby();
   if (game.isLobby3DActive() && !game.isRunning) {
     game.applyLobbyRemotePreviewTargets();
   }
   if (game.tabBoardVisible) {
     game.renderTabScoreboard();
   }
-  if (game.activeMatchMode === "online" && game.isRunning) {
+  if (game.activeMatchMode === "online" && game.isRunning && !waitingToRespawn) {
     game.emitLocalPlayerSync(config.remoteSyncInterval, true);
   }
   game.updateTeamScoreHud();
@@ -472,11 +474,15 @@ export function applyRoomSnapshot(game, payload = {}, config) {
   game.pendingRemoteBlocks.clear();
   game.setupObjectives();
   game.applyOnlineStatePayload(payload, { showEvent: false });
+  game.syncSpectatorStateFromLobby();
+  const waitingToRespawn = game.syncLocalRespawnStateFromLobby();
 
   if (game.activeMatchMode === "online" && game.isRunning) {
     if (game.isPlayerCollidingAt(game.playerPosition.x, game.playerPosition.y, game.playerPosition.z)) {
       game.setOnlineSpawnFromLobby();
     }
-    game.emitLocalPlayerSync(config.remoteSyncInterval, true);
+    if (!waitingToRespawn) {
+      game.emitLocalPlayerSync(config.remoteSyncInterval, true);
+    }
   }
 }

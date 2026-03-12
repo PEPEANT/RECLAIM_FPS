@@ -192,6 +192,7 @@ const DEFAULT_TEAM_FLAG_HOME = Object.freeze({
   alpha: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).alphaFlag }),
   bravo: Object.freeze({ ...getOnlineMapConfig(PERSISTENT_WORLD_MAP_ID).bravoFlag })
 });
+const JOIN_IN_PROGRESS_SPAWN_MS = 3500;
 const SPAWN_PROTECT_RADIUS = 6.5;
 const SPAWN_PROTECT_RADIUS_SQ = SPAWN_PROTECT_RADIUS * SPAWN_PROTECT_RADIUS;
 const SPAWN_PROTECT_MIN_Y = -1;
@@ -1247,15 +1248,19 @@ function consumePlayerShotAmmo(player, now = Date.now()) {
   return { ok: true, weaponState };
 }
 
-function schedulePlayerRespawn(room, player) {
+function schedulePlayerRespawn(room, player, options = {}) {
+  const delayMsRaw = Number(options?.delayMs);
+  const delayMs =
+    Number.isFinite(delayMsRaw) && delayMsRaw > 0 ? Math.trunc(delayMsRaw) : PVP_RESPAWN_MS;
   if (!room || !player?.id) {
-    return Date.now() + PVP_RESPAWN_MS;
+    return Date.now() + delayMs;
   }
 
   clearPlayerRespawnTimer(player);
-  const respawnAt = Date.now() + PVP_RESPAWN_MS;
+  const respawnAt = Date.now() + delayMs;
   player.hp = 0;
   player.respawnAt = respawnAt;
+  player.spawnShieldUntil = 0;
 
   const playerId = String(player.id);
   player.respawnTimer = setTimeout(() => {
@@ -1285,7 +1290,7 @@ function schedulePlayerRespawn(room, player) {
       roomStateRevision: roomState.revision
     });
     emitRoomUpdate(room);
-  }, PVP_RESPAWN_MS);
+  }, delayMs);
 
   return respawnAt;
 }
@@ -3277,6 +3282,11 @@ function joinDefaultRoom(socket, options = {}) {
     captures: 0,
     killStreak: 0
   });
+  const joinedPlayer = state.players.get(socket.id) ?? null;
+  const roundActive = Number(state.round?.startedAt ?? 0) > 0 && !Boolean(state.round?.ended);
+  if (roundActive && joinedPlayer) {
+    schedulePlayerRespawn(room, joinedPlayer, { delayMs: JOIN_IN_PROGRESS_SPAWN_MS });
+  }
   touchDailyLeaderboardPlayer(state.players.get(socket.id));
   room.players = state.players;
   touchRoomState(room);
@@ -3718,8 +3728,17 @@ io.on("connection", (socket) => {
       ack(ackFn, { ok: false, error: "방에 참가하지 않았습니다" });
       return;
     }
-
     const playerStock = ensurePlayerStock(player);
+    if ((Number.isFinite(player.hp) ? player.hp : 100) <= 0) {
+      ack(ackFn, {
+        ok: false,
+        error: "부활 후 다시 시도해 주세요",
+        roomStateRevision: state.revision,
+        stock: serializeBlockStock(playerStock)
+      });
+      return;
+    }
+
     const sanitized = sanitizeBlockPayload(payload);
     if (!sanitized) {
       ack(ackFn, { ok: false, error: "잘못된 블록 업데이트", stock: serializeBlockStock(playerStock) });

@@ -1,6 +1,33 @@
 import { DEFAULT_GAME_MODE, GAME_MODE, normalizeGameMode } from "../../shared/gameModes.js";
 import { PVP_RESPAWN_MS } from "../../shared/matchConfig.js";
 
+function fallbackPlayerName(name) {
+  const safe = String(name ?? "").trim();
+  return safe || "PLAYER";
+}
+
+function formatRespawnMessage(game, seconds) {
+  if (game?.respawnMode === "deploy") {
+    return `관전 중 - ${seconds}초 후 투입`;
+  }
+  return `사망 - ${seconds}초 후 부활`;
+}
+
+function formatRespawnFinalMessage(game) {
+  if (game?.respawnMode === "deploy") {
+    return "곧 투입됩니다...";
+  }
+  return "곧 부활합니다...";
+}
+
+function formatRoundTransitionText(game, winnerLabel, remainSec) {
+  const nextMapMeta = game.getNextOnlineMapDisplayMeta();
+  if (remainSec > 0) {
+    return `${winnerLabel} 승리! ${remainSec}초 후 ${nextMapMeta.name} 전장으로 이동합니다`;
+  }
+  return `${nextMapMeta.name} 전장으로 이동 중...`;
+}
+
 export function setOnlineRoundState(
   game,
   {
@@ -38,8 +65,7 @@ export function setOnlineRoundState(
     const winnerLabel = config.formatTeamLabel(normalizedWinner);
     const remainSec =
       nextRestartAt > Date.now() ? Math.max(1, Math.ceil((nextRestartAt - Date.now()) / 1000)) : 1;
-    const nextMapMeta = game.getNextOnlineMapDisplayMeta();
-    const statusText = `${winnerLabel} 승리! ${remainSec}초 후 ${nextMapMeta.name} 전장으로 이동합니다`;
+    const statusText = formatRoundTransitionText(game, winnerLabel, remainSec);
     game.hud.setStatus(statusText, false, 1.0);
     if (announce) {
       game.chat?.addSystemMessage(statusText, "system");
@@ -52,19 +78,16 @@ export function updateOnlineRoundCountdown(game, config) {
   if (!game.onlineRoundEnded) {
     return;
   }
+
   const remainMs = game.onlineRoundRestartAt - Date.now();
   const remainSec = remainMs > 0 ? Math.max(1, Math.ceil(remainMs / 1000)) : 0;
   if (remainSec === game.onlineRoundLastSecond) {
     return;
   }
+
   game.onlineRoundLastSecond = remainSec;
   const winnerLabel = config.formatTeamLabel(game.onlineRoundWinnerTeam);
-  const nextMapMeta = game.getNextOnlineMapDisplayMeta();
-  const statusText =
-    remainSec > 0
-      ? `${winnerLabel} 승리! ${remainSec}초 후 ${nextMapMeta.name} 전장으로 이동합니다`
-      : `${nextMapMeta.name} 전장으로 이동 중...`;
-  game.hud.setStatus(statusText, false, 0.95);
+  game.hud.setStatus(formatRoundTransitionText(game, winnerLabel, remainSec), false, 0.95);
 }
 
 export function showOnlineCtfEvent(game, event = {}, config) {
@@ -74,7 +97,7 @@ export function showOnlineCtfEvent(game, event = {}, config) {
   }
 
   const byPlayerId = String(event.byPlayerId ?? "");
-  const byName = game.getPlayerNameById(byPlayerId);
+  const byName = fallbackPlayerName(game.getPlayerNameById(byPlayerId));
   const byTeam = config.normalizeTeamId(event.byTeam);
   const flagTeam = config.normalizeTeamId(event.flagTeam);
   const myTeam = config.normalizeTeamId(game.getMyTeam());
@@ -85,25 +108,25 @@ export function showOnlineCtfEvent(game, event = {}, config) {
     const isFriendlyCarrier = myTeam && byTeam && myTeam === byTeam;
     const isFriendlyFlagLost = myTeam && flagTeam && myTeam === flagTeam && byTeam !== myTeam;
     if (isMine) {
-      game.announceGameplayEvent("적 깃발 확보", {
+      game.announceGameplayEvent("적 깃발 탈취", {
         alert: false,
         duration: 2.5,
-        statusText: "적 깃발 탈취 성공! 아군 거점으로 복귀하세요"
+        statusText: "적 깃발을 탈취했습니다. 아군 기지로 복귀하세요"
       });
     } else if (isFriendlyFlagLost) {
       game.announceGameplayEvent(`${flagLabel} 깃발 탈취당함`, {
         alert: true,
         duration: 2.7,
-        statusText: `${byName}이(가) ${flagLabel} 깃발을 탈취했습니다`
+        statusText: `${byName}가 ${flagLabel} 깃발을 들고 이동 중입니다`
       });
     } else if (isFriendlyCarrier) {
-      game.announceGameplayEvent(`${byName}이(가) 적 깃발 확보`, {
+      game.announceGameplayEvent(`${byName}가 적 깃발 탈취`, {
         alert: false,
         duration: 2.4,
-        statusText: `${byName}이(가) ${flagLabel} 깃발을 탈취했습니다`
+        statusText: `${byName}가 ${flagLabel} 깃발을 운반 중입니다`
       });
     } else {
-      game.announceGameplayEvent(`${byName}이(가) ${flagLabel} 깃발 탈취`, {
+      game.announceGameplayEvent(`${byName}가 ${flagLabel} 깃발 탈취`, {
         alert: false,
         duration: 2.2
       });
@@ -116,22 +139,22 @@ export function showOnlineCtfEvent(game, event = {}, config) {
     const teamScore = Number(event.teamScore);
     const scoreSuffix = Number.isFinite(teamScore) && teamScore > 0 ? ` (${teamScore}점)` : "";
     if (isMine) {
-      game.announceGameplayEvent(`깃발 반납 성공${scoreSuffix}`, {
+      game.announceGameplayEvent(`깃발 점수 획득${scoreSuffix}`, {
         alert: false,
         duration: 2.6,
-        statusText: `깃발 점수 +1 획득${scoreSuffix}`
+        statusText: `깃발 점수 +1${scoreSuffix}`
       });
     } else if (isFriendlyScore) {
-      game.announceGameplayEvent(`${byName}이(가) 점수 +1 확보`, {
+      game.announceGameplayEvent(`${byName}가 점수 +1`, {
         alert: false,
         duration: 2.5,
-        statusText: `${byName}이(가) 아군 기지에 깃발을 가져왔습니다${scoreSuffix}`
+        statusText: `${byName}가 적 깃발을 점수로 전환했습니다${scoreSuffix}`
       });
     } else {
-      game.announceGameplayEvent("적 팀이 깃발 점수를 획득했습니다", {
+      game.announceGameplayEvent("상대 팀이 점수를 획득했습니다", {
         alert: true,
         duration: 2.7,
-        statusText: `${byName}이(가) 깃발 점수 +1 획득${scoreSuffix}`
+        statusText: `${byName}가 깃발 점수 +1을 획득했습니다${scoreSuffix}`
       });
     }
     return;
@@ -141,7 +164,7 @@ export function showOnlineCtfEvent(game, event = {}, config) {
     const isFriendlyFlag = myTeam && flagTeam && myTeam === flagTeam;
     const text = isFriendlyFlag
       ? `${config.formatTeamLabel(flagTeam)} 깃발이 기지로 복귀했습니다`
-      : "깃발이 원래 위치로 복귀했습니다";
+      : "깃발이 원위치로 돌아갔습니다";
     game.announceGameplayEvent(text, {
       alert: false,
       duration: 1.8,
@@ -154,14 +177,14 @@ export function showOnlineCtfEvent(game, event = {}, config) {
     game.announceGameplayEvent("깃발전 시작", {
       alert: false,
       duration: 1.9,
-      statusText: "깃발전 시작: 적 기지 깃발을 탈취하세요"
+      statusText: "적 깃발을 탈취해 아군 기지로 운반하세요"
     });
     return;
   }
 
   if (type === "match_end") {
     const winner = config.formatTeamLabel(config.normalizeTeamId(event.winnerTeam));
-    game.announceGameplayEvent(`${winner} 팀 승리`, {
+    game.announceGameplayEvent(`${winner} 승리`, {
       alert: false,
       duration: 2.3,
       statusDuration: 1.1
@@ -186,7 +209,8 @@ export function applyOnlineStatePayload(game, payload = {}, { showEvent = false 
   };
 
   const flagsPayload = payload?.flags && typeof payload.flags === "object" ? payload.flags : null;
-  const legacyCenterFlagPayload = !flagsPayload && payload?.flag && typeof payload.flag === "object" ? payload.flag : null;
+  const legacyCenterFlagPayload =
+    !flagsPayload && payload?.flag && typeof payload.flag === "object" ? payload.flag : null;
   const readFlagPayload = (team) => {
     if (flagsPayload) {
       return flagsPayload[team] ?? null;
@@ -298,9 +322,11 @@ export function handleOnlineMatchEnd(game, payload = {}, config) {
   game.handlePrimaryActionUp();
 }
 
-export function beginRespawnCountdown(game, respawnAtRaw = null) {
+export function beginRespawnCountdown(game, respawnAtRaw = null, options = {}) {
   const parsedRespawnAt = Number(respawnAtRaw);
+  const respawnMode = options?.mode === "deploy" ? "deploy" : "respawn";
   game.isRespawning = true;
+  game.respawnMode = respawnMode;
   game.respawnEndAt =
     Number.isFinite(parsedRespawnAt) && parsedRespawnAt > Date.now()
       ? parsedRespawnAt
@@ -312,9 +338,10 @@ export function beginRespawnCountdown(game, respawnAtRaw = null) {
   game.rightMouseAiming = false;
   game.isAiming = false;
   game.handlePrimaryActionUp();
+  game.beginSpectatorMode({ teamMode: "ally", resetTarget: true });
 
   const initialSeconds = Math.max(1, Math.ceil((game.respawnEndAt - Date.now()) / 1000));
-  const message = `사망 - ${initialSeconds}초 후 부활합니다`;
+  const message = formatRespawnMessage(game, initialSeconds);
   game.setRespawnBanner(message, true);
   game.hud.setStatus(message, true, 1.0);
 }
@@ -329,8 +356,9 @@ export function updateRespawnCountdown(game) {
   if (remainingMs <= 0) {
     if (game.respawnLastSecond !== 0) {
       game.respawnLastSecond = 0;
-      game.setRespawnBanner("곧 부활합니다...", true);
-      game.hud.setStatus("부활 중...", true, 0.5);
+      const finalMessage = formatRespawnFinalMessage(game);
+      game.setRespawnBanner(finalMessage, true);
+      game.hud.setStatus(finalMessage, true, 0.5);
     }
     return;
   }
@@ -339,8 +367,9 @@ export function updateRespawnCountdown(game) {
   if (seconds === game.respawnLastSecond) {
     return;
   }
+
   game.respawnLastSecond = seconds;
-  const message = `사망 - ${seconds}초 후 부활합니다`;
+  const message = formatRespawnMessage(game, seconds);
   game.setRespawnBanner(message, true);
   game.hud.setStatus(message, true, 1.0);
 }
@@ -376,8 +405,10 @@ export function handlePlayerRespawn(game, payload = {}, config) {
     game.isRespawning = false;
     game.respawnEndAt = 0;
     game.respawnLastSecond = -1;
+    game.respawnMode = "respawn";
     game.localDeathAnimStartAt = 0;
     game.localDeathAnimBlend = 0;
+    game.endSpectatorMode();
     game.setRespawnBanner("", false);
 
     const x = Number(state?.x);
@@ -407,6 +438,7 @@ export function handlePlayerRespawn(game, payload = {}, config) {
     } else {
       game.setOnlineSpawnFromLobby();
     }
+
     if (Number.isFinite(spawnShieldUntil) && spawnShieldUntil > Date.now()) {
       const shieldSeconds = Math.max(1, Math.ceil((spawnShieldUntil - Date.now()) / 1000));
       game.hud.setStatus(`부활 완료 - ${shieldSeconds}초 보호`, false, 1.1);

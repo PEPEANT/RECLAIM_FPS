@@ -13,7 +13,6 @@ const BLOCK = Object.freeze({
 
 const ROAD_BLOCK = BLOCK.metal;
 const SIDEWALK_BLOCK = BLOCK.stone;
-const ROAD_MARKING_BLOCK = BLOCK.ice;
 
 const DEFAULT_MAP_SEED = 20260310;
 
@@ -193,51 +192,8 @@ function buildRoadGrid(builder, surfaceMap, halfExtent) {
   }
 }
 
-function buildStreetlight(builder, x, z, { height = 7, armDirection = "east" } = {}) {
-  builder.fillRect(x, x, 1, height, z, z, BLOCK.metal);
-  const armSign = armDirection === "west" ? -1 : 1;
-  builder.fillRect(x, x + armSign * 2, height, height, z, z, BLOCK.metal);
-  builder.fillRect(x + armSign * 2, x + armSign * 2, height - 1, height, z, z, BLOCK.ice);
-  builder.fillRect(x - 1, x + 1, 1, 1, z - 1, z + 1, BLOCK.stone);
-}
-
-function buildCar(builder, {
-  x,
-  z,
-  orientation = "x",
-  colorType = BLOCK.brick,
-  glassType = BLOCK.ice
-}) {
-  if (orientation === "z") {
-    builder.fillRect(x - 1, x + 1, 1, 2, z - 3, z + 3, colorType);
-    clearVolume(builder, x, x, 2, 2, z - 2, z + 2);
-    builder.fillRect(x - 1, x + 1, 3, 3, z - 1, z + 1, glassType);
-    builder.fillRect(x - 1, x + 1, 1, 1, z - 4, z - 4, BLOCK.metal);
-    builder.fillRect(x - 1, x + 1, 1, 1, z + 4, z + 4, BLOCK.metal);
-    builder.fillRect(x - 2, x - 2, 1, 1, z - 2, z + 2, BLOCK.metal);
-    builder.fillRect(x + 2, x + 2, 1, 1, z - 2, z + 2, BLOCK.metal);
-    return;
-  }
-
-  builder.fillRect(x - 3, x + 3, 1, 2, z - 1, z + 1, colorType);
-  clearVolume(builder, x - 2, x + 2, 2, 2, z, z);
-  builder.fillRect(x - 1, x + 1, 3, 3, z - 1, z + 1, glassType);
-  builder.fillRect(x - 4, x - 4, 1, 1, z - 1, z + 1, BLOCK.metal);
-  builder.fillRect(x + 4, x + 4, 1, 1, z - 1, z + 1, BLOCK.metal);
-  builder.fillRect(x - 2, x + 2, 1, 1, z - 2, z - 2, BLOCK.metal);
-  builder.fillRect(x - 2, x + 2, 1, 1, z + 2, z + 2, BLOCK.metal);
-}
-
-function paintCrosswalk(builder, startX, endX, z, orientation = "horizontal") {
-  if (orientation === "horizontal") {
-    for (let x = startX; x <= endX; x += 3) {
-      builder.fillRect(x, Math.min(endX, x + 1), 0, 0, z - 3, z + 3, ROAD_MARKING_BLOCK);
-    }
-    return;
-  }
-  for (let currentZ = startX; currentZ <= endX; currentZ += 3) {
-    builder.fillRect(z - 3, z + 3, 0, 0, currentZ, Math.min(endX, currentZ + 1), ROAD_MARKING_BLOCK);
-  }
+function buildCoverBarrier(builder, minX, maxX, minZ, maxZ, { height = 2, typeId = BLOCK.stone } = {}) {
+  builder.fillRect(minX, maxX, 1, height, minZ, maxZ, typeId);
 }
 
 function buildTrafficFurniture(builder, surfaceMap) {
@@ -255,109 +211,45 @@ function buildTrafficFurniture(builder, surfaceMap) {
     paveSurface(builder, surfaceMap, walkway.minX, walkway.maxX, walkway.minZ, walkway.maxZ, walkway.typeId);
   }
 
-  const medianPlanters = [
-    { minX: -3, maxX: 3, minZ: -52, maxZ: -38 },
-    { minX: -3, maxX: 3, minZ: 38, maxZ: 52 },
-    { minX: -54, maxX: -40, minZ: -3, maxZ: 3 },
-    { minX: 40, maxX: 54, minZ: -3, maxZ: 3 }
+  const roadCover = [
+    { minX: -4, maxX: 4, minZ: -54, maxZ: -44, height: 2 },
+    { minX: -4, maxX: 4, minZ: 44, maxZ: 54, height: 2 },
+    { minX: -56, maxX: -46, minZ: -4, maxZ: 4, height: 2 },
+    { minX: 46, maxX: 56, minZ: -4, maxZ: 4, height: 2 },
+    { minX: -72, maxX: -66, minZ: -18, maxZ: -12, height: 3, typeId: BLOCK.brick },
+    { minX: -72, maxX: -66, minZ: 12, maxZ: 18, height: 3, typeId: BLOCK.brick },
+    { minX: 66, maxX: 72, minZ: -18, maxZ: -12, height: 3, typeId: BLOCK.clay },
+    { minX: 66, maxX: 72, minZ: 12, maxZ: 18, height: 3, typeId: BLOCK.clay }
   ];
-  for (const planter of medianPlanters) {
-    builder.fillRect(planter.minX, planter.maxX, 0, 1, planter.minZ, planter.maxZ, BLOCK.stone);
-    builder.fillRect(planter.minX + 1, planter.maxX - 1, 1, 1, planter.minZ + 1, planter.maxZ - 1, BLOCK.grass);
-  }
-
-  paintCrosswalk(builder, -14, 14, -13, "horizontal");
-  paintCrosswalk(builder, -14, 14, 13, "horizontal");
-  paintCrosswalk(builder, -44, -18, -27, "horizontal");
-  paintCrosswalk(builder, 18, 44, 27, "horizontal");
-  paintCrosswalk(builder, -27, 27, -44, "vertical");
-  paintCrosswalk(builder, -27, 27, 44, "vertical");
-
-  const streetlights = [
-    [-96, -8, "east"],
-    [-72, -8, "east"],
-    [-48, -8, "east"],
-    [-24, -8, "east"],
-    [24, -8, "west"],
-    [48, -8, "west"],
-    [72, -8, "west"],
-    [96, -8, "west"],
-    [-96, 8, "east"],
-    [-72, 8, "east"],
-    [-48, 8, "east"],
-    [-24, 8, "east"],
-    [24, 8, "west"],
-    [48, 8, "west"],
-    [72, 8, "west"],
-    [96, 8, "west"],
-    [-8, -92, "east"],
-    [8, -92, "west"],
-    [-8, -56, "east"],
-    [8, -56, "west"],
-    [-8, 56, "east"],
-    [8, 56, "west"],
-    [-8, 92, "east"],
-    [8, 92, "west"]
-  ];
-  for (const [x, z, armDirection] of streetlights) {
-    buildStreetlight(builder, x, z, { armDirection });
-  }
-
-  const parkedCars = [
-    { x: -58, z: -18, orientation: "x", colorType: BLOCK.brick },
-    { x: -26, z: -18, orientation: "x", colorType: BLOCK.clay },
-    { x: 28, z: -18, orientation: "x", colorType: BLOCK.metal },
-    { x: 60, z: -18, orientation: "x", colorType: BLOCK.brick },
-    { x: -60, z: 18, orientation: "x", colorType: BLOCK.clay },
-    { x: -20, z: 18, orientation: "x", colorType: BLOCK.metal },
-    { x: 22, z: 18, orientation: "x", colorType: BLOCK.brick },
-    { x: 58, z: 18, orientation: "x", colorType: BLOCK.clay },
-    { x: -18, z: -66, orientation: "z", colorType: BLOCK.metal },
-    { x: 18, z: -66, orientation: "z", colorType: BLOCK.brick },
-    { x: -18, z: 66, orientation: "z", colorType: BLOCK.clay },
-    { x: 18, z: 66, orientation: "z", colorType: BLOCK.metal }
-  ];
-  for (const car of parkedCars) {
-    buildCar(builder, car);
-  }
-
-  const laneMarkings = [
-    { minX: -102, maxX: -14, z: 0 },
-    { minX: 14, maxX: 102, z: 0 }
-  ];
-  for (const marking of laneMarkings) {
-    for (let x = marking.minX; x <= marking.maxX; x += 8) {
-      builder.fillRect(x, Math.min(marking.maxX, x + 3), 0, 0, marking.z, marking.z, ROAD_MARKING_BLOCK);
-    }
-  }
-  for (let z = -100; z <= 100; z += 8) {
-    if (Math.abs(z) <= 14) {
-      continue;
-    }
-    builder.fillRect(0, 0, 0, 0, z, Math.min(100, z + 3), ROAD_MARKING_BLOCK);
+  for (const cover of roadCover) {
+    buildCoverBarrier(builder, cover.minX, cover.maxX, cover.minZ, cover.maxZ, {
+      height: cover.height,
+      typeId: cover.typeId ?? BLOCK.stone
+    });
   }
 }
 
 function buildCentralPlaza(builder) {
-  builder.fillRect(-16, 16, -1, 0, -16, 16, BLOCK.metal);
-  builder.fillRect(-9, 9, 0, 0, -9, 9, BLOCK.clay);
-  builder.fillRect(-2, 2, 1, 4, -2, 2, BLOCK.brick);
-  clearVolume(builder, -1, 1, 1, 3, -1, 1);
+  builder.fillRect(-16, 16, -1, 0, -16, 16, SIDEWALK_BLOCK);
+  builder.fillRect(-4, 4, 1, 2, -4, 4, BLOCK.metal);
 
-  const cornerPiers = [
-    [-15, -15],
-    [-15, 13],
-    [13, -15],
-    [13, 13]
+  const coverIslands = [
+    { minX: -14, maxX: -9, minZ: -6, maxZ: -2 },
+    { minX: 9, maxX: 14, minZ: -6, maxZ: -2 },
+    { minX: -14, maxX: -9, minZ: 2, maxZ: 6 },
+    { minX: 9, maxX: 14, minZ: 2, maxZ: 6 }
   ];
-  for (const [x, z] of cornerPiers) {
-    builder.fillRect(x, x + 2, 1, 4, z, z + 2, BLOCK.stone);
+  for (const island of coverIslands) {
+    buildCoverBarrier(builder, island.minX, island.maxX, island.minZ, island.maxZ, {
+      height: 2,
+      typeId: BLOCK.stone
+    });
   }
 
-  builder.fillRect(-24, -17, -1, 1, -3, 3, BLOCK.stone);
-  builder.fillRect(17, 24, -1, 1, -3, 3, BLOCK.stone);
-  builder.fillRect(-3, 3, -1, 1, -24, -17, BLOCK.stone);
-  builder.fillRect(-3, 3, -1, 1, 17, 24, BLOCK.stone);
+  buildCoverBarrier(builder, -24, -18, -2, 2, { height: 2, typeId: BLOCK.clay });
+  buildCoverBarrier(builder, 18, 24, -2, 2, { height: 2, typeId: BLOCK.brick });
+  buildCoverBarrier(builder, -2, 2, -24, -18, { height: 2, typeId: BLOCK.clay });
+  buildCoverBarrier(builder, -2, 2, 18, 24, { height: 2, typeId: BLOCK.brick });
 }
 
 function buildCityBlock(

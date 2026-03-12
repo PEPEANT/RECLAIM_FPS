@@ -83,6 +83,15 @@ import {
   updateLobbyQuickPanel as updateOnlineLobbyQuickPanel,
   updateTeamScoreHud as updateOnlineTeamScoreHud
 } from "./online/onlineLobbyUi.js";
+import {
+  beginSpectatorMode as beginOnlineSpectatorMode,
+  cycleSpectatorTarget as cycleOnlineSpectatorTarget,
+  endSpectatorMode as endOnlineSpectatorMode,
+  isSpectatorModeActive as isOnlineSpectatorModeActive,
+  syncSpectatorStateFromLobby as syncOnlineSpectatorStateFromLobby,
+  toggleSpectatorTeamMode as toggleOnlineSpectatorTeamMode,
+  updateSpectatorCamera as updateOnlineSpectatorCamera
+} from "./online/onlineSpectatorCamera.js";
 
 const PLAYER_HEIGHT = 1.75;
 const PLAYER_CROUCH_HEIGHT = 1.18;
@@ -436,6 +445,19 @@ const ONLINE_LOBBY_UI_CONFIG = Object.freeze({
   normalizeTeamId,
   onlineMaxPlayers: ONLINE_MAX_PLAYERS,
   onlineRoomCode: ONLINE_ROOM_CODE
+});
+const ONLINE_SPECTATOR_CONFIG = Object.freeze({
+  formatTeamLabel,
+  playerHeight: PLAYER_HEIGHT,
+  playerCrouchHeight: PLAYER_CROUCH_HEIGHT,
+  followDistance: 6.6,
+  followHeight: 2.45,
+  sideOffset: 1.1,
+  followLerp: 7.5,
+  overviewRadius: 28,
+  overviewHeight: 18,
+  overviewLookHeight: 3.5,
+  overviewOrbitSpeed: 0.32
 });
 
 function toBlockKey(x, y, z) {
@@ -978,8 +1000,20 @@ export class Game {
     this.isRespawning = false;
     this.respawnEndAt = 0;
     this.respawnLastSecond = -1;
+    this.respawnMode = "respawn";
     this.localDeathAnimStartAt = 0;
     this.localDeathAnimBlend = 0;
+    this.spectatorMode = {
+      active: false,
+      teamMode: "ally",
+      targetId: "",
+      orbitAngle: 0,
+      anchorPosition: new THREE.Vector3(),
+      desiredPosition: new THREE.Vector3(),
+      desiredLookAt: new THREE.Vector3(),
+      initialized: false,
+      lastHudKey: ""
+    };
     this.fallStartY = this.playerPosition.y;
     this.lastHazardEmitAt = 0;
   }
@@ -5134,7 +5168,7 @@ export class Game {
   }
 
   requestCenterFlagInteract({ source = "key" } = {}) {
-    if (this.activeMatchMode !== "online" || !this.isRunning || this.isGameOver) {
+    if (this.activeMatchMode !== "online" || !this.isRunning || this.isGameOver || this.isRespawning) {
       return;
     }
 
@@ -5194,8 +5228,8 @@ export class Game {
     this.respawnBannerEl.setAttribute("aria-hidden", "false");
   }
 
-  beginRespawnCountdown(respawnAtRaw = null) {
-    beginOnlineRespawnCountdown(this, respawnAtRaw);
+  beginRespawnCountdown(respawnAtRaw = null, options = {}) {
+    beginOnlineRespawnCountdown(this, respawnAtRaw, options);
   }
 
   updateRespawnCountdown() {
@@ -5204,6 +5238,64 @@ export class Game {
 
   handlePlayerRespawn(payload = {}) {
     handleOnlinePlayerRespawn(this, payload, ONLINE_MATCH_STATE_CONFIG);
+  }
+
+  beginSpectatorMode(options = {}) {
+    beginOnlineSpectatorMode(this, options, ONLINE_SPECTATOR_CONFIG);
+  }
+
+  endSpectatorMode() {
+    endOnlineSpectatorMode(this);
+  }
+
+  isOnlineSpectating() {
+    return isOnlineSpectatorModeActive(this);
+  }
+
+  syncSpectatorStateFromLobby() {
+    return syncOnlineSpectatorStateFromLobby(this, ONLINE_SPECTATOR_CONFIG);
+  }
+
+  cycleSpectatorTarget(direction = 1) {
+    return cycleOnlineSpectatorTarget(this, direction, ONLINE_SPECTATOR_CONFIG);
+  }
+
+  toggleSpectatorTeamMode() {
+    return toggleOnlineSpectatorTeamMode(this, ONLINE_SPECTATOR_CONFIG);
+  }
+
+  updateSpectatorCamera(delta) {
+    return updateOnlineSpectatorCamera(this, delta, ONLINE_SPECTATOR_CONFIG);
+  }
+
+  syncLocalRespawnStateFromLobby() {
+    const myId = this.getMySocketId();
+    if (!myId || this.activeMatchMode !== "online") {
+      return false;
+    }
+
+    const me =
+      (Array.isArray(this.lobbyState.players)
+        ? this.lobbyState.players.find((player) => String(player?.id ?? "") === String(myId))
+        : null) ?? null;
+    if (!me) {
+      return false;
+    }
+
+    const hp = Number(me.hp);
+    const respawnAt = Number(me.respawnAt);
+    if (!(Number.isFinite(hp) && hp <= 0 && Number.isFinite(respawnAt) && respawnAt > Date.now())) {
+      return false;
+    }
+
+    const mode = Number(me.deaths ?? 0) > 0 ? "respawn" : "deploy";
+    const remainingMs = Math.abs(this.respawnEndAt - respawnAt);
+    if (!this.isRespawning || remainingMs > 250 || this.respawnMode !== mode) {
+      this.beginRespawnCountdown(respawnAt, { mode });
+    } else if (!this.isOnlineSpectating()) {
+      this.beginSpectatorMode();
+    }
+    return true;
   }
 
   handlePlayerCorrection(payload = {}) {
@@ -6935,6 +7027,24 @@ export class Game {
         return;
       }
 
+      if (this.isOnlineSpectating()) {
+        if (event.code === "BracketLeft") {
+          event.preventDefault();
+          this.cycleSpectatorTarget(-1);
+          return;
+        }
+        if (event.code === "BracketRight") {
+          event.preventDefault();
+          this.cycleSpectatorTarget(1);
+          return;
+        }
+        if (event.code === "Backslash") {
+          event.preventDefault();
+          this.toggleSpectatorTeamMode();
+          return;
+        }
+      }
+
       if (!lobbyActive && this.buildSystem.handleKeyDown(event)) {
         event.preventDefault();
         return;
@@ -7151,6 +7261,11 @@ export class Game {
       "wheel",
       (event) => {
         if (this.isUiInputFocused() || !this.isRunning || this.isGameOver || this.optionsMenuOpen) {
+          return;
+        }
+        if (this.isOnlineSpectating()) {
+          event.preventDefault();
+          this.cycleSpectatorTarget(event.deltaY > 0 ? 1 : -1);
           return;
         }
         if (this.buildSystem.handleWheel(event)) {
@@ -7633,10 +7748,15 @@ export class Game {
       this.rebuildArenaWorld({ preserveLobbyGeometry: false });
       this.hud.setStatus("온라인 매치 시작: AI 비활성화", false, 0.9);
       this.requestRoomSnapshot();
-      this.setOnlineSpawnFromLobby();
       this.syncRemotePlayersFromLobby();
+      const waitingToDeploy = this.syncLocalRespawnStateFromLobby();
+      if (!waitingToDeploy) {
+        this.setOnlineSpawnFromLobby();
+      }
       this.state.objectiveText = this.getOnlineObjectiveText();
-      this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+      if (!waitingToDeploy) {
+        this.emitLocalPlayerSync(REMOTE_SYNC_INTERVAL, true);
+      }
     } else {
       this.rebuildArenaWorld({ preserveLobbyGeometry: false });
       this.setSingleSpawnFromTraining();
@@ -7721,8 +7841,10 @@ export class Game {
     this.isRespawning = false;
     this.respawnEndAt = 0;
     this.respawnLastSecond = -1;
+    this.respawnMode = "respawn";
     this.localDeathAnimStartAt = 0;
     this.localDeathAnimBlend = 0;
+    this.endSpectatorMode();
     this.lastHazardEmitAt = 0;
     this.setRespawnBanner("", false);
     this.setTabScoreboardVisible(false);
@@ -8367,7 +8489,9 @@ export class Game {
       }
     }
 
-    const hideViewModel = this.isLobby3DActive() || this.isRespawning || this.localDeathAnimBlend > 0.04;
+    const isSpectating = this.isOnlineSpectating();
+    const hideViewModel =
+      this.isLobby3DActive() || this.isRespawning || this.localDeathAnimBlend > 0.04 || isSpectating;
     const showScopeOverlay =
       gunMode &&
       weaponDef.id === "awp" &&
@@ -8389,7 +8513,9 @@ export class Game {
     const aimTighten = this.aimBlend * (weaponDef.id === "awp" ? 0.48 : 0.28);
     this.hud.setCrosshairState({
       scale: Math.max(0.76, 1 + movementSpread + recoilSpread - aimTighten),
-      opacity: gunMode
+      opacity: isSpectating
+        ? 0
+        : gunMode
         ? THREE.MathUtils.lerp(
             0.95,
             weaponDef.id === "awp" ? 0 : 0.12,
@@ -8423,6 +8549,11 @@ export class Game {
       this.localDeathAnimBlend = Math.max(0, this.localDeathAnimBlend - delta * 5.5);
     }
 
+    if (isSpectating) {
+      this.updateSpectatorCamera(delta);
+      return;
+    }
+
     this.camera.position.copy(this.playerPosition);
     this.camera.rotation.order = "YXZ";
     this.camera.rotation.y = this.yaw;
@@ -8444,6 +8575,7 @@ export class Game {
 
     const controlActive = this.isRunning || this.isLobby3DActive();
     if (
+      this.isOnlineSpectating() ||
       this.mobileEnabled ||
       !controlActive ||
       this.isGameOver ||
@@ -8527,7 +8659,9 @@ export class Game {
       if (!lobbyActive) {
         this.processPendingRemoteBlocks(delta);
       }
-      this.emitLocalPlayerSync(delta);
+      if (!this.isRespawning) {
+        this.emitLocalPlayerSync(delta);
+      }
     }
 
     this.updateOnlineRoundCountdown();
