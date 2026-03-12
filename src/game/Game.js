@@ -192,14 +192,14 @@ const BASE_FLOOR_PROTECT_MAX_Y = -4;
 const SHOT_BREAKABLE_TYPE_IDS = Object.freeze(new Set([1, 2, 3, 4, 5, 6, 7, 8]));
 const SHOT_BLOCK_HEALTH_BY_TYPE_ID = Object.freeze(
   new Map([
-    [1, 4], // grass
-    [2, 5], // dirt
-    [3, 9], // stone
-    [4, 4], // sand
-    [5, 6], // clay
-    [6, 7], // brick
-    [7, 5], // ice
-    [8, 10] // metal
+    [1, 3], // grass
+    [2, 4], // dirt
+    [3, 6], // stone
+    [4, 3], // sand
+    [5, 4], // clay
+    [6, 5], // brick
+    [7, 4], // ice
+    [8, 7] // metal
   ])
 );
 const BASE_SUPPORT_RADIUS = 8.5;
@@ -4453,12 +4453,12 @@ export class Game {
   getShotBlockImpactPower(weaponDef = this.selectedWeaponDef) {
     const weaponId = String(weaponDef?.id ?? "").trim().toLowerCase();
     if (weaponId === "awp") {
-      return 2.4;
+      return 3.2;
     }
     if (weaponId === "spas12") {
-      return 0.65;
+      return 0.85;
     }
-    return 1;
+    return 1.2;
   }
 
   setDynamicBlockEntry(key, entry = null) {

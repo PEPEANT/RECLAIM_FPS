@@ -934,6 +934,9 @@ function getRoomState(room) {
     if (typeof player.respawnTimer === "undefined") {
       player.respawnTimer = null;
     }
+    if (typeof player.reloadSyncTimer === "undefined") {
+      player.reloadSyncTimer = null;
+    }
   }
 
   if (!(room.state.blocks instanceof Map)) {
@@ -1001,6 +1004,16 @@ function clearPlayerRespawnTimer(player) {
   if (player.respawnTimer) {
     clearTimeout(player.respawnTimer);
     player.respawnTimer = null;
+  }
+}
+
+function clearPlayerReloadSyncTimer(player) {
+  if (!player || typeof player !== "object") {
+    return;
+  }
+  if (player.reloadSyncTimer) {
+    clearTimeout(player.reloadSyncTimer);
+    player.reloadSyncTimer = null;
   }
 }
 
@@ -1205,7 +1218,37 @@ function emitPlayerInventoryUpdateById(playerId, room) {
   emitPlayerInventoryUpdate(targetSocket, player, room);
 }
 
-function startPlayerReload(player, now = Date.now()) {
+function schedulePlayerReloadInventoryUpdate(room, player, now = Date.now()) {
+  if (!room || !player?.id) {
+    return;
+  }
+
+  clearPlayerReloadSyncTimer(player);
+  const weaponState = updatePlayerWeaponStateProgress(player, now);
+  const reloadEndsAt = weaponState.reloading ? Math.max(0, Math.trunc(Number(weaponState.reloadEndsAt) || 0)) : 0;
+  if (reloadEndsAt <= now) {
+    emitPlayerInventoryUpdateById(player.id, room);
+    return;
+  }
+
+  const playerId = String(player.id);
+  const delayMs = Math.max(16, reloadEndsAt - now + 16);
+  player.reloadSyncTimer = setTimeout(() => {
+    const state = getRoomState(room);
+    const current = state.players.get(playerId);
+    if (!current) {
+      return;
+    }
+    clearPlayerReloadSyncTimer(current);
+    updatePlayerWeaponStateProgress(current, Date.now());
+    emitPlayerInventoryUpdateById(playerId, room);
+  }, delayMs);
+  if (typeof player.reloadSyncTimer?.unref === "function") {
+    player.reloadSyncTimer.unref();
+  }
+}
+
+function startPlayerReload(room, player, now = Date.now()) {
   const weaponState = updatePlayerWeaponStateProgress(player, now);
   const weaponDef = getWeaponDefinition(weaponState.weaponId);
   const magazineSize = Math.max(0, Math.trunc(Number(weaponDef.magazineSize) || 0));
@@ -1224,10 +1267,11 @@ function startPlayerReload(player, now = Date.now()) {
   weaponState.reloadEndsAt =
     now + Math.max(50, Math.round(Math.max(0, Number(weaponDef.reloadDuration) || 0) * 1000));
   weaponState.updatedAt = Math.max(0, Math.trunc(Number(now) || Date.now()));
+  schedulePlayerReloadInventoryUpdate(room, player, now);
   return { ok: true, weaponState };
 }
 
-function consumePlayerShotAmmo(player, now = Date.now()) {
+function consumePlayerShotAmmo(room, player, now = Date.now()) {
   const weaponState = updatePlayerWeaponStateProgress(player, now);
 
   if (weaponState.reloading) {
@@ -1235,7 +1279,7 @@ function consumePlayerShotAmmo(player, now = Date.now()) {
   }
   if (weaponState.ammo <= 0) {
     if (weaponState.reserve > 0) {
-      startPlayerReload(player, now);
+      startPlayerReload(room, player, now);
     }
     return { ok: false, reason: "empty", weaponState: ensurePlayerWeaponState(player, { now }) };
   }
@@ -1243,7 +1287,7 @@ function consumePlayerShotAmmo(player, now = Date.now()) {
   weaponState.ammo = Math.max(0, Math.trunc(Number(weaponState.ammo ?? 0) || 0) - 1);
   weaponState.updatedAt = Math.max(0, Math.trunc(Number(now) || Date.now()));
   if (weaponState.ammo <= 0 && weaponState.reserve > 0) {
-    startPlayerReload(player, now);
+    startPlayerReload(room, player, now);
   }
   return { ok: true, weaponState };
 }
@@ -1257,6 +1301,7 @@ function schedulePlayerRespawn(room, player, options = {}) {
   }
 
   clearPlayerRespawnTimer(player);
+  clearPlayerReloadSyncTimer(player);
   const respawnAt = Date.now() + delayMs;
   player.hp = 0;
   player.respawnAt = respawnAt;
@@ -1271,6 +1316,7 @@ function schedulePlayerRespawn(room, player, options = {}) {
     }
 
     clearPlayerRespawnTimer(current);
+    clearPlayerReloadSyncTimer(current);
     current.hp = 100;
     current.respawnAt = 0;
     current.killStreak = 0;
@@ -1327,6 +1373,7 @@ function resetRoomRoundState(room, { startedAt = Date.now(), byPlayerId = null, 
     player.killStreak = 0;
     player.lastShotAt = 0;
     clearPlayerRespawnTimer(player);
+    clearPlayerReloadSyncTimer(player);
     player.hp = 100;
     player.respawnAt = 0;
     player.spawnShieldUntil = Date.now() + RESPAWN_SHIELD_MS;
@@ -3119,6 +3166,7 @@ function pruneRoomPlayers(room) {
     if (!io.sockets.sockets.has(socketId)) {
       const removedPlayer = state.players.get(socketId);
       clearPlayerRespawnTimer(removedPlayer);
+      clearPlayerReloadSyncTimer(removedPlayer);
       state.players.delete(socketId);
       removedIds.push(socketId);
       changed = true;
@@ -3176,6 +3224,7 @@ function leaveCurrentRoom(socket) {
   const state = getRoomState(room);
   const leavingPlayer = state.players.get(socket.id);
   clearPlayerRespawnTimer(leavingPlayer);
+  clearPlayerReloadSyncTimer(leavingPlayer);
   state.players.delete(socket.id);
   room.players = state.players;
   const resetTeam = resetFlagForPlayer(room, socket.id);
@@ -3492,6 +3541,7 @@ io.on("connection", (socket) => {
     }
 
     if (sanitizeWeaponId(player.weaponId) !== weaponId) {
+      clearPlayerReloadSyncTimer(player);
       player.weaponId = weaponId;
       ensurePlayerWeaponState(player, { reset: true });
       player.lastShotAt = 0;
@@ -3522,7 +3572,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const reloadResult = startPlayerReload(player, Date.now());
+    const reloadResult = startPlayerReload(room, player, Date.now());
     emitPlayerInventoryUpdate(socket, player, room);
     if (!reloadResult.ok) {
       const errorText =
@@ -3909,7 +3959,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const ammoResult = consumePlayerShotAmmo(shooter, now);
+    const ammoResult = consumePlayerShotAmmo(room, shooter, now);
     if (!ammoResult.ok) {
       recordPvpShotReject(ammoResult.reason === "reloading" ? "weapon_reloading" : "weapon_empty");
       emitPlayerInventoryUpdate(socket, shooter, room);
